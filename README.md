@@ -78,6 +78,37 @@ Para medir los pasos por segundo (un entorno, y `DummyVecEnv` frente a `SubprocV
 uv run python scripts/benchmark_env.py
 ```
 
+## Entrenar
+
+```sh
+uv run python scripts/train.py configs/fixed_track.yaml      # un circuito fijo sencillo
+uv run python scripts/train.py configs/random_tracks.yaml    # circuitos aleatorios (generalizar)
+uv run python scripts/live.py                                # visor del último run, en otra terminal
+uv run python scripts/evaluate.py --tracks 20                # 3 vueltas en los 20 circuitos reservados
+uv run tensorboard --logdir runs
+```
+
+Cada entrenamiento crea `runs/<fecha>_<hora>_<nombre>/` con:
+- la configuración y el commit;
+- los checkpoints, que llevan los pasos en el nombre y van con sus estadísticas de VecNormalize;
+- las métricas en `metrics.csv` y TensorBoard;
+- las evaluaciones en `eval.csv` y el mejor modelo en `best_model.zip`.
+
+El entrenamiento va con prioridad baja (también sus subprocesos), así que el visor puede quedarse abierto al lado:
+- muestra la última versión conduciendo en un circuito reservado, o en el del entrenamiento si es fijo;
+- deja las versiones anteriores como fantasmas;
+- dibuja al lado la curva de recompensa.
+
+Cerrar el visor no afecta al entrenamiento.
+
+`configs/demo_live.yaml` es la configuración para enseñar en directo cómo aprende desde cero. Los resultados de cada entrenamiento se anotan en [docs/experimentos.md](docs/experimentos.md).
+
+Para elegir el tipo de VecEnv, el número de entornos y los hilos de PyTorch más rápidos en tu equipo:
+
+```sh
+uv run python scripts/benchmark_train.py
+```
+
 ## Comandos
 
 | Qué | Comando |
