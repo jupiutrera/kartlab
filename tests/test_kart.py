@@ -41,9 +41,15 @@ def test_partial_throttle_settles_at_a_lower_speed():
 
 
 def test_coasting_slows_to_a_full_stop_without_reversing():
-    speeds = drive(moving(20.0), 0.0, 0.0, 15.0)
+    speeds = drive(moving(20.0), 0.0, 0.0, 25.0)
     assert speeds[-1] == 0.0
     assert min(speeds) >= 0.0
+    assert speeds[round(1.0 / DT)] == pytest.approx(20.0 - 1.8, abs=0.3)  # ~2 m/s² at speed
+
+
+def test_a_light_throttle_moves_the_kart_from_rest():
+    speeds = drive(KartState(0.0, 0.0, 0.0), 0.0, 0.1, 2.0)
+    assert speeds[-1] > 1.0
 
 
 def test_braking_stops_quickly_then_reverses_slowly():
