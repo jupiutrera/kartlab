@@ -53,6 +53,31 @@ Para ver de un vistazo cómo salen los circuitos generados:
 uv run python scripts/track_gallery.py --showcase --count 8 --out galeria.png
 ```
 
+## Entorno de aprendizaje por refuerzo
+
+`KartEnv` ([src/kartlab/env/kart_env.py](src/kartlab/env/kart_env.py)) es un entorno Gymnasium registrado como `kartlab/Kart-v0`:
+
+- **Observación**: 11 rayos de distancia a los bordes de la pista en un abanico frontal de 180°, velocidad, ángulo respecto a la dirección de la pista (seno y coseno) y acción anterior.
+- **Acción**: dirección y acelerador/freno, continuos en [-1, 1]. El agente decide cada 4 pasos de física (unos 15 Hz).
+- **Recompensa**: avance neto a lo largo de la línea central (negativo hacia atrás), bonus por vuelta, penalización pequeña por volantazos y penalización con fin de episodio al salirse. La velocidad no se premia por sí misma.
+- **Fin de episodio**: al salirse, si no progresa en 4 s y por límite de tiempo.
+- **Circuitos**: uno aleatorio nuevo y una salida aleatoria en cada episodio, o un circuito fijo (`track="harbor"`). Los de evaluación nunca salen al entrenar.
+
+Todos los parámetros están en `EnvConfig`.
+
+```python
+from kartlab.env.kart_env import KartEnv
+
+env = KartEnv(track="harbor", terminate_off_track=False)
+obs, info = env.reset(seed=0)
+```
+
+Para medir los pasos por segundo (un entorno, y `DummyVecEnv` frente a `SubprocVecEnv` con 1, 4, 6 y 8):
+
+```sh
+uv run python scripts/benchmark_env.py
+```
+
 ## Comandos
 
 | Qué | Comando |
@@ -87,8 +112,8 @@ tests/
 | Fase | Contenido | Estado |
 | --- | --- | --- |
 | 0 | Esqueleto del repo | Hecha |
-| 1 | Simulación 2D y control manual | En revisión |
-| 2 | Entorno Gymnasium | Pendiente |
+| 1 | Simulación 2D y control manual | Hecha |
+| 2 | Entorno Gymnasium | En revisión |
 | 3 | Entrenamiento | Pendiente |
 | 4 | Render pseudo-3D y dirección de arte | Pendiente |
 | 5 | Herramientas de exhibición | Pendiente |

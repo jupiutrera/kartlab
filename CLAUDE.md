@@ -16,6 +16,7 @@ uv run pre-commit run --all-files    # todos los hooks
 uv add <paquete>                     # dependencia (uv add --dev para desarrollo)
 uv run python scripts/drive.py       # conducir a mano (vista cenital)
 uv run python scripts/track_gallery.py --showcase --out galeria.png
+uv run python scripts/benchmark_env.py   # pasos/s: 1 entorno y DummyVecEnv/SubprocVecEnv
 ```
 
 Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames N --screenshot f.png`.
@@ -42,6 +43,7 @@ Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames
 - Convenciones de la simulación: metros, `y` hacia arriba, rumbos en radianes en sentido antihorario, desplazamiento lateral positivo a la izquierda, `steer > 0` gira a la izquierda. La muestra 0 de cada circuito es la línea de meta.
 - El progreso es la distancia neta a lo largo de la línea central (`sim/progress.py`): ir hacia atrás resta y una vuelta solo cuenta una vez.
 - Las semillas de evaluación (`sim/tracksets.py`) están fuera del rango de entrenamiento; nunca entrenes con ellas.
+- Entorno: `env/kart_env.py` (`KartEnv`, `EnvConfig`). Cualquier cambio de la recompensa necesita su test en `tests/test_env.py` (ir y volver sobre la meta y dar vueltas en círculo nunca deben sumar).
 
 ## Nada de GPU (no negociable)
 
@@ -57,6 +59,7 @@ Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames
 - Ficheros de texto siempre con `encoding="utf-8"` explícito (ruff `PLW1514` lo vigila).
 - El visor declara el proceso DPI-aware antes de crear la ventana.
 - Los mensajes de commit con tildes se pasan por Bash con heredoc: PowerShell 5.1 los estropea.
+- `Path.write_text` convierte `\n` en CRLF en Windows: usa `newline="\n"` al reescribir ficheros del repo.
 
 ## Código
 
