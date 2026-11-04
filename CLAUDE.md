@@ -14,7 +14,11 @@ uv run ruff check --fix              # lint
 uv run ruff format                   # formato
 uv run pre-commit run --all-files    # todos los hooks
 uv add <paquete>                     # dependencia (uv add --dev para desarrollo)
+uv run python scripts/drive.py       # conducir a mano (vista cenital)
+uv run python scripts/track_gallery.py --showcase --out galeria.png
 ```
+
+Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames N --screenshot f.png`.
 
 ## Estructura
 
@@ -35,13 +39,16 @@ uv add <paquete>                     # dependencia (uv add --dev para desarrollo
 - `sim`, `env`, `train` y `common` nunca importan `render`, `show` ni pygame. Lo comprueba `tests/test_import_boundaries.py`.
 - El render nunca se ejecuta durante el entrenamiento.
 - Paso de física fijo de 1/60 s; el agente decide cada 4 pasos y su acción se mantiene entre medias.
+- Convenciones de la simulación: metros, `y` hacia arriba, rumbos en radianes en sentido antihorario, desplazamiento lateral positivo a la izquierda, `steer > 0` gira a la izquierda. La muestra 0 de cada circuito es la línea de meta.
+- El progreso es la distancia neta a lo largo de la línea central (`sim/progress.py`): ir hacia atrás resta y una vuelta solo cuenta una vez.
+- Las semillas de evaluación (`sim/tracksets.py`) están fuera del rango de entrenamiento; nunca entrenes con ellas.
 
 ## Nada de GPU (no negociable)
 
 - Sin CUDA, OpenGL, shaders ni librerías que los necesiten. Todo el cálculo y el dibujo en CPU.
 - PyTorch solo CPU desde el índice `pytorch-cpu` de `pyproject.toml` (`[tool.uv.sources]`). No quites esa configuración. Lo comprueba `tests/test_cpu_only.py`.
 - pygame-ce solo con superficies software: nada de `pygame.OPENGL` ni de `pygame._sdl2.video.Renderer`.
-- Render: precalcular todo lo posible, arrays preasignados y ningún bucle de Python por píxel. numba solo si numpy no basta.
+- Render: precalcular todo lo posible, arrays preasignados y ningún bucle de Python por píxel. numba solo si numpy no basta. En Windows, crear un array temporal de ~1,6 MB cuesta ~1,7 ms (fallos de página) frente a ~0,26 ms operando con `out=` sobre uno preasignado.
 - Entrenamiento: red MLP pequeña, hilos de PyTorch limitados y prioridad baja del proceso y sus subprocesos.
 
 ## Windows

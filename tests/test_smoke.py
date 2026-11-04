@@ -1,7 +1,7 @@
 """Fast end-to-end check that the whole stack is installed and usable (run in CI).
 
-Grows with each phase: check_env (phase 2), a few hundred PPO steps (phase 3)
-and one frame rendered without a window (phase 4).
+Grows with each phase: manual driving without a window (phase 1), check_env
+(phase 2), a few hundred PPO steps (phase 3) and one pseudo-3D frame (phase 4).
 """
 
 import importlib
@@ -52,3 +52,31 @@ def test_pygame_software_surface_shares_memory_with_numpy():
     pixels = pygame.surfarray.pixels3d(surface)
     assert pixels.shape == (320, 180, 3)
     assert np.all(pixels[0, 0] == (10, 20, 30))
+
+
+def test_drive_app_runs_without_a_window_and_saves_a_screenshot(tmp_path):
+    from kartlab.show.drive import main
+
+    out = tmp_path / "drive.png"
+    main(
+        [
+            "--track",
+            "canyon",
+            "--autopilot",
+            "--scale",
+            "2",
+            "--frames",
+            "90",
+            "--screenshot",
+            str(out),
+        ]
+    )
+    assert out.stat().st_size > 0
+
+
+def test_track_gallery_writes_a_png(tmp_path):
+    from kartlab.show.gallery import main
+
+    out = tmp_path / "gallery.png"
+    main(["--count", "2", "--showcase", "--out", str(out)])
+    assert out.stat().st_size > 0
