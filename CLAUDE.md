@@ -17,6 +17,10 @@ uv add <paquete>                     # dependencia (uv add --dev para desarrollo
 uv run python scripts/drive.py       # conducir a mano (vista cenital)
 uv run python scripts/track_gallery.py --showcase --out galeria.png
 uv run python scripts/benchmark_env.py   # pasos/s: 1 entorno y DummyVecEnv/SubprocVecEnv
+uv run python scripts/benchmark_train.py # pasos/s entrenando con PPO
+uv run python scripts/train.py configs/fixed_track.yaml   # entrenar (runs/<fecha>_<nombre>/)
+uv run python scripts/live.py            # visor en directo del último run
+uv run python scripts/evaluate.py --tracks 20   # 3 vueltas en los circuitos reservados
 ```
 
 Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames N --screenshot f.png`.

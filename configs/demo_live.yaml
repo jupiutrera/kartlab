@@ -1,0 +1,25 @@
+# Demo en directo: entrenar desde cero en un circuito fijo y sencillo mientras el visor
+# (scripts/live.py) muestra cada versión nueva. Checkpoints frecuentes para que se vea
+# la mejora casi en tiempo real.
+name: demo-live
+seed: 0
+total_steps: 400000
+
+n_envs: 8
+vec_env: subproc
+torch_threads: 1
+low_priority: true
+
+env:
+  track: plateau
+
+ppo:
+  n_steps: 512
+  batch_size: 1024
+  n_epochs: 10
+  learning_rate: 0.0003
+
+checkpoint_every: 10000
+eval_every: 50000
+eval_tracks: [plateau]
+eval_laps: 3

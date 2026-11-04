@@ -1,0 +1,25 @@
+# Fase 3, paso 1: completar vueltas en un circuito fijo y sencillo.
+# Meseta es el escaparate más ancho (15 m) y fluido. La evaluación incluye 5 circuitos
+# reservados para ver cuánto generaliza (se espera poco: solo ve un circuito).
+name: fixed-track
+seed: 0
+total_steps: 500000
+
+# benchmark_train.py en el portátil objetivo: SubprocVecEnv x8 con 1 hilo es lo más rápido.
+n_envs: 8
+vec_env: subproc
+torch_threads: 1
+
+env:
+  track: plateau
+
+ppo:
+  n_steps: 512
+  batch_size: 1024
+  n_epochs: 10
+  learning_rate: 0.0003
+
+checkpoint_every: 20000
+eval_every: 50000
+eval_tracks: [plateau, "eval:1", "eval:2", "eval:3", "eval:4", "eval:5"]
+eval_laps: 3

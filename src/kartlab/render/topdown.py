@@ -172,12 +172,19 @@ class TopDownView:
             ox, oy = (width - map_w) / 2, (height - map_h) / 2
         target.fill(GRASS)
         target.blit(tmap.surface, (round(ox), round(oy)))
+        self._last = (tmap, ox, oy)
 
         if len(trail) > 1:
             pts = [(px + ox, py + oy) for px, py in (tmap.to_px(x, y) for x, y in trail)]
             pygame.draw.aalines(target, TRAIL_COLOR, False, pts)
         for kart, color in karts:
             self._draw_kart(target, tmap, kart, color, (ox, oy))
+
+    def to_screen(self, x: float, y: float) -> tuple[float, float]:
+        """Pixel of a world point in the last frame drawn (for labels over karts)."""
+        tmap, ox, oy = self._last
+        px, py = tmap.to_px(x, y)
+        return px + ox, py + oy
 
     @staticmethod
     def _draw_kart(target, tmap: TrackMap, kart: KartState, color, offset) -> None:

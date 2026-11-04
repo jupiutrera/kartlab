@@ -22,7 +22,10 @@ class KartParams:
     brake: float = 22.0  # full-brake deceleration (m/s²)
     reverse_accel: float = 6.0  # (m/s²)
     max_reverse_speed: float = 5.0  # (m/s)
-    rolling_drag: float = 2.0  # constant deceleration on asphalt (m/s²)
+    # Asphalt drag: a small constant part plus one proportional to speed. Even a light
+    # throttle moves the kart from rest, while coasting at speed still slows ~2 m/s².
+    rolling_drag: float = 0.5  # constant deceleration on asphalt (m/s²)
+    linear_drag: float = 0.065  # extra deceleration per m/s of speed on asphalt (1/s)
     grass_max_speed: float = 9.0  # engine limit on grass (m/s)
     grass_drag: float = 5.0  # constant deceleration on grass (m/s²)
     overspeed_drag: float = 15.0  # extra deceleration above the surface's limit (m/s²)
@@ -55,8 +58,14 @@ class KartState:
 
 
 def cruise_speed(params: KartParams) -> float:
-    """Speed where full throttle balances rolling drag on asphalt (m/s)."""
-    return params.max_speed * math.sqrt(max(1.0 - params.rolling_drag / params.accel, 0.0))
+    """Speed where full throttle balances the drag on asphalt (m/s).
+
+    Solves accel * (1 - (v / max_speed)^2) = rolling_drag + linear_drag * v.
+    """
+    a = params.accel / params.max_speed**2
+    b = params.linear_drag
+    c = params.rolling_drag - params.accel
+    return (-b + math.sqrt(b * b - 4.0 * a * c)) / (2.0 * a)
 
 
 def max_path_curvature(speed: float, params: KartParams) -> float:
@@ -106,7 +115,7 @@ def step_kart(
     v += accel * dt
 
     # Drag always opposes motion and never reverses it.
-    drag = params.grass_drag if on_grass else params.rolling_drag
+    drag = params.grass_drag if on_grass else params.rolling_drag + params.linear_drag * abs(v)
     if abs(v) > top:
         drag += params.overspeed_drag
     v = math.copysign(max(abs(v) - drag * dt, 0.0), v)

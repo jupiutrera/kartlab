@@ -285,6 +285,21 @@ def test_off_track_tolerance_is_configurable():
     assert abs(strict.racer.position.lateral) < abs(lenient.racer.position.lateral)
 
 
+def test_frame_by_frame_driving_matches_full_steps():
+    actions = [np.array([0.3, 1.0], np.float32), np.array([-0.5, 0.6], np.float32)] * 10
+    full = fixed_env(**NO_LIMITS)
+    full_obs = [full.step(a)[0] for a in actions]
+
+    frames = fixed_env(**NO_LIMITS)
+    frame_obs = []
+    for action in actions:
+        steer, throttle = frames.hold_action(action)
+        for _ in range(frames.config.action_repeat):
+            frames.racer.step(steer, throttle)
+        frame_obs.append(frames.observe())
+    np.testing.assert_allclose(np.array(frame_obs), np.array(full_obs), atol=1e-6)
+
+
 def test_config_validation():
     with pytest.raises(ValueError):
         EnvConfig(action_repeat=0)
