@@ -26,10 +26,13 @@ uv run pre-commit install
 ## Conducir a mano
 
 ```sh
-uv run python scripts/drive.py                    # circuito escaparate «Puerto»
+uv run python scripts/drive.py                    # circuito escaparate «Puerto», vista 3D
 uv run python scripts/drive.py --track canyon     # harbor, canyon, plateau, eval:1-20 o una semilla
+uv run python scripts/drive.py --variant night    # day, sunset o night
 uv run python scripts/drive.py --help             # todas las opciones
 ```
+
+![Vista de persecución](docs/img/fase-4-persecucion.png)
 
 | Tecla | Acción |
 | --- | --- |
@@ -38,14 +41,37 @@ uv run python scripts/drive.py --help             # todas las opciones
 | 1, 2, 3 | Circuitos escaparate: Puerto, Cañón y Meseta |
 | E | Siguiente circuito de evaluación |
 | N | Circuito aleatorio nuevo |
-| C | Cámara de seguimiento o circuito completo |
+| C | Cámara: persecución, retransmisión o cenital |
+| V | Día, atardecer o noche |
+| G | Mostrar los sensores (rayos) sobre el suelo |
+| T | Vista cenital de depuración |
 | Tab | Piloto automático de referencia |
 | P | Pausa |
+| F3 | Diagnóstico: fps y milisegundos de cada parte del dibujo |
+| L | Modo ligero (30 fps, suelo a media resolución vertical, menos efectos) |
 | F11 | Pantalla completa |
 | H | Mostrar u ocultar la ayuda |
 | Esc | Salir |
 
-La ventana usa la mayor escala entera de 320×180 que cabe en la pantalla: ×4 (1280×720) en una de 1366×768 y ×5 (1600×900) en una de 1920×1080.
+La ventana usa la mayor escala entera de 320×180 que cabe en la pantalla: ×4 (1280×720) en una de 1366×768 y ×5 (1600×900) en una de 1920×1080. A pantalla completa en 1080p, ×6 encaja exacto.
+
+### Cómo se dibuja
+
+- **El mundo** se dibuja a 320×180 con la paleta Resurrect 64 y se escala por un factor entero, sin suavizado. Texto, paneles y minimapa van encima, a la resolución de la ventana.
+- **El suelo** está en perspectiva, calculado por filas con numpy.
+  - La textura sale del circuito: asfalto, pianos, hierba segada y meta a cuadros.
+  - Tiene la iluminación y las sombras pintadas al generarla, y mipmaps.
+  - Lleva niebla tramada hacia el horizonte.
+- **El cielo** tiene degradado tramado, y montañas, colinas y nubes en parallax.
+- **Los karts** son modelos de vóxeles dibujados por código con *sprite stacking* en 32 ángulos y al tamaño exacto en que se ven. El decorado también se dibuja por código.
+- **Efectos:** sombras, polvo, humo, marcas de derrape que se quedan y halos de los fantasmas.
+- **Día, atardecer y noche** son reasignaciones de la misma paleta, sin coste por fotograma.
+
+Para medir el tiempo de cada parte en tu equipo:
+
+```sh
+uv run python scripts/benchmark_render.py
+```
 
 Para ver de un vistazo cómo salen los circuitos generados:
 
@@ -99,7 +125,8 @@ Cada entrenamiento crea `runs/<fecha>_<hora>_<nombre>/` con:
 El entrenamiento va con prioridad baja (también sus subprocesos), así que el visor puede quedarse abierto al lado:
 - muestra la última versión conduciendo en un circuito reservado, o en el del entrenamiento si es fijo;
 - deja las versiones anteriores como fantasmas;
-- dibuja al lado la curva de recompensa.
+- dibuja la curva de recompensa;
+- usa la vista 3D con cámara de retransmisión, y la T cambia a la vista cenital.
 
 Cerrar el visor no afecta al entrenamiento.
 
@@ -147,8 +174,8 @@ tests/
 | 0 | Esqueleto del repo | Hecha |
 | 1 | Simulación 2D y control manual | Hecha |
 | 2 | Entorno Gymnasium | Hecha |
-| 3 | Entrenamiento | En revisión |
-| 4 | Render pseudo-3D y dirección de arte | Pendiente |
+| 3 | Entrenamiento | Hecha |
+| 4 | Render pseudo-3D y dirección de arte | En revisión |
 | 5 | Herramientas de exhibición | Pendiente |
 | 6 | Editor de circuitos (opcional) | Pendiente |
 
