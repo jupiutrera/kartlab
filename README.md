@@ -23,6 +23,36 @@ uv sync
 uv run pre-commit install
 ```
 
+## Conducir a mano
+
+```sh
+uv run python scripts/drive.py                    # circuito escaparate «Puerto»
+uv run python scripts/drive.py --track canyon     # harbor, canyon, plateau, eval:1-20 o una semilla
+uv run python scripts/drive.py --help             # todas las opciones
+```
+
+| Tecla | Acción |
+| --- | --- |
+| Flechas o WASD | Girar, acelerar y frenar (con el kart parado, marcha atrás) |
+| R | Volver a la línea de salida |
+| 1, 2, 3 | Circuitos escaparate: Puerto, Cañón y Meseta |
+| E | Siguiente circuito de evaluación |
+| N | Circuito aleatorio nuevo |
+| C | Cámara de seguimiento o circuito completo |
+| Tab | Piloto automático de referencia |
+| P | Pausa |
+| F11 | Pantalla completa |
+| H | Mostrar u ocultar la ayuda |
+| Esc | Salir |
+
+La ventana usa la mayor escala entera de 320×180 que cabe en la pantalla: ×4 (1280×720) en una de 1366×768 y ×5 (1600×900) en una de 1920×1080.
+
+Para ver de un vistazo cómo salen los circuitos generados:
+
+```sh
+uv run python scripts/track_gallery.py --showcase --count 8 --out galeria.png
+```
+
 ## Comandos
 
 | Qué | Comando |
@@ -56,8 +86,8 @@ tests/
 
 | Fase | Contenido | Estado |
 | --- | --- | --- |
-| 0 | Esqueleto del repo | En curso |
-| 1 | Simulación 2D y control manual | Pendiente |
+| 0 | Esqueleto del repo | Hecha |
+| 1 | Simulación 2D y control manual | En revisión |
 | 2 | Entorno Gymnasium | Pendiente |
 | 3 | Entrenamiento | Pendiente |
 | 4 | Render pseudo-3D y dirección de arte | Pendiente |
