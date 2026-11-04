@@ -160,6 +160,22 @@ class KartEnv(gym.Env):
         truncated = not terminated and racer.time >= cfg.max_seconds - 1e-9
         return self._observe(), float(reward), terminated, truncated, self._info(off_track, stuck)
 
+    # -- frame-by-frame driving (viewer and videos) -------------------------------------
+
+    def observe(self) -> np.ndarray:
+        """The observation the agent would get now (used to act between full steps)."""
+        return self._observe()
+
+    def hold_action(self, action: np.ndarray) -> tuple[float, float]:
+        """Record ``action`` as the one being held, as ``step`` does, and return it clipped.
+
+        The caller then advances ``racer`` one physics step at a time, which renders
+        every 1/60 s frame while keeping the agent's 15 Hz decisions.
+        """
+        steer, throttle = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0).tolist()
+        self._prev_action = np.array([steer, throttle])
+        return steer, throttle
+
     # -- curriculum ------------------------------------------------------------------
 
     def set_track_ranges(
