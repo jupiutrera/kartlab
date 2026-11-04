@@ -51,6 +51,9 @@ def build_model(config: TrainConfig, vec_env, tensorboard: Path | None):
     ppo = dataclasses.asdict(config.ppo)
     arch = list(ppo.pop("net_arch"))
     log_std_init = ppo.pop("log_std_init")
+    if ppo.pop("lr_schedule") == "linear":
+        initial = ppo["learning_rate"]
+        ppo["learning_rate"] = lambda remaining: initial * remaining  # 1 -> 0 over the run
     return PPO(
         "MlpPolicy",
         vec_env,

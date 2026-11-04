@@ -57,6 +57,7 @@ def test_config_round_trips_through_a_plain_dict():
         {"name": "x", "env": {"rays": 9}},
         {"name": "x", "curriculum": [{"from_steps": 0, "width": [1, 2]}]},
         {"name": "x", "vec_env": "threads"},
+        {"name": "x", "ppo": {"lr_schedule": "cosine"}},
     ],
 )
 def test_unknown_or_invalid_options_are_rejected(data):
@@ -166,3 +167,15 @@ def test_best_model_ties_are_broken_by_faster_laps():
         return EvalResult((track,))
 
     assert result(38.0).score() > result(40.0).score()
+
+
+def test_linear_learning_rate_decays_to_zero():
+    from stable_baselines3.common.vec_env import DummyVecEnv
+
+    from kartlab.env.kart_env import KartEnv
+    from kartlab.train.train import build_model
+
+    config = tiny_config(ppo=PPOParams(n_steps=64, batch_size=64, lr_schedule="linear"))
+    model = build_model(config, DummyVecEnv([KartEnv]), None)
+    assert model.lr_schedule(1.0) == pytest.approx(3e-4)
+    assert model.lr_schedule(0.25) == pytest.approx(0.75e-4)

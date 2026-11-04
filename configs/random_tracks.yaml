@@ -2,7 +2,7 @@
 # longitud, anchura y curvatura variadas alrededor de las de evaluación (900 m, 12 m, 0,5).
 name: random-tracks
 seed: 0
-total_steps: 3000000
+total_steps: 1500000
 
 n_envs: 8
 vec_env: subproc
@@ -12,12 +12,15 @@ env:
   track_length: [700, 1200]
   track_width: [10, 14]
   track_curviness: [0.2, 0.8]
+  # Salidas con más desvío (±34°) para aprender a recuperarse de posiciones raras.
+  start_heading: 0.6
 
 ppo:
   n_steps: 512
   batch_size: 1024
   n_epochs: 10
   learning_rate: 0.0003
+  lr_schedule: linear
 
 checkpoint_every: 20000
 eval_every: 100000

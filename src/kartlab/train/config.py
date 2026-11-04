@@ -17,6 +17,7 @@ DEFAULT_MILESTONES = (0, 10_000, 30_000, 100_000, 300_000, 1_000_000, 3_000_000,
 @dataclass(frozen=True)
 class PPOParams:
     learning_rate: float = 3e-4
+    lr_schedule: str = "constant"  # "constant" or "linear" (decays to 0 at the end)
     n_steps: int = 512  # per env and rollout
     batch_size: int = 256
     n_epochs: int = 10
@@ -28,6 +29,10 @@ class PPOParams:
     max_grad_norm: float = 0.5
     net_arch: tuple[int, ...] = (64, 64)
     log_std_init: float = -0.5
+
+    def __post_init__(self) -> None:
+        if self.lr_schedule not in ("constant", "linear"):
+            raise ValueError("lr_schedule must be 'constant' or 'linear'")
 
 
 @dataclass(frozen=True)
