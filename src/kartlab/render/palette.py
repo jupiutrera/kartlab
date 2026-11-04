@@ -66,12 +66,13 @@ KART_RAMPS: tuple[tuple[int, int, int], ...] = (
     (17, 18, 28),  # yellow
 )
 
-# Per variant: colour tint applied to the world, fog colour and sky gradient (top to
-# horizon), all as palette indices.
-TINTS = {
-    "day": (1.0, 1.0, 1.0),
-    "sunset": (1.08, 0.78, 0.62),
-    "night": (0.38, 0.42, 0.62),
+# Per variant: lighting of the world as (multiplier, light colour, light amount). The
+# light colour shifts hues too (greens turn mossy at sunset), which a plain multiplier
+# cannot do with 64 colours. Then the fog colour and the sky gradient (top to horizon).
+LIGHTING = {
+    "day": ((1.0, 1.0, 1.0), (0, 0, 0), 0.0),
+    "sunset": ((0.80, 0.70, 0.62), (250, 130, 70), 0.22),
+    "night": ((0.35, 0.40, 0.60), (50, 51, 83), 0.20),
 }
 FOG_COLOR = {"day": Ink.SKY_LOW, "sunset": 62, "night": Ink.NAVY}
 SKY_GRADIENT = {
@@ -167,7 +168,8 @@ def _remap(palette: Palette, variant: str) -> np.ndarray:
     def build():
         if variant == "day":
             return np.arange(len(palette), dtype=np.uint8)
-        tinted = np.clip(palette.rgb * np.array(TINTS[variant]), 0, 255)
+        multiplier, light, amount = LIGHTING[variant]
+        tinted = np.clip(palette.rgb * np.array(multiplier) + np.array(light) * amount, 0, 255)
         return palette.nearest(tinted)
 
     return _cached(palette, "remap", variant, build)
