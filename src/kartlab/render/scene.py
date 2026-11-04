@@ -236,6 +236,7 @@ class WorldRenderer:
         return timings
 
     def _draw_sprites(self, pose: CameraPose, visuals: list[KartVisual]) -> None:
+        self.sprites.begin_frame()
         proj, lens = self.projection, self.lens
         focal = proj.focal
         width, height = self.size

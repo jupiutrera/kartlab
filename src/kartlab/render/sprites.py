@@ -11,6 +11,7 @@ turned into colour-keyed surfaces when first needed.
 from __future__ import annotations
 
 import math
+import time
 from functools import lru_cache
 
 import numpy as np
@@ -25,6 +26,7 @@ ANGLES = 32  # kart views around the vertical axis
 ELEVATIONS = (np.radians([12, 22, 35, 55, 90])).tolist()  # view elevation buckets
 SCALE_MIN, SCALE_RATIO, SCALE_STEPS = 0.06, 1.12, 36  # pixels per voxel buckets
 COLORKEY = (255, 0, 255)
+PROP_RATIO = 1.08  # scenery sizes come in geometric steps of 8 %
 
 # Kart colour slots, replaced by a ramp (dark, main, light) for each kart.
 BODY_DARK, BODY, BODY_LIGHT = 250, 251, 252
@@ -101,46 +103,58 @@ def elevation_bucket(elevation: float) -> int:
 def render_stack(voxels: np.ndarray, angle: float, elevation: float, scale: float, shade):
     """Draw a voxel model seen at ``angle`` (0: from behind) and ``elevation`` with
     ``scale`` pixels per voxel. Returns (indices, anchor) where anchor is the pixel of
-    the model's ground centre."""
+    the model's ground centre.
+
+    Each layer is projected once at its top surface; its side faces are that image
+    extruded downwards pixel by pixel (darker). A depth buffer keeps nearer voxels in
+    front. Each layer only touches the band of rows it can cover.
+    """
     nz, nx, ny = voxels.shape
-    sin_e, cos_e = math.sin(elevation), math.cos(elevation)
+    sin_e, cos_e = math.sin(elevation), max(math.cos(elevation), 0.0)
     radius = math.hypot(nx, ny) / 2
     width = max(int(math.ceil(2 * radius * scale)) + 2, 1)
     height = max(int(math.ceil((2 * radius * sin_e + nz * cos_e) * scale)) + 2, 1)
     ax, ay = width / 2, height - 1 - radius * sin_e * scale
     image = np.full((height, width), TRANSPARENT, dtype=np.uint8)
     depth = np.full((height, width), np.inf)
-    py, px = np.mgrid[0:height, 0:width]
-    sx = (px + 0.5 - ax) / scale
+    sx = ((np.arange(width) + 0.5 - ax) / scale)[None, :]
     cos_a, sin_a = math.cos(angle), math.sin(angle)
-    thickness = max(int(math.ceil(cos_e * scale)), 1)
+    column = cos_e * scale  # screen height of one layer (px)
+    extrude = max(int(math.ceil(column)), 1)
     filled = voxels != TRANSPARENT
     top = filled & np.concatenate([~filled[1:], np.ones_like(filled[:1])])  # nothing above
     for z in range(nz):
-        layer = voxels[z]
         if not filled[z].any():
             continue
-        for k in range(thickness):
-            lift = (z + k / thickness) * cos_e
-            sy = (py + 0.5 - ay) / scale + lift
-            b = -sy / max(sin_e, 1e-6)
-            fx = -sx * sin_a + b * cos_a  # kart frame: forward
-            fy = -sx * cos_a - b * sin_a  # kart frame: left
-            ix = np.floor(fx + nx / 2).astype(int)
-            iy = np.floor(fy + ny / 2).astype(int)
-            ok = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny)
-            colour = np.full(image.shape, TRANSPARENT, dtype=np.uint8)
-            colour[ok] = layer[ix[ok], iy[ok]]
-            hit = colour != TRANSPARENT
-            d = b * cos_e - (z + k / thickness) * sin_e
-            closer = hit & (d < depth)
-            is_top = np.zeros(image.shape, dtype=bool)
-            if k == 0:
-                is_top[ok] = top[z][ix[ok], iy[ok]]
-            side = hit & ~is_top  # side faces are darker; top faces keep their colour
-            colour[side] = shade[np.minimum(colour[side], 63)]
-            image[closer] = colour[closer]
-            depth[closer] = d[closer]
+        centre = ay - (z + 1) * column
+        r0 = max(int(math.floor(centre - radius * sin_e * scale)) - 1, 0)
+        r1 = min(int(math.ceil(centre + radius * sin_e * scale)) + 2, height)
+        if r0 >= r1:
+            continue
+        rows = np.arange(r0, r1)[:, None]
+        sy = (rows + 0.5 - ay) / scale + (z + 1) * cos_e
+        b = -sy / max(sin_e, 1e-6)
+        ix = np.floor(-sx * sin_a + b * cos_a + nx / 2).astype(int)
+        iy = np.floor(-sx * cos_a - b * sin_a + ny / 2).astype(int)
+        ok = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny)
+        colour = np.full(ok.shape, TRANSPARENT, dtype=np.uint8)
+        colour[ok] = voxels[z][ix[ok], iy[ok]]
+        is_top = np.zeros(ok.shape, dtype=bool)
+        is_top[ok] = top[z][ix[ok], iy[ok]]
+        hit = colour != TRANSPARENT
+        side = np.where(hit, shade[np.minimum(colour, 63)], TRANSPARENT)
+        d = np.broadcast_to(b * cos_e - (z + 1) * sin_e, ok.shape)
+        step = sin_e / max(scale * max(cos_e, 1e-6), 1e-6)  # depth gained per pixel lower
+        for k in range(extrude):  # k pixels below the top surface
+            lo, hi = r0 + k, min(r1 + k, height)
+            n = hi - lo
+            if n <= 0:
+                break
+            c = np.where(is_top[:n], colour[:n], side[:n]) if k == 0 else side[:n]
+            dk = d[:n] + k * step
+            closer = hit[:n] & (dk < depth[lo:hi])
+            image[lo:hi][closer] = c[closer]
+            depth[lo:hi][closer] = dk[closer]
     return image, (ax, ay)
 
 
@@ -155,12 +169,20 @@ def to_surface(indices: np.ndarray, palette_rgb: np.ndarray) -> pygame.Surface:
 
 
 class SpriteBank:
-    """Lazy cache of every sprite surface, per palette variant."""
+    """Lazy cache of every sprite surface, per palette variant.
+
+    Drawing a new kart view costs a few milliseconds, so each frame may create only a
+    few (``begin_frame`` resets the budget); past it, the nearest size already cached
+    stands in for a frame or two. That keeps frame times steady (no hitches).
+    """
+
+    BUDGET_MS = 3.0  # time per frame allowed for drawing new sprites
 
     def __init__(self, palette: Palette, variant: str = "day") -> None:
         self.palette = palette
-        self.set_variant(variant)
         self._shade = _darker(palette)
+        self.set_variant(variant)
+        self.begin_frame()
 
     def set_variant(self, variant: str) -> None:
         self.variant = variant
@@ -169,36 +191,72 @@ class SpriteBank:
         self._props: dict[tuple, tuple[pygame.Surface, tuple[float, float]]] = {}
         self._shadows: dict[int, pygame.Surface] = {}
 
+    def begin_frame(self) -> None:
+        self._spent = 0.0
+
+    def _can_draw(self) -> bool:
+        return self._spent < self.BUDGET_MS
+
+    @staticmethod
+    def _nearest_cached(cache: dict, key: tuple) -> tuple | None:
+        for d in (1, -1, 2, -2, 3, -3):
+            near = cache.get((*key[:-1], key[-1] + d))
+            if near is not None:
+                return near
+        return None
+
     def kart(self, ramp: int, angle: float, elevation: float, pixels_per_voxel: float):
         """(surface, anchor) of a kart seen at ``angle`` rad (0: from behind)."""
         a = int(round(angle / (2 * math.pi) * ANGLES)) % ANGLES
         key = (ramp, a, elevation_bucket(elevation), scale_bucket(pixels_per_voxel))
         cached = self._karts.get(key)
+        if cached is None and not self._can_draw():
+            cached = self._nearest_cached(self._karts, key)
+            for da in (1, -1):  # or the next view round, same size (11 degrees off)
+                if cached is None:
+                    cached = self._karts.get((ramp, (a + da) % ANGLES, *key[2:]))
         if cached is None:
-            voxels = kart_voxels().copy()
-            dark, main, light = KART_RAMPS[ramp % len(KART_RAMPS)]
-            for slot, colour in ((BODY_DARK, dark), (BODY, main), (BODY_LIGHT, light)):
-                voxels[voxels == slot] = colour
-            image, anchor = render_stack(
-                voxels, a * 2 * math.pi / ANGLES, ELEVATIONS[key[2]], bucket_scale(key[3]),
-                self._shade,
-            )  # fmt: skip
-            image = np.where(image == TRANSPARENT, TRANSPARENT, self.remap[np.minimum(image, 63)])
-            cached = (to_surface(image.astype(np.uint8), self.palette.rgb), anchor)
+            start = time.perf_counter()
+            cached = self._render_kart(key)
+            self._spent += (time.perf_counter() - start) * 1000
             self._karts[key] = cached
         return cached
 
+    def _render_kart(self, key: tuple) -> tuple[pygame.Surface, tuple[float, float]]:
+        ramp, a, elevation, scale = key
+        voxels = kart_voxels().copy()
+        dark, main, light = KART_RAMPS[ramp % len(KART_RAMPS)]
+        for slot, colour in ((BODY_DARK, dark), (BODY, main), (BODY_LIGHT, light)):
+            voxels[voxels == slot] = colour
+        image, anchor = render_stack(
+            voxels, a * 2 * math.pi / ANGLES, ELEVATIONS[elevation], bucket_scale(scale),
+            self._shade,
+        )  # fmt: skip
+        image = np.where(image == TRANSPARENT, TRANSPARENT, self.remap[np.minimum(image, 63)])
+        return to_surface(image.astype(np.uint8), self.palette.rgb), anchor
+
+    def warm_up(self, ramp: int, elevation: float, pixels_per_voxel: float) -> None:
+        """Pre-render every view of a kart at one size (the usual chase-camera size)."""
+        for a in range(ANGLES):
+            key = (ramp, a, elevation_bucket(elevation), scale_bucket(pixels_per_voxel))
+            if key not in self._karts:
+                self._karts[key] = self._render_kart(key)
+
     def prop(self, kind: str, height_px: float, seed: int = 0):
-        """(surface, anchor) of a scenery item ``height_px`` pixels tall."""
-        h = int(min(max(round(height_px), 2), 160))
-        key = (kind, h, seed % 4)
+        """(surface, anchor) of a scenery item about ``height_px`` pixels tall."""
+        bucket = round(math.log(min(max(height_px, 2.0), 160.0) / 2.0) / math.log(PROP_RATIO))
+        key = (kind, seed % 4, bucket)
         cached = self._props.get(key)
+        if cached is None and not self._can_draw():
+            cached = self._nearest_cached(self._props, key)
         if cached is None:
-            image = PROPS[kind](h, seed % 4)
+            start = time.perf_counter()
+            image = PROPS[kind](int(round(2.0 * PROP_RATIO**bucket)), seed % 4)
             image = np.where(image == TRANSPARENT, TRANSPARENT, self.remap[np.minimum(image, 63)])
             anchor = (image.shape[1] / 2, image.shape[0] - 1)
             cached = (to_surface(image.astype(np.uint8), self.palette.rgb), anchor)
             self._props[key] = cached
+            self._spent += (time.perf_counter() - start) * 1000
         return cached
 
     def shadow(self, width_px: int) -> pygame.Surface:
@@ -230,13 +288,13 @@ def _pine(h: int, seed: int) -> np.ndarray:
     img, u, v = _canvas(h, 0.5)
     dither = BAYER4[(v * h).astype(int) % 4, (u * img.shape[1]).astype(int) % 4]
     img[(np.abs(u - 0.5) < 0.07) & (v > 0.8)] = Ink.BROWN_DARK
-    for k, (top, bottom, half) in enumerate(
-        ((0.0, 0.42, 0.28), (0.22, 0.65, 0.38), (0.45, 0.86, 0.48))
-    ):
+    for top, bottom, half in ((0.0, 0.42, 0.28), (0.22, 0.65, 0.38), (0.45, 0.86, 0.48)):
         inside = (v >= top) & (v <= bottom) & (np.abs(u - 0.5) <= (v - top) / (bottom - top) * half)
         lit = (u - 0.5) < -0.05 + 0.2 * (dither - 0.5)
         img[inside] = Ink.GRASS_DARK
-        img[inside & lit] = Ink.GRASS if k < 2 or seed % 2 else Ink.MOSS
+        img[inside & lit] = Ink.GRASS
+        edge = np.abs(u - 0.5) > (v - top) / (bottom - top) * half - 0.05
+        img[inside & lit & edge & (dither < 0.5)] = Ink.GRASS_LIGHT
     return img
 
 
@@ -252,7 +310,8 @@ def _round_tree(h: int, seed: int) -> np.ndarray:
         inside = d <= r
         img[inside] = Ink.GRASS_DARK
         img[inside & ((u - cx) + (v - cy) < -r * 0.3 + 0.15 * (dither - 0.5))] = Ink.GRASS
-        img[inside & ((u - cx) + (v - cy) < -r * 0.9)] = Ink.LEAF_LIGHT
+        spot = (u - cx) + (v - cy) < -r * 1.05
+        img[inside & spot & (dither < 0.6)] = Ink.GRASS_LIGHT
     return img
 
 
@@ -267,13 +326,17 @@ def _cone(h: int, seed: int) -> np.ndarray:
 
 
 def _tyres(h: int, seed: int) -> np.ndarray:
-    img, u, v = _canvas(h, 1.0)
-    rings = np.floor(v * 3) % 2 == 0
-    img[(np.abs(u - 0.5) < 0.45)] = Ink.BLACK
-    img[(np.abs(u - 0.5) < 0.45) & rings & (np.abs(u - 0.5) > 0.3)] = Ink.ASPHALT
-    img[(np.abs(u - 0.5) < 0.45) & (np.abs(u - 0.5) < 0.12)] = (
-        Ink.KERB_RED if seed % 2 else Ink.WHITE
-    )
+    """Three stacked tyres, painted in alternating red and white bands."""
+    img, u, v = _canvas(h, 0.9)
+    band = np.floor(v * 3)
+    within = v * 3 - band  # 0 at the top of each tyre, 1 at the bottom
+    rounded = np.abs(u - 0.5) < 0.46 - 0.06 * (2 * within - 1) ** 2
+    img[rounded] = Ink.BLACK
+    img[rounded & (within < 0.18)] = Ink.ASPHALT_LIGHT  # top highlight
+    paint = rounded & (within > 0.35) & (within < 0.7) & (np.abs(u - 0.5) < 0.3)
+    red = (band + seed) % 2 == 0
+    img[paint & red] = Ink.KERB_RED
+    img[paint & ~red] = Ink.WHITE
     return img
 
 
@@ -296,12 +359,14 @@ def _grandstand(h: int, seed: int) -> np.ndarray:
 
 
 def _banner(h: int, seed: int) -> np.ndarray:
-    img, u, v = _canvas(h, 0.6)
+    """A feather flag on a curved pole."""
+    img, u, v = _canvas(h, 0.4)
     colours = (Ink.KERB_RED, Ink.SKY, Ink.YELLOW, Ink.PURPLE)
-    img[(u < 0.12) & (v > 0.02)] = Ink.STONE_LIGHT
-    cloth = (u >= 0.12) & (v > 0.05) & (v < 0.55 - 0.15 * u)
+    img[(np.abs(u - 0.14) < 0.07) & (v > 0.02)] = Ink.STONE_LIGHT
+    cloth = (u > 0.2) & (v > 0.06) & (v < 0.78) & (u < 0.92 - 0.35 * ((v - 0.06) / 0.72) ** 2)
     img[cloth] = colours[seed % 4]
-    img[cloth & (np.floor(u * 6 + v * 4) % 2 == 0) & (v > 0.3)] = Ink.WHITE
+    img[cloth & (np.abs(v - 0.42) < 0.06)] = Ink.WHITE
+    img[cloth & (u > 0.75 - 0.35 * ((v - 0.06) / 0.72) ** 2)] = Ink.BLACK if seed % 2 else Ink.MIST
     return img
 
 
