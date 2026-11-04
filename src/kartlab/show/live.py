@@ -325,6 +325,24 @@ class LiveApp:
         self.current = driver
         self.notice = (f"Nueva versión: {version.label}", time.perf_counter())
 
+    def preload_ghosts(self) -> None:
+        """Start with earlier versions as ghosts, spaced on a log scale before the latest
+        (about 1/30, 1/10 and 1/3 of its steps), so the contrast shows from the start."""
+        latest = self.run_paths.read_latest()
+        older = [c for c in self.run_paths.list_checkpoints() if latest and c.steps < latest.steps]
+        if not older or self.max_ghosts == 0:
+            return
+        picks: list[Checkpoint] = []
+        for fraction in (1 / 30, 1 / 10, 1 / 3)[-self.max_ghosts :]:
+            target = latest.steps * fraction
+            best = min(older, key=lambda c: abs(math.log1p(c.steps) - math.log1p(target)))
+            if best not in picks:
+                picks.append(best)
+        for checkpoint in sorted(picks, key=lambda c: c.steps):
+            color = GHOST_COLORS[len(self.ghosts) % len(GHOST_COLORS)]
+            driver = PolicyDriver(load_version(checkpoint), self.track, self.env_config, color)
+            self.ghosts.append(driver)
+
     def _take_new_versions(self) -> None:
         while True:
             try:
@@ -405,11 +423,16 @@ class LiveApp:
             karts.append((self.current.racer.kart, self.current.color))
         self.view.draw(view_surface, karts, (0.0, 0.0), follow=False)
         drivers = [*self.ghosts, self.current] if self.current else []
-        for driver in drivers:
+        placed: list[pygame.Rect] = []
+        for driver in reversed(drivers):  # the current version keeps its spot
             kart = driver.racer.kart
             label = self.text.get(driver.version.label, driver.color)
             x, y = self.view.to_screen(kart.x, kart.y)
-            view_surface.blit(label, (x - label.get_width() / 2, y - 18 - label.get_height()))
+            rect = label.get_rect(midbottom=(round(x), round(y) - 18))
+            while rect.collidelist(placed) != -1:  # karts side by side: stack the labels
+                rect.move_ip(0, -rect.height)
+            placed.append(rect)
+            view_surface.blit(label, rect)
         self._draw_panel()
         self._draw_notice()
 
@@ -483,6 +506,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--ghosts", type=int, default=2, help="versiones anteriores (0-3)")
     parser.add_argument("--scale", type=int, help="escala entera sobre 320x180")
     parser.add_argument("--fullscreen", action="store_true")
+    parser.add_argument(
+        "--frames", type=int, help="sale tras N fotogramas, con un paso de física por fotograma"
+    )
+    parser.add_argument("--screenshot", type=Path, help="guarda el último fotograma en este PNG")
     args = parser.parse_args(argv)
 
     run = RunPaths(args.run) if args.run else latest_run()
@@ -490,8 +517,17 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit("No hay ningún run en runs/. Lanza antes scripts/train.py.")
     if not run.config.exists():
         raise SystemExit(f"{run.root} no tiene config.yaml")
-    app = LiveApp(run, args.track, max(0, min(args.ghosts, 3)), args.scale, args.fullscreen)
+    realtime = args.frames is None
+    app = LiveApp(
+        run, args.track, max(0, min(args.ghosts, 3)), args.scale, args.fullscreen, realtime
+    )
     try:
-        app.run()
+        app.preload_ghosts()
+        if not realtime:
+            app.loader.poll_once()  # no background thread: load the latest version now
+        app.run(max_frames=args.frames)
+        if args.screenshot:
+            args.screenshot.parent.mkdir(parents=True, exist_ok=True)
+            pygame.image.save(app.screen, str(args.screenshot))
     finally:
         pygame.quit()

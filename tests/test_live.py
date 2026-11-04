@@ -80,6 +80,7 @@ def test_reward_chart_is_cached_until_data_changes():
 
 def test_viewer_shows_the_latest_version_and_swaps_in_new_ones(tiny_run):
     app = LiveApp(tiny_run, track_choice="harbor", ghosts=2, scale=2, realtime=False)
+    newer = tiny_run.checkpoint(1_000_000)
     try:
         app.loader.poll_once()
         app.run(max_frames=5)
@@ -87,7 +88,6 @@ def test_viewer_shows_the_latest_version_and_swaps_in_new_ones(tiny_run):
         assert app.notice is not None and "512" in app.notice[0]
 
         # A newer checkpoint appears while the kart is mid-lap.
-        newer = tiny_run.checkpoint(1_000_000)
         latest = tiny_run.checkpoint(512)
         shutil.copy(latest.model, newer.model)
         shutil.copy(latest.vecnormalize, newer.vecnormalize)
@@ -103,5 +103,27 @@ def test_viewer_shows_the_latest_version_and_swaps_in_new_ones(tiny_run):
                 break
         assert app.current.version.steps == 1_000_000
         assert [g.version.steps for g in app.ghosts] == [512]
+    finally:
+        pygame.quit()
+        newer.model.unlink(missing_ok=True)
+        newer.vecnormalize.unlink(missing_ok=True)
+        tiny_run.latest.write_text(json.dumps({"steps": 512}), encoding="utf-8")
+
+
+def test_headless_viewer_preloads_ghosts_and_saves_a_screenshot(tiny_run, tmp_path):
+    from kartlab.show.live import main
+
+    out = tmp_path / "live.png"
+    main(["--run", str(tiny_run.root), "--scale", "2", "--frames", "30", "--screenshot", str(out)])
+    assert out.stat().st_size > 0
+
+
+def test_ghosts_are_earlier_versions_on_a_log_scale(tiny_run):
+    app = LiveApp(tiny_run, track_choice="harbor", ghosts=2, scale=2, realtime=False)
+    try:
+        app.preload_ghosts()
+        steps = [g.version.steps for g in app.ghosts]
+        latest = tiny_run.read_latest().steps
+        assert steps and all(s < latest for s in steps)
     finally:
         pygame.quit()
