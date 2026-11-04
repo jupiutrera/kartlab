@@ -1,7 +1,8 @@
 """Fast end-to-end check that the whole stack is installed and usable (run in CI).
 
-Grows with each phase: manual driving without a window (phase 1), check_env
-(phase 2), a few hundred PPO steps (phase 3) and one pseudo-3D frame (phase 4).
+Grows with each phase: manual driving without a window (phase 1), check_env and
+the benchmark (phase 2), a few hundred PPO steps (phase 3) and one pseudo-3D frame
+(phase 4).
 """
 
 import importlib
@@ -80,3 +81,21 @@ def test_track_gallery_writes_a_png(tmp_path):
     out = tmp_path / "gallery.png"
     main(["--count", "2", "--showcase", "--out", str(out)])
     assert out.stat().st_size > 0
+
+
+def test_env_passes_check_env():
+    from stable_baselines3.common.env_checker import check_env
+
+    from kartlab.env.kart_env import KartEnv
+
+    check_env(KartEnv(), warn=True)
+
+
+def test_benchmark_runs_one_env_and_spawned_subprocesses(tmp_path):
+    from kartlab.env.benchmark import bench_vec, main
+    from kartlab.env.kart_env import EnvConfig
+
+    out = tmp_path / "bench.json"
+    main(["--steps", "200", "--resets", "2", "--no-vec", "--json", str(out)])
+    assert out.stat().st_size > 0
+    assert bench_vec(EnvConfig(), "subproc", 2, 20)["steps_per_s"] > 0

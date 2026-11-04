@@ -32,10 +32,17 @@ class Racer:
         self.reset(start_s, lateral)
 
     def reset(
-        self, start_s: float = 0.0, lateral: float = 0.0, heading_offset: float = 0.0
+        self,
+        start_s: float = 0.0,
+        lateral: float = 0.0,
+        heading_offset: float = 0.0,
+        speed: float = 0.0,
     ) -> None:
         x, y, heading = self.track.pose_at(start_s, lateral)
-        self.kart = KartState(x, y, heading + heading_offset)
+        heading += heading_offset
+        self.kart = KartState(
+            x, y, heading, vx=speed * math.cos(heading), vy=speed * math.sin(heading)
+        )
         self.position: TrackPosition = self.track.locate(x, y)
         self.progress = Progress(self.track.length, self.position.s)
         self.time = 0.0

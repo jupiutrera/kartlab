@@ -3,7 +3,7 @@ from collections import defaultdict
 import pygame
 import pytest
 
-from kartlab.show.drive import DriveApp, keyboard_controls, resolve_track
+from kartlab.show.drive import DriveApp, keyboard_controls
 from kartlab.sim.showcase import showcase_track
 
 
@@ -23,12 +23,6 @@ def keys(*pressed: int) -> defaultdict:
 )
 def test_keyboard_controls(pressed, controls):
     assert keyboard_controls(keys(*pressed)) == controls
-
-
-def test_resolve_track_choices():
-    assert resolve_track("harbor").name == "Puerto"
-    assert resolve_track("eval:1").name == "Evaluación 1"
-    assert resolve_track("42").seed == 42
 
 
 @pytest.fixture

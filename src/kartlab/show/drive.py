@@ -27,9 +27,15 @@ from kartlab.render.topdown import (
 from kartlab.sim.autopilot import Autopilot
 from kartlab.sim.kart import DT
 from kartlab.sim.race import Racer
-from kartlab.sim.showcase import SHOWCASE, showcase_track
+from kartlab.sim.showcase import showcase_track
 from kartlab.sim.track import Track
-from kartlab.sim.tracksets import EVAL_SEEDS, eval_track, sample_train_seed, train_track
+from kartlab.sim.tracksets import (
+    EVAL_SEEDS,
+    eval_track,
+    resolve_track,
+    sample_train_seed,
+    train_track,
+)
 
 TITLE = "KART LAB · conducción manual"
 TRAIL_SECONDS = 4.0
@@ -52,15 +58,6 @@ def keyboard_controls(pressed) -> tuple[float, float]:
     up = pressed[pygame.K_UP] or pressed[pygame.K_w]
     down = pressed[pygame.K_DOWN] or pressed[pygame.K_s]
     return float(left) - float(right), float(up) - float(down)
-
-
-def resolve_track(choice: str) -> Track:
-    """A showcase key, ``eval:N`` (1-based) or a training seed."""
-    if choice in SHOWCASE:
-        return showcase_track(choice)
-    if choice.startswith("eval:"):
-        return eval_track(int(choice.removeprefix("eval:")) - 1)
-    return train_track(int(choice))
 
 
 class DriveApp:

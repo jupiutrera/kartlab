@@ -91,9 +91,10 @@ class Track:
         self._seg_len = self.segment_lengths.tolist()
         self._dir_x = self.segment_dirs[:, 0].tolist()
         self._dir_y = self.segment_dirs[:, 1].tolist()
+        self._n = len(pts)
 
     def __len__(self) -> int:
-        return len(self.points)
+        return self._n
 
     def __repr__(self) -> str:
         return f"Track({self.name!r}, length={self.length:.0f} m, width={self.width:.1f} m)"
@@ -136,7 +137,7 @@ class Track:
         """
         if hint is None:
             return self._project(x, y, self._nearest_index(x, y))
-        pos = self._project(x, y, self._climb(x, y, hint % len(self)))
+        pos = self._project(x, y, self._climb(x, y, hint % self._n))
         if abs(pos.lateral) > self.half_width + self.clearance:
             nearest = self._project(x, y, self._nearest_index(x, y))
             if abs(nearest.lateral) <= self.half_width:
@@ -154,7 +155,7 @@ class Track:
 
     def _climb(self, x: float, y: float, i: int) -> int:
         """Walk along the samples while the distance to (x, y) decreases."""
-        n = len(self)
+        n = self._n
         best = self._dist2(x, y, i)
         while True:
             nxt = (i + 1) % n
@@ -175,7 +176,7 @@ class Track:
         The segment starting at ``i`` goes first, so a point exactly on sample ``i``
         gets ``s[i]`` (0 on the start line) instead of the end of the previous segment.
         """
-        n = len(self)
+        n = self._n
         best: TrackPosition | None = None
         best_d2 = math.inf
         for seg in (i, (i - 1) % n):
