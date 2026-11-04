@@ -7,6 +7,7 @@ Run from the command line with ``uv run python scripts/evaluate.py --help``.
 from __future__ import annotations
 
 import argparse
+import math
 import pickle
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
@@ -49,9 +50,10 @@ class EvalResult:
         times = [lap for t in self.tracks for lap in t.lap_times]
         return float(np.mean(times)) if times else None
 
-    def score(self) -> tuple[float, float]:
-        """Higher is better: success rate first, then distance driven."""
-        return self.success_rate, self.progress_mean
+    def score(self) -> tuple[float, float, float]:
+        """Higher is better: success rate, then distance driven, then faster laps."""
+        lap = self.lap_time_mean
+        return self.success_rate, self.progress_mean, -lap if lap is not None else -math.inf
 
 
 def evaluate(

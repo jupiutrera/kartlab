@@ -156,3 +156,13 @@ def test_training_with_spawned_subprocess_envs(tmp_path):
 
     run = train(tiny_config(vec_env="subproc", eval_tracks=()), runs_dir=tmp_path, verbose=0)
     assert [c.steps for c in run.list_checkpoints()] == [0, 256, 512]
+
+
+def test_best_model_ties_are_broken_by_faster_laps():
+    from kartlab.train.evaluate import EvalResult, TrackResult
+
+    def result(lap_time):
+        track = TrackResult("eval:1", True, 3, 1.0, 3 * lap_time, (lap_time,) * 3, "laps")
+        return EvalResult((track,))
+
+    assert result(38.0).score() > result(40.0).score()
