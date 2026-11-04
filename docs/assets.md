@@ -12,5 +12,10 @@ Todo el material gráfico, tipográfico y sonoro del proyecto es original o tien
 
 | Recurso | Tipo | Fichero | Autor | Licencia | Origen | Añadido |
 | --- | --- | --- | --- | --- | --- | --- |
+| IBM Plex Mono (Regular y SemiBold) | Fuente de la interfaz de la vista de depuración | `assets/fonts/ibm-plex-mono/` | IBM Corp. | SIL OFL 1.1 (`OFL.txt` junto a la fuente) | [google/fonts](https://github.com/google/fonts/tree/main/ofl/ibmplexmono) | 2026-11-04 |
 
-Todavía no hay recursos externos.
+## Material propio
+
+- **Circuitos escaparate** (Puerto, Cañón y Meseta): trazados diseñados para este proyecto en `src/kartlab/sim/showcase.py`.
+- **Circuitos aleatorios y de evaluación**: generados por código a partir de una semilla (`src/kartlab/sim/track.py`).
+- **Vista cenital de depuración**: colores, pianos, línea de meta y flechas dibujados por código (`src/kartlab/render/topdown.py`). La paleta definitiva del juego se elige en la fase 4.
