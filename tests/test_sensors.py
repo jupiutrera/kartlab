@@ -59,21 +59,17 @@ def brute_force(track: Track, x, y, angles, max_range) -> np.ndarray:
     ends = np.concatenate(
         [np.roll(track.left_edge, -1, axis=0), np.roll(track.right_edge, -1, axis=0)]
     )
+    e = ends - starts
+    w = starts - (x, y)
     out = []
     for a in angles:
-        d = np.array([math.cos(a), math.sin(a)])
-        best = max_range
-        for p, q in zip(starts, ends, strict=True):
-            e = q - p
-            denom = d[0] * e[1] - d[1] * e[0]
-            if abs(denom) < 1e-12:
-                continue
-            w = p - (x, y)
-            t = (w[0] * e[1] - w[1] * e[0]) / denom
-            u = (w[0] * d[1] - w[1] * d[0]) / denom
-            if t > 0 and 0 <= u <= 1:
-                best = min(best, t)
-        out.append(best)
+        dx, dy = math.cos(a), math.sin(a)
+        denom = dx * e[:, 1] - dy * e[:, 0]
+        ok = np.abs(denom) > 1e-12
+        t = (w[ok, 0] * e[ok, 1] - w[ok, 1] * e[ok, 0]) / denom[ok]
+        u = (w[ok, 0] * dy - w[ok, 1] * dx) / denom[ok]
+        hits = t[(t > 0) & (u >= 0) & (u <= 1)]
+        out.append(min(max_range, hits.min()) if len(hits) else max_range)
     return np.array(out)
 
 
