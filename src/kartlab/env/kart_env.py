@@ -6,7 +6,9 @@ Observation (float32, all in [-1, 1]):
 - forward speed divided by the kart's top speed;
 - sine and cosine of the heading relative to the track direction;
 - previous action (steer, throttle);
-- with ``extra_observations``: steering wheel position and lateral (slip) speed.
+- steering wheel position and lateral (slip) speed (``extra_observations``, on by
+  default: the wheel moves at a limited rate, so the previous action alone does not
+  tell where it is).
 
 Action (float32 in [-1, 1]): ``[steer, throttle]``; steer > 0 turns left, throttle < 0
 brakes and then reverses. The agent acts every ``action_repeat`` physics steps
@@ -55,7 +57,7 @@ class EnvConfig:
     ray_count: int = 11
     ray_fov_deg: float = 180.0
     ray_range: float = 60.0
-    extra_observations: bool = False
+    extra_observations: bool = True
 
     progress_reward: float = 0.1  # per metre of net progress
     lap_bonus: float = 10.0

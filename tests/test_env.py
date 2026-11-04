@@ -48,8 +48,8 @@ def drive_with_autopilot(env: KartEnv, max_steps: int = 5000):
 
 @pytest.mark.parametrize(
     "overrides",
-    [{}, {"extra_observations": True}, {"track": "harbor"}, {"terminate_off_track": False}],
-    ids=["default", "extra-obs", "fixed-track", "no-off-track-end"],
+    [{}, {"extra_observations": False}, {"track": "harbor"}, {"terminate_off_track": False}],
+    ids=["default", "spec-obs-only", "fixed-track", "no-off-track-end"],
 )
 def test_passes_stable_baselines3_check_env(overrides):
     with warnings.catch_warnings():
@@ -83,8 +83,9 @@ def test_observation_on_the_line_of_a_straight():
     rays = obs[:11]
     assert rays[5] == pytest.approx(1.0)  # straight ahead: nothing within range
     assert rays[0] == pytest.approx(rays[-1], abs=0.02)  # centred between the edges
-    speed, sin_err, cos_err, prev_steer, prev_throttle = obs[11:]
+    speed, sin_err, cos_err, prev_steer, prev_throttle, wheel, slip = obs[11:]
     assert speed == 0.0 and prev_steer == 0.0 and prev_throttle == 0.0
+    assert wheel == 0.0 and slip == 0.0
     assert sin_err == pytest.approx(0.0, abs=1e-3) and cos_err == pytest.approx(1.0)
 
 
