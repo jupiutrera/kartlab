@@ -21,10 +21,12 @@ def test_racer_starts_on_the_line(track):
 
 def test_reset_places_the_kart_anywhere(track):
     racer = Racer(track)
-    racer.reset(start_s=300.0, lateral=-2.0, heading_offset=0.4)
+    racer.reset(start_s=300.0, lateral=-2.0, heading_offset=0.4, speed=7.0)
     assert racer.position.s == pytest.approx(300.0, abs=0.05)
     assert racer.position.lateral == pytest.approx(-2.0, abs=0.05)
     assert racer.heading_error() == pytest.approx(0.4, abs=0.02)
+    assert racer.speed == pytest.approx(7.0)
+    assert racer.kart.lateral_speed == pytest.approx(0.0, abs=1e-9)
 
 
 def test_driving_forward_gains_progress(track):

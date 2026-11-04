@@ -9,6 +9,7 @@ from kartlab.sim.tracksets import (
     EVAL_SEEDS,
     eval_track,
     is_eval_seed,
+    resolve_track,
     sample_train_seed,
     train_track,
 )
@@ -58,3 +59,11 @@ def test_autopilot_laps_every_track_without_leaving_the_asphalt(make_track):
     assert racer.laps == 1
     assert widest < track.half_width - 1.0
     assert 12.0 < track.length / racer.lap_times[0] < 25.0
+
+
+def test_resolve_track_choices():
+    assert resolve_track("harbor").name == "Puerto"
+    assert resolve_track("eval:1").name == "Evaluación 1"
+    assert resolve_track("42").seed == 42
+    with pytest.raises(ValueError):
+        resolve_track(str(EVAL_SEEDS[0]))
