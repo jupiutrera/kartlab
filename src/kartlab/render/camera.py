@@ -27,7 +27,7 @@ class Lens:
 
 
 CHASE = Lens("chase", 3.2, math.radians(7.0), math.radians(70.0), 60.0, 175.0, 230.0)
-BROADCAST = Lens("broadcast", 24.0, math.radians(30.0), math.radians(62.0), 110.0, 300.0, 380.0)
+BROADCAST = Lens("broadcast", 20.0, math.radians(30.0), math.radians(62.0), 110.0, 300.0, 380.0)
 TOP = Lens("top", 60.0, math.radians(90.0), math.radians(60.0), 1e9, 2e9, 1e9)
 
 
@@ -78,7 +78,7 @@ class BroadcastCamera:
 
     lens = BROADCAST
 
-    def __init__(self, distance: float = 34.0, turn_rate: float = 1.2, max_turn: float = 0.6):
+    def __init__(self, distance: float = 28.0, turn_rate: float = 1.2, max_turn: float = 0.6):
         self.distance = distance
         self.turn_rate = turn_rate
         self.max_turn = max_turn

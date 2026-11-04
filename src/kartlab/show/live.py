@@ -2,8 +2,10 @@
 
 Run with ``uv run python scripts/live.py`` (latest run) or ``--run runs/<folder>``.
 It is a separate process: closing it never affects training, and when training ends
-it keeps showing the last version. New checkpoints load in a background thread and
-enter at the end of a lap (or when the kart is restarted after getting stuck).
+it keeps showing the last version. It uses the pseudo-3D view (broadcast camera by
+default, steady even with erratic early versions); T switches to the top-down view.
+New checkpoints load in a background thread and enter at the end of a lap (or when
+the kart is restarted after getting stuck).
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import pygame
 
 from kartlab.env.kart_env import EnvConfig, KartEnv
 from kartlab.render.display import open_window
+from kartlab.render.scene import KartVisual
 from kartlab.render.topdown import (
     ACCENT,
     KART_COLOR,
@@ -36,6 +39,7 @@ from kartlab.render.topdown import (
     format_time,
     load_fonts,
 )
+from kartlab.render.view import GameView, HudInfo
 from kartlab.sim.kart import DT
 from kartlab.sim.track import Track
 from kartlab.sim.tracksets import resolve_track
@@ -137,6 +141,9 @@ class PolicyDriver:
         self.repeat = config.action_repeat
         self.best_lap: float | None = None
         self.restarts = 0
+        self.ramp = 0  # colour in the 3D view (0 is the newest version)
+        self.trail: deque[tuple[float, float]] = deque(maxlen=14)
+        self._steps = 0
         self._phase = 0
         self._action = (0.0, 0.0)
         self._best_distance = 0.0
@@ -147,6 +154,10 @@ class PolicyDriver:
     def racer(self):
         return self.env.racer
 
+    @property
+    def throttle(self) -> float:
+        return self._action[1]
+
     def restart(self) -> None:
         self.racer.reset()
         self.env.hold_action(np.zeros(2))
@@ -155,6 +166,7 @@ class PolicyDriver:
         self._last_progress_time = 0.0
         self._off_since = None
         self.restarts += 1
+        self.trail.clear()
 
     def step(self) -> str | None:
         """Advance one physics step; returns "lap" or "restart" when one happens."""
@@ -166,6 +178,9 @@ class PolicyDriver:
         self._phase = (self._phase + 1) % self.repeat
         laps = racer.laps
         racer.step(*self._action)
+        self._steps += 1
+        if self._steps % 6 == 0:
+            self.trail.appendleft((racer.kart.x, racer.kart.y))
 
         if racer.progress.distance > self._best_distance + 1.0:
             self._best_distance = racer.progress.distance
@@ -277,8 +292,16 @@ class LiveApp:
         scale: int | None = None,
         fullscreen: bool = False,
         realtime: bool = True,
+        view: str = "3d",
+        camera: str = "broadcast",
+        variant: str = "day",
     ) -> None:
         self.run_paths = run
+        self.view_mode = view
+        self.camera = camera
+        self.variant = variant
+        self.game: GameView | None = None
+        self._dt = DT
         self.config = TrainConfig.from_yaml(run.config)
         self.env_config = self.config.env_config()
         choice = track_choice or self.config.env.get("track") or "eval:1"
@@ -316,14 +339,22 @@ class LiveApp:
         self.chart = RewardChart((panel_w - 2 * pad, chart_h), regular)
         self.panel_bg = pygame.Surface(self.panel_rect.size, pygame.SRCALPHA)
         self.panel_bg.fill(PANEL)
+        if self.view_mode == "3d" and self.game is None:
+            self.game = GameView(
+                self.track, (width, height), self.camera, self.variant, ramps=(0, 1, 2, 3)
+            )
+            self.chart3d = RewardChart((int(width * 0.26), int(height * 0.2)), regular)
 
     def _install(self, version: Version) -> None:
         driver = PolicyDriver(version, self.track, self.env_config, KART_COLOR)
         if self.current is not None and self.max_ghosts > 0:
             self.current.color = GHOST_COLORS[len(self.ghosts) % len(GHOST_COLORS)]
+            self.current.ramp = 1 + len(self.ghosts) % 3
             self.ghosts.append(self.current)
         self.current = driver
         self.notice = (f"Nueva versión: {version.label}", time.perf_counter())
+        if self.game is not None:
+            self.game.notify(self.notice[0])
 
     def preload_ghosts(self) -> None:
         """Start with earlier versions as ghosts, spaced on a log scale before the latest
@@ -341,6 +372,7 @@ class LiveApp:
         for checkpoint in sorted(picks, key=lambda c: c.steps):
             color = GHOST_COLORS[len(self.ghosts) % len(GHOST_COLORS)]
             driver = PolicyDriver(load_version(checkpoint), self.track, self.env_config, color)
+            driver.ramp = 1 + len(self.ghosts) % 3
             self.ghosts.append(driver)
 
     def _take_new_versions(self) -> None:
@@ -375,15 +407,17 @@ class LiveApp:
         try:
             while self.running:
                 if self.realtime:
-                    dt = self.clock.tick(self.target_fps) / 1000.0
+                    fps = self.game.target_fps if self.game is not None else self.target_fps
+                    dt = self.clock.tick(fps) / 1000.0
                 else:
                     self.clock.tick()
                     dt = DT
+                self._dt = dt
                 for event in pygame.event.get():
-                    if event.type == pygame.QUIT or (
-                        event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
-                    ):
+                    if event.type == pygame.QUIT:
                         self.running = False
+                    elif event.type == pygame.KEYDOWN:
+                        self.handle_key(event.key)
                 self._take_new_versions()
                 if self.realtime:
                     pending_time = min(pending_time + dt, 0.1)
@@ -405,8 +439,19 @@ class LiveApp:
         finally:
             self.loader.stop()
 
+    def handle_key(self, key: int) -> None:
+        if key == pygame.K_ESCAPE:
+            self.running = False
+        elif key == pygame.K_c and self.game is not None and self.view_mode == "3d":
+            self.camera = self.game.cycle_camera()
+        elif key == pygame.K_v and self.game is not None:
+            self.variant = self.game.cycle_variant()
+        elif key == pygame.K_t:
+            self.view_mode = "topdown" if self.view_mode == "3d" else "3d"
+            self._layout()
+
     def _watch_fps(self) -> None:
-        if not self.realtime:
+        if not self.realtime or self.view_mode == "3d":
             return
         self._fps_samples.append(self.clock.get_fps())
         full = len(self._fps_samples) == self._fps_samples.maxlen
@@ -416,6 +461,9 @@ class LiveApp:
     # -- drawing ------------------------------------------------------------------------
 
     def draw(self) -> None:
+        if self.view_mode == "3d":
+            self._draw_3d()
+            return
         screen = self.screen
         view_surface = screen.subsurface(self.view_rect)
         karts = [(g.racer.kart, g.color) for g in self.ghosts]
@@ -435,6 +483,66 @@ class LiveApp:
             view_surface.blit(label, rect)
         self._draw_panel()
         self._draw_notice()
+
+    def _draw_3d(self) -> None:
+        game = self.game
+        drivers = [*self.ghosts, self.current] if self.current else []
+        if not drivers:
+            self.screen.fill((14, 14, 22))
+            label = self.title.get("Esperando el primer checkpoint…", WARNING)
+            self.screen.blit(label, label.get_rect(center=self.screen.get_rect().center))
+            return
+        visuals = [
+            KartVisual(
+                d.racer.kart,
+                d.ramp,
+                d.version.label,
+                d is not self.current,
+                d.racer.on_grass,
+                d.throttle,
+                list(d.trail),
+            )
+            for d in drivers
+        ]
+        pose = game.update(visuals, self._dt, focus=len(visuals) - 1)
+        rows = self.metrics.rows
+        last = rows[-1] if rows else None
+        extra = [self.run_paths.root.name, self._status()[0]]
+        if last is not None:
+            extra.append(
+                f"{format_steps(int(last['steps']))} pasos · {format_time(last['time_s'])}"
+                f" · {last['steps_per_s']:.0f} pasos/s"
+            )
+        if self.pending is not None:
+            extra.append(f"Siguiente: {self.pending.label} (al acabar la vuelta)")
+        racer = self.current.racer
+        best = min((d.best_lap for d in drivers if d.best_lap), default=None)
+        info = HudInfo(
+            laps=racer.laps,
+            lap_time=racer.lap_time,
+            best_lap=best,
+            speed=racer.speed,
+            label=f"Versión {self.current.version.label}",
+            extra=extra,
+        )
+        fps = self.clock.get_fps() if self.realtime else None
+        game.draw(self.screen, pose, visuals, info, self._dt, fps)
+        chart = self.chart3d.draw(rows, self.metrics.version, self.current.version.steps)
+        pad = self.pad
+        x = game.world_rect.right - chart.get_width() - pad
+        y = game.world_rect.centery - chart.get_height() // 2
+        size = (chart.get_width() + 2 * pad, chart.get_height() + 2 * pad)
+        background = pygame.Surface(size, pygame.SRCALPHA)
+        background.fill(PANEL)
+        self.screen.blit(background, (x - pad, y - pad))
+        self.screen.blit(chart, (x, y))
+
+    def _status(self) -> tuple[str, tuple[int, int, int]]:
+        if self.current is None:
+            return "Esperando el primer checkpoint…", WARNING
+        if self.run_paths.summary.exists():
+            return "Entrenamiento terminado", ACCENT
+        return "Entrenando", ACCENT
 
     def _draw_panel(self) -> None:
         screen, pad = self.screen, self.pad
@@ -506,6 +614,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--ghosts", type=int, default=2, help="versiones anteriores (0-3)")
     parser.add_argument("--scale", type=int, help="escala entera sobre 320x180")
     parser.add_argument("--fullscreen", action="store_true")
+    parser.add_argument("--view", choices=("3d", "topdown"), default="3d")
+    parser.add_argument(
+        "--camera",
+        choices=("broadcast", "chase", "top"),
+        default="broadcast",
+        help="cámara 3D (por defecto, retransmisión: estable con modelos poco entrenados)",
+    )
+    parser.add_argument("--variant", choices=("day", "sunset", "night"), default="day")
     parser.add_argument(
         "--frames", type=int, help="sale tras N fotogramas, con un paso de física por fotograma"
     )
@@ -519,7 +635,15 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(f"{run.root} no tiene config.yaml")
     realtime = args.frames is None
     app = LiveApp(
-        run, args.track, max(0, min(args.ghosts, 3)), args.scale, args.fullscreen, realtime
+        run,
+        args.track,
+        max(0, min(args.ghosts, 3)),
+        args.scale,
+        args.fullscreen,
+        realtime,
+        args.view,
+        args.camera,
+        args.variant,
     )
     try:
         app.preload_ghosts()
