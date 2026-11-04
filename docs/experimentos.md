@@ -14,6 +14,45 @@ Registro de los entrenamientos relevantes, el más reciente arriba. Cada entrada
 - **Siguiente paso:**
 ```
 
+## 2026-11-04 · demo-live (demo en directo)
+
+- **Commit:** `4a5d3f6`
+- **Run:** `runs/2026-11-04_2222_demo-live/`
+- **Configuración:** `configs/demo_live.yaml`. Desde cero en Meseta, con checkpoints cada 10k pasos y prioridad baja.
+- **Qué se probó:** cuánto tarda en empezar a completar vueltas, para enseñarlo en directo con `scripts/live.py`.
+- **Resultados:** 401k pasos en 4 min 53 s.
+  - **Primera vuelta completada:** a los 40k pasos, **32 s** después de arrancar.
+  - **3 vueltas sin salirse en la evaluación:** a los 50k pasos (44 s), con vueltas de 60 s. Después, siempre el 100 %.
+  - **Media de 1 vuelta por episodio:** a los 164k pasos (1 min 42 s).
+  - **Media de 1,9 vueltas** (casi el máximo que permite el límite de 150 s): a los 270k pasos (3 min 42 s).
+- **Conclusiones:**
+  - Para una charla: en menos de un minuto el kart empieza a dar vueltas y en unos 4 minutos conduce limpio.
+  - El visor recibe una versión nueva cada 10k pasos, unos 7 s.
+
+## 2026-11-04 · random-tracks con tasa de aprendizaje lineal (modelo de referencia)
+
+- **Commit:** `4a5d3f6`
+- **Run:** `runs/2026-11-04_2159_random-tracks/`
+- **Configuración:** `configs/random_tracks.yaml`. Respecto al anterior:
+  - `start_heading: 0.6`: salidas con un desvío de hasta ±34°;
+  - `lr_schedule: linear`: la tasa de aprendizaje baja de 3·10⁻⁴ a 0.
+- **Qué se probó:** si la tasa de aprendizaje decreciente estabiliza el final y si las salidas con más desvío enseñan a recuperarse.
+- **Resultados:** 1,5M pasos en 19 min 7 s.
+  - **Primera vuelta:** a los 43k pasos (45 s).
+  - **Evaluación periódica:** 100 % a los 200k pasos, una bajada al 60-90 % entre los 300k y los 700k, y **100 % de forma estable desde los 800k hasta el final**.
+  - **Mejor modelo** (a los 1,3M pasos, desempatado por tiempo de vuelta):
+    - **20/20 circuitos de evaluación (100 %)**, con vueltas medias de 37,9 s;
+    - **los tres escaparate**: Puerto 41,5 s, Cañón 46,1 s y Meseta 55,0 s.
+  - **Modelo final:** 95 % (se sale en la horquilla de `eval:14`) y también los tres escaparate.
+- **Conclusiones:**
+  - La tasa de aprendizaje decreciente elimina la oscilación del final.
+  - Con el mejor modelo se supera el criterio de éxito con margen (100 % ≥ 90 %).
+  - `eval:14` sigue siendo el caso límite: una horquilla de 16 m al final de la recta más larga. El modelo final aún llega pasado de velocidad.
+  - **Modelo de referencia para la fase 4:** `runs/2026-11-04_2159_random-tracks/best_model.zip`.
+- **Siguiente paso:**
+  - Fase 4 (render pseudo-3D).
+  - Si hace falta más margen: entrenamientos más largos (más de 30 minutos, con permiso) o más horquillas al final de rectas largas en la distribución de entrenamiento.
+
 ## 2026-11-04 · random-tracks con la física corregida
 
 - **Commit:** `cbb9126`

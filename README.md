@@ -80,6 +80,8 @@ uv run python scripts/benchmark_env.py
 
 ## Entrenar
 
+Con `configs/random_tracks.yaml` (1,5M pasos, unos 20 minutos en un portátil con un i5-1135G7 y sin tarjeta gráfica), el agente completa 3 vueltas sin salirse en los 20 circuitos de evaluación, que nunca ve durante el entrenamiento. También las completa en los tres circuitos escaparate. Los detalles están en [docs/experimentos.md](docs/experimentos.md).
+
 ```sh
 uv run python scripts/train.py configs/fixed_track.yaml      # un circuito fijo sencillo
 uv run python scripts/train.py configs/random_tracks.yaml    # circuitos aleatorios (generalizar)
@@ -144,8 +146,8 @@ tests/
 | --- | --- | --- |
 | 0 | Esqueleto del repo | Hecha |
 | 1 | Simulación 2D y control manual | Hecha |
-| 2 | Entorno Gymnasium | En revisión |
-| 3 | Entrenamiento | Pendiente |
+| 2 | Entorno Gymnasium | Hecha |
+| 3 | Entrenamiento | En revisión |
 | 4 | Render pseudo-3D y dirección de arte | Pendiente |
 | 5 | Herramientas de exhibición | Pendiente |
 | 6 | Editor de circuitos (opcional) | Pendiente |
