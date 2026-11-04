@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Cachés de herramientas
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Entrenamiento: runs, checkpoints, modelos y estadísticas
+runs/
+checkpoints/
+*.zip
+*.pkl
+*.pt
+events.out.tfevents.*
+
+# Vídeos y capturas generadas
+videos/
+*.mp4
+*.webm
+
+# Secretos
+.env
+.env.*
+
+# Especificación del proyecto (solo local)
+docs/especificacion.md
+
+# Editores y sistema
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

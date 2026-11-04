@@ -1,0 +1,26 @@
+# Finales de línea normalizados a LF en el repositorio y en la copia de trabajo
+* text=auto eol=lf
+
+# Scripts de Windows con CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binarios
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.wav binary
+*.ogg binary
+*.mp3 binary
+*.mp4 binary
+*.zip binary
+*.pkl binary
+*.pt binary
+*.npz binary
+*.npy binary
