@@ -16,7 +16,7 @@ Registro de los entrenamientos relevantes, el más reciente arriba. Cada entrada
 
 ## 2026-11-05 · modelo de referencia en el circuito en 8 (solo medición)
 
-- **Commit:** `3665e94` (rama `feat/circuito-ocho`; el código de simulación y evaluación del cruce es el mismo en los commits posteriores).
+- **Commit:** `2c9f302` y `266e1ee` (cruces en simulación y vista), más el commit de la corrección del progreso en los saltos de rama de la misma rama `feat/circuito-ocho`. La medición se repitió con esa corrección.
 - **Run:** `runs/2026-11-04_2159_random-tracks/` (modelo de referencia, `best_model`). No se reentrena y no se escribe nada en la carpeta del run.
 - **Configuración:** `uv run python scripts/evaluate.py --run runs/2026-11-04_2159_random-tracks --checkpoint best --track-file tracks/ocho.json --laps 3`.
 - **Qué se probó:** si un modelo entrenado solo con circuitos aleatorios sin cruces (rayos que ven solo los bordes de la propia rama) sabe cruzar «Lazo del Molino», un 8 con cruce a nivel a 90° (1.277 m, 13 m de ancho).
