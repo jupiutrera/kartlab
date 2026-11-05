@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import time
 from collections import deque
 from pathlib import Path
 
@@ -26,12 +27,13 @@ from kartlab.render.topdown import (
     format_time,
     load_fonts,
 )
-from kartlab.render.view import GameView, HudInfo
+from kartlab.render.view import GameView, HudInfo, TrialHud, format_delta
 from kartlab.sim.autopilot import Autopilot
 from kartlab.sim.drift import DriftState
-from kartlab.sim.kart import DT
+from kartlab.sim.kart import DT, KartState
 from kartlab.sim.race import Racer
 from kartlab.sim.showcase import showcase_track
+from kartlab.sim.timetrial import LapEvent, RecordStore, TimeTrial
 from kartlab.sim.track import Track
 from kartlab.sim.trackfile import TrackFileError, load_track_file
 from kartlab.sim.tracksets import (
@@ -47,12 +49,17 @@ TRAIL_SECONDS = 4.0
 TRAIL_EVERY = 3  # physics steps between trail points
 CAMERA_RESPONSE = 4.0  # top-down follow camera smoothing (1/s)
 CAMERA_LEAD = 0.6  # the top-down follow camera aims this many seconds ahead (s)
+GHOST_RAMP = 1  # the record's ghost is blue; the player is orange
+LABEL_MIN_GAP = 5.0  # no "Récord" tag on a ghost closer than this to the player (m)
+GHOST_COLOR = (112, 164, 255)  # the ghost in the top-down view
+MESSAGE_SECONDS = 4.0  # how long a time-trial message stays in the top-down HUD
 MAX_PENDING = 0.1  # never simulate more than this after a stall (s)
 SHOWCASE_KEYS = {pygame.K_1: "harbor", pygame.K_2: "canyon", pygame.K_3: "plateau"}
 HELP = (
     "Flechas o WASD: conducir · R: reiniciar · 1-3: escaparate · E: evaluación · N: aleatorio",
     "C: cámara · V: día/atardecer/noche · G: sensores · T: vista cenital · Tab: piloto",
     "Mayús: barrido (deslizamiento): mantén con el volante girado y suelta para el impulso",
+    "K: contrarreloj (récord y fantasma) · F: fantasma",
     "P: pausa · F3: diagnóstico · L: modo ligero · F11: pantalla completa · H: ayuda · Esc: salir",
 )
 
@@ -83,6 +90,8 @@ class DriveApp:
         variant: str = "day",
         realtime: bool = True,
         seed: int = 0,
+        time_trial: bool = False,
+        records_dir: Path | None = None,
     ) -> None:
         self.screen = open_window(TITLE, scale, fullscreen)
         self.scale = scale
@@ -102,6 +111,13 @@ class DriveApp:
         self.running = False
         self.controls = (0.0, 0.0)
         self.drift = DriftState()
+        self.store = RecordStore(records_dir)
+        self.time_trial = time_trial
+        self.show_ghost = True
+        self.trial: TimeTrial | None = None
+        self.ghost_visual: KartVisual | None = None  # the ghost drawn in the last frame
+        self.hud_trial: TrialHud | None = None
+        self._message: tuple[str, float] | None = None
         self.clock = pygame.time.Clock()
         self.hud = DebugHud(self.screen.get_size())
         self.view: TopDownView | None = None
@@ -114,10 +130,13 @@ class DriveApp:
         self.track = track
         self.racer = Racer(track)
         self.autopilot = Autopilot(track)
+        self.trial = TimeTrial(track, self.store) if self.time_trial else None
         self.view = None
         self.game = None
         self._build_view()
         self.reset()
+        if self.trial is not None:
+            self._announce_trial()
 
     def _build_view(self) -> None:
         size = self.screen.get_size()
@@ -139,6 +158,8 @@ class DriveApp:
 
     def reset(self) -> None:
         self.racer.reset()
+        if self.trial is not None:
+            self.trial.begin(self.racer, manual=not self.autopilot_on)
         self.drift.reset()
         self.camera = (self.racer.kart.x, self.racer.kart.y)
         self.trail: deque[tuple[float, float]] = deque(maxlen=int(TRAIL_SECONDS / DT / TRAIL_EVERY))
@@ -146,6 +167,49 @@ class DriveApp:
         if self.game is not None:
             for camera in self.game.cameras.values():
                 camera.pose = None
+
+    # -- time trial ---------------------------------------------------------------------
+
+    def notify(self, text: str) -> None:
+        if self.game is not None and self.view_mode == "3d":
+            self.game.notify(text)
+        self._message = (text, time.perf_counter())
+
+    def set_time_trial(self, on: bool) -> None:
+        self.time_trial = on
+        self.trial = TimeTrial(self.track, self.store) if on else None
+        self.ghost_visual = self.hud_trial = None
+        if on:
+            self.reset()
+            self._announce_trial()
+        else:
+            self.notify("Contrarreloj desactivada")
+
+    def _announce_trial(self) -> None:
+        trial = self.trial
+        if trial.problem:
+            self.notify(trial.problem)
+        elif trial.record is None:
+            self.notify("Contrarreloj: sin récord en este circuito, ¡marca uno!")
+        else:
+            self.notify(f"Contrarreloj: récord {format_time(trial.record.lap_time)}")
+
+    def _on_lap(self, event: LapEvent) -> None:
+        lap = format_time(event.lap_time)
+        gap = (
+            "" if event.previous is None else f" ({format_delta(event.lap_time - event.previous)})"
+        )
+        if event.record:
+            text = (
+                f"¡Primer récord! {lap}" if event.previous is None else f"¡NUEVO RÉCORD! {lap}{gap}"
+            )
+            if not event.saved:
+                text += " · no se pudo guardar"
+        elif not event.valid:
+            text = f"Vuelta {lap} · no cuenta (piloto automático o salida no limpia)"
+        else:
+            text = f"Vuelta {lap}{gap}"
+        self.notify(text)
 
     def toggle_fullscreen(self) -> None:
         self.fullscreen = not self.fullscreen
@@ -179,6 +243,12 @@ class DriveApp:
             self._build_view()
         elif key == pygame.K_v and self.game is not None:
             self.variant = self.game.cycle_variant()
+        elif key == pygame.K_k:
+            self.set_time_trial(not self.time_trial)
+        elif key == pygame.K_f:
+            self.show_ghost = not self.show_ghost
+            if self.trial is not None:
+                self.notify("Fantasma " + ("activado" if self.show_ghost else "desactivado"))
         elif key == pygame.K_g:
             self.show_rays = not self.show_rays
         elif key == pygame.K_F3:
@@ -211,6 +281,10 @@ class DriveApp:
             drift = self.drift
         self.controls = (steer, throttle)
         self.racer.step(steer, throttle, drift=drift)
+        if self.trial is not None:
+            event = self.trial.update(self.racer, manual=not self.autopilot_on)
+            if event is not None:
+                self._on_lap(event)
         self._steps += 1
         if self._steps % TRAIL_EVERY == 0:
             self.trail.append((self.racer.kart.x, self.racer.kart.y))
@@ -267,9 +341,21 @@ class DriveApp:
             throttle=self.controls[1],
             drift=None if self.autopilot_on else self.drift,
         )
-        pose = self.game.update([visual], 0.0 if self.paused else dt)
+        visuals = [visual]
+        self.ghost_visual = self.hud_trial = None
+        if self.trial is not None:
+            ghost = self.ghost_state()
+            if ghost is not None:
+                near = math.hypot(ghost.x - racer.kart.x, ghost.y - racer.kart.y) < LABEL_MIN_GAP
+                label = None if near else "Récord"  # on top of you, the tag only gets in the way
+                self.ghost_visual = KartVisual(ghost, GHOST_RAMP, label, ghost=True)
+                visuals.append(self.ghost_visual)
+            self.hud_trial = self.trial_hud()
+        pose = self.game.update(visuals, 0.0 if self.paused else dt)
         self.game.set_rays(visual if self.show_rays else None)
         extra = [self.track.name]
+        if self.trial is not None:
+            extra.append("Contrarreloj" + (" · fantasma" if self.show_ghost else ""))
         if self.paused:
             extra.append("PAUSA")
         if not self.show_help:
@@ -282,11 +368,24 @@ class DriveApp:
             label="Piloto automático" if self.autopilot_on else "Conducción manual",
             extra=extra,
             drift=None if self.autopilot_on else self.drift,
+            trial=self.hud_trial,
         )
         fps = self.clock.get_fps() if self.realtime else None
-        self.game.draw(self.screen, pose, [visual], info, dt, fps)
+        self.game.draw(self.screen, pose, visuals, info, dt, fps)
         if self.show_help:
             self.hud.draw_block(self.screen, [(t, TEXT_DIM) for t in HELP], "bottom-left")
+
+    def ghost_state(self) -> KartState | None:
+        """The record's kart at the current lap time (``None``: off, no record or finished)."""
+        if self.trial is None or not self.show_ghost:
+            return None
+        pose = self.trial.ghost_pose(self.racer.lap_time)
+        return None if pose is None else KartState(*pose)
+
+    def trial_hud(self) -> TrialHud:
+        trial = self.trial
+        record = trial.record.lap_time if trial.record else None
+        return TrialHud(record=record, last=trial.last_lap, delta=trial.delta)
 
     def update_camera(self, dt: float) -> None:
         """North-up follow camera that eases towards a point ahead of the kart (never rotates)."""
@@ -299,9 +398,15 @@ class DriveApp:
 
     def draw_topdown(self) -> None:
         racer = self.racer
-        self.view.draw(
-            self.screen, [(racer.kart, KART_COLOR)], self.camera, self.follow, self.trail
-        )
+        karts = [(racer.kart, KART_COLOR)]
+        self.ghost_visual = self.hud_trial = None
+        if self.trial is not None:
+            ghost = self.ghost_state()
+            if ghost is not None:
+                self.ghost_visual = KartVisual(ghost, GHOST_RAMP, ghost=True)
+                karts.append((ghost, GHOST_COLOR))
+            self.hud_trial = self.trial_hud()
+        self.view.draw(self.screen, karts, self.camera, self.follow, self.trail)
         lines = [
             (f"Vuelta     {racer.laps + 1}", TEXT),
             (f"Tiempo     {format_time(racer.lap_time)}", TEXT),
@@ -313,6 +418,13 @@ class DriveApp:
                 WARNING if racer.on_grass else TEXT_DIM,
             ),
         ]
+        if self.hud_trial is not None:
+            trial = self.hud_trial
+            gap = "—" if trial.delta is None else format_delta(trial.delta)
+            lines += [
+                (f"Récord     {format_time(trial.record)}", ACCENT if trial.record else TEXT_DIM),
+                (f"Diferencia {gap}", TEXT),
+            ]
         self.hud.draw_block(self.screen, lines, "top-left", title=self.track.name)
         status = [
             ("Piloto automático" if self.autopilot_on else "Manual", ACCENT),
@@ -325,6 +437,8 @@ class DriveApp:
             status.append((f"Impulso {self.drift.push_level * 100:3.0f} %", ACCENT))
         if self.paused:
             status.append(("PAUSA", WARNING))
+        if self._message and time.perf_counter() - self._message[1] < MESSAGE_SECONDS:
+            status.append((self._message[0], ACCENT))
         self.hud.draw_block(self.screen, status, "top-right")
         if self.show_help:
             self.hud.draw_block(self.screen, [(text, TEXT_DIM) for text in HELP], "bottom-left")
@@ -359,6 +473,14 @@ def main(argv: list[str] | None = None) -> None:
         help="3D: chase, broadcast o top; cenital: follow o track",
     )
     parser.add_argument("--variant", choices=("day", "sunset", "night"), default="day")
+    parser.add_argument(
+        "--time-trial",
+        action="store_true",
+        help="contrarreloj: guarda tu mejor vuelta y la muestra como fantasma (tecla K)",
+    )
+    parser.add_argument(
+        "--records-dir", type=Path, help="carpeta de los récords (por defecto, records/)"
+    )
     parser.add_argument("--rays", action="store_true", help="muestra los sensores")
     parser.add_argument("--diagnostics", action="store_true", help="tiempos de cada parte")
     parser.add_argument(
@@ -380,6 +502,8 @@ def main(argv: list[str] | None = None) -> None:
         camera=args.camera,
         variant=args.variant,
         realtime=args.frames is None,
+        time_trial=args.time_trial,
+        records_dir=args.records_dir,
     )
     app.show_rays = args.rays
     if args.diagnostics:

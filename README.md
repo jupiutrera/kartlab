@@ -46,6 +46,8 @@ uv run python scripts/drive.py --help             # todas las opciones
 | G | Mostrar los sensores (rayos) sobre el suelo |
 | T | Vista cenital de depuración |
 | Mayús (izquierda o derecha) | Barrido: mantener con el volante girado (ver abajo) |
+| K | Activar o desactivar la contrarreloj (ver abajo) |
+| F | Mostrar u ocultar el fantasma del récord |
 | Tab | Piloto automático de referencia |
 | P | Pausa |
 | F3 | Diagnóstico: fps y milisegundos de cada parte del dibujo |
@@ -53,6 +55,23 @@ uv run python scripts/drive.py --help             # todas las opciones
 | F11 | Pantalla completa |
 | H | Mostrar u ocultar la ayuda |
 | Esc | Salir |
+
+### Contrarreloj
+
+![Contrarreloj: fantasma del récord y diferencia de tiempo](docs/img/contrarreloj.png)
+
+```sh
+uv run python scripts/drive.py --time-trial                      # empieza ya en contrarreloj
+uv run python scripts/drive.py --time-trial --track-file tracks/ejemplo.json
+```
+
+O pulsa **K** en cualquier momento para activarla o desactivarla. Da vueltas al circuito: la primera completa se guarda como récord y, a partir de ahí, cada vuelta más rápida lo sustituye. Los datos son solo poses (x, y, rumbo) con su tiempo, así que el barrido cuenta igual que cualquier otra forma de conducir.
+
+- **Fantasma.** El récord se reproduce como un kart azul con halo, siguiendo el reloj de tu vuelta actual: cada vez que cruzas la meta vuelve a salir de la línea. Si llega antes que tú, espera un segundo en la meta y desaparece. **F** lo oculta o lo muestra.
+- **Diferencia en vivo.** Bajo el cronómetro: `−0,42` en verde si vas por delante del récord, `+1,03` en rojo si vas por detrás. Se calcula con el tiempo que tardó el récord en llegar al mismo punto de la línea central (por progreso, no por reloj) y se suaviza para que no tiemble. Debajo, el tiempo del récord y el de tu última vuelta.
+- **Qué cuenta.** Solo las vueltas completas, conducidas a mano y salidas desde la línea (con **R** o cruzando la meta). Reiniciar, cambiar de circuito, usar el piloto automático (Tab) o salir marcha atrás sin completar la vuelta nunca tocan el récord. La primera vuelta sale parada y las siguientes lanzadas, por eso la segunda suele batir a la primera.
+- **Dónde se guarda.** En `records/` (ignorado por git), un JSON pequeño por circuito, con escritura atómica. `--records-dir` elige otra carpeta. Borrar el fichero borra el récord.
+- **Cuándo se ignora un récord.** Si el circuito ya no es el mismo (otra forma, ancho o nombre), si cambió la física del kart (`PHYSICS_VERSION` en `src/kartlab/sim/version.py`) o si el fichero está dañado: aparece un aviso y se empieza sin récord, sin romper nada. Quien cambie la física del kart debe subir esa constante.
 
 ### Barrido (deslizamiento)
 
