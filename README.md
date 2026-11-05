@@ -138,6 +138,40 @@ Para elegir el tipo de VecEnv, el número de entornos y los hilos de PyTorch má
 uv run python scripts/benchmark_train.py
 ```
 
+## Circuitos propios
+
+Un circuito es un fichero JSON con las esquinas del trazado: `[x, y, radio]` en metros, en el orden de conducción (vale en sentido horario o antihorario). El radio es un máximo: si las esquinas vecinas no dejan sitio, el arco se reduce, como hace el generador. La línea de meta se coloca sola en la recta más larga.
+
+```json
+{
+  "format": 1,
+  "name": "Bahía del Faro",
+  "width": 12,
+  "decoration_seed": 7,
+  "corners": [[0, 0, 40], [320, -10, 30], [400, 100, 25], [330, 190, 16]]
+}
+```
+
+El circuito se construye por el mismo camino que el generador y no llega a la IA si no pasa el validador. Rechaza, con un mensaje que dice qué esquina o qué tramo falla:
+- cruces del trazado consigo mismo;
+- esquinas con radio menor de 14 m (lo que el kart puede tomar) o curvas más cerradas que eso una vez suavizadas;
+- anchura fuera de 8-20 m;
+- menos de 8 m de hierba entre tramos que no son vecinos;
+- longitud fuera de 400-2500 m, entre 3 y 40 esquinas, esquinas a menos de 5 m una de otra.
+
+Los campos desconocidos son un error, y `crossings` queda reservado para una versión futura del formato (pasos a nivel).
+
+```sh
+uv run python scripts/track_file.py validate tracks/ejemplo.json
+uv run python scripts/track_file.py export --seed 7 --out mio.json     # punto de partida desde un circuito generado
+uv run python scripts/track_file.py export --showcase harbor --out mio.json
+uv run python scripts/drive.py --track-file tracks/ejemplo.json        # conducirlo a mano
+uv run python scripts/evaluate.py --track-file tracks/ejemplo.json     # 3 vueltas con el último modelo
+```
+
+`evaluate.py` se niega a evaluar un fichero que no pasa la validación (código de salida distinto de cero) y no pisa el resultado oficial del run.
+`tracks/ejemplo.json` es un diseño original; el detalle del formato está en `src/kartlab/sim/trackfile.py`.
+
 ## Comandos
 
 | Qué | Comando |
@@ -159,6 +193,7 @@ src/kartlab/
   render/   render pseudo-3D (numpy + pygame-ce)
   show/     visor, vídeos y carreras de fantasmas
 scripts/    puntos de entrada
+tracks/     circuitos en fichero JSON
 configs/    configuraciones de entrenamiento (YAML)
 assets/     fuentes y paleta
 docs/       procedencia de recursos y registro de experimentos
