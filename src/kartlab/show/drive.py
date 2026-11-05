@@ -50,6 +50,7 @@ TRAIL_EVERY = 3  # physics steps between trail points
 CAMERA_RESPONSE = 4.0  # top-down follow camera smoothing (1/s)
 CAMERA_LEAD = 0.6  # the top-down follow camera aims this many seconds ahead (s)
 GHOST_RAMP = 1  # the record's ghost is blue; the player is orange
+LABEL_MIN_GAP = 5.0  # no "Récord" tag on a ghost closer than this to the player (m)
 GHOST_COLOR = (112, 164, 255)  # the ghost in the top-down view
 MESSAGE_SECONDS = 4.0  # how long a time-trial message stays in the top-down HUD
 MAX_PENDING = 0.1  # never simulate more than this after a stall (s)
@@ -345,7 +346,9 @@ class DriveApp:
         if self.trial is not None:
             ghost = self.ghost_state()
             if ghost is not None:
-                self.ghost_visual = KartVisual(ghost, GHOST_RAMP, "Récord", ghost=True)
+                near = math.hypot(ghost.x - racer.kart.x, ghost.y - racer.kart.y) < LABEL_MIN_GAP
+                label = None if near else "Récord"  # on top of you, the tag only gets in the way
+                self.ghost_visual = KartVisual(ghost, GHOST_RAMP, label, ghost=True)
                 visuals.append(self.ghost_visual)
             self.hud_trial = self.trial_hud()
         pose = self.game.update(visuals, 0.0 if self.paused else dt)

@@ -613,3 +613,13 @@ def test_huge_integers_do_not_break_startup(track, lap, tmp_path, field):
     store.path_for(track).write_text(json.dumps(data), encoding="utf-8", newline="\n")
     with pytest.warns(RecordWarning):
         assert TimeTrial(track, store).record is None
+
+
+def test_ghost_label_is_hidden_when_it_overlaps_the_player(track, lap, tmp_path, app_factory):
+    RecordStore(tmp_path).save(track, lap)
+    app = app_factory(autopilot=False)
+    app.run(max_frames=2)  # standing at the line with the ghost: the same spot
+    assert app.ghost_visual is not None and app.ghost_visual.label is None
+    app.racer.reset(start_s=100.0)
+    app.run(max_frames=2)
+    assert app.ghost_visual.label == "Récord"
