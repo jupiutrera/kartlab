@@ -89,7 +89,7 @@ def signature_matches(saved: Any, track: Track) -> bool:
             and saved_points.shape == (SIGNATURE_POINTS, 2)
             and np.abs(saved_points - np.asarray(mine["points"])).max() <= SIGNATURE_TOLERANCE
         )
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, OverflowError):
         return False
 
 
@@ -190,6 +190,10 @@ class Record:
         lap_time = data.get("lap_time")
         if isinstance(lap_time, bool) or not isinstance(lap_time, (int, float)):
             raise RecordError("'lap_time' debe ser un número")
+        try:
+            lap_time = float(lap_time)  # a huge JSON integer overflows here
+        except OverflowError:
+            raise RecordError("'lap_time' es demasiado grande") from None
         if not math.isfinite(lap_time) or lap_time <= 0:
             raise RecordError("'lap_time' debe ser positivo")
         columns = []
@@ -199,7 +203,7 @@ class Record:
                 raise RecordError(f"'{name}' debe ser una lista de 2 a {MAX_SAMPLES} números")
             try:
                 array = np.asarray(values, dtype=np.float64)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 raise RecordError(f"'{name}' contiene valores que no son números") from None
             if array.ndim != 1 or not np.isfinite(array).all():
                 raise RecordError(f"'{name}' contiene valores no finitos")
@@ -211,7 +215,7 @@ class Record:
             raise RecordError("los tiempos no son crecientes o no coinciden con 'lap_time'")
         if not isinstance(data.get("track"), dict):
             raise RecordError("falta la firma del circuito")
-        return cls(float(lap_time), t, x, y, heading, d, data["track"], physics)
+        return cls(lap_time, t, x, y, heading, d, data["track"], physics)
 
 
 class RecordStore:
@@ -234,7 +238,7 @@ class RecordStore:
             if path.stat().st_size > MAX_FILE_BYTES:
                 raise RecordError("fichero demasiado grande")
             record = Record.from_json(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, RecordError) as error:
+        except (OSError, UnicodeDecodeError, RecordError, OverflowError) as error:
             return self._ignore(path, f"fichero dañado ({error})")
         if record.physics_version != PHYSICS_VERSION:
             return self._ignore(

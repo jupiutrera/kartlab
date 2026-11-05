@@ -563,3 +563,22 @@ def test_drive_lap_messages(app_factory, event, start):
     app = app_factory()
     app._on_lap(event)
     assert app._message[0].startswith(start)
+
+
+@pytest.mark.parametrize("field", ["lap_time", "x", "width", "points"])
+def test_huge_integers_do_not_break_startup(track, lap, tmp_path, field):
+    """JSON integers have no limit; converting 10**400 to a float must not crash the load."""
+    store = RecordStore(tmp_path)
+    data = json.loads(lap.to_json())
+    huge = 10**400
+    if field == "lap_time":
+        data["lap_time"] = huge
+    elif field == "x":
+        data["x"][5] = huge
+    elif field == "width":
+        data["track"]["width"] = huge
+    else:
+        data["track"]["points"][3][0] = huge
+    store.path_for(track).write_text(json.dumps(data), encoding="utf-8", newline="\n")
+    with pytest.warns(RecordWarning):
+        assert TimeTrial(track, store).record is None
