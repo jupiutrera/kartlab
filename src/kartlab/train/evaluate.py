@@ -17,6 +17,7 @@ import numpy as np
 
 from kartlab.common.io import write_yaml_atomic
 from kartlab.env.kart_env import EnvConfig, KartEnv
+from kartlab.sim.trackfile import TrackFileError
 from kartlab.sim.tracksets import resolve_track
 
 MIN_AVERAGE_SPEED = 6.0  # time limit: the laps at this average speed (m/s)
@@ -129,11 +130,6 @@ def model_predictor(model, vecnormalize_path: Path | None = None):
 
 
 def main(argv: list[str] | None = None) -> None:
-    from stable_baselines3 import PPO
-
-    from kartlab.train.config import TrainConfig
-    from kartlab.train.run import RunPaths, latest_run
-
     parser = argparse.ArgumentParser(description="Evalúa un modelo en los circuitos reservados.")
     parser.add_argument("--run", type=Path, help="carpeta del run (por defecto, el último)")
     parser.add_argument(
@@ -141,8 +137,27 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--tracks", type=int, default=20, help="circuitos de evaluación (1-20)")
     parser.add_argument("--track", action="append", help="circuito concreto (se puede repetir)")
+    parser.add_argument(
+        "--track-file",
+        action="append",
+        type=Path,
+        help="circuito en fichero JSON (se puede repetir); se valida antes de evaluar",
+    )
     parser.add_argument("--laps", type=int, default=3)
     args = parser.parse_args(argv)
+
+    # The policy never sees a track that fails validation: refuse before loading anything.
+    track_files = [str(path) for path in args.track_file or []]
+    for choice in (args.track or []) + track_files:
+        try:
+            resolve_track(choice)
+        except TrackFileError as error:
+            raise SystemExit(f"Circuito no válido:\n{error}") from None
+
+    from stable_baselines3 import PPO
+
+    from kartlab.train.config import TrainConfig
+    from kartlab.train.run import RunPaths, latest_run
 
     run = RunPaths(args.run) if args.run else latest_run()
     if run is None:
@@ -157,18 +172,24 @@ def main(argv: list[str] | None = None) -> None:
             else run.checkpoint(int(args.checkpoint))
         )
         model_path, stats_path = checkpoint.model, checkpoint.vecnormalize
-    tracks = args.track or [f"eval:{i}" for i in range(1, args.tracks + 1)]
+    custom = bool(track_files)
+    tracks = (args.track or []) + track_files
+    if not tracks:
+        tracks = [f"eval:{i}" for i in range(1, args.tracks + 1)]
     model = PPO.load(model_path, device="cpu")
     result = evaluate(model_predictor(model, stats_path), tracks, config.env_config(), args.laps)
 
     print(f"{'circuito':>12} {'éxito':>6} {'vueltas':>8} {'avance':>7} {'fin':>10}  vueltas (s)")
     for t in result.tracks:
         laps = " ".join(f"{x:.1f}" for x in t.lap_times)
+        label = Path(t.track).stem if t.track.endswith(".json") else t.track
         print(
-            f"{t.track:>12} {'sí' if t.success else 'no':>6} {t.laps:>8} "
+            f"{label:>12} {'sí' if t.success else 'no':>6} {t.laps:>8} "
             f"{t.progress:>6.0%} {t.end:>10}  {laps}"
         )
     print(f"\nÉxito: {result.success_rate:.0%} ({args.laps} vueltas sin salirse)")
+    if custom:
+        return  # circuitos propios: no se pisa el resultado oficial del run
     out = run.root / f"eval_{model_path.stem}.yaml"
     write_yaml_atomic(
         out,

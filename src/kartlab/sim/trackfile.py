@@ -1,0 +1,475 @@
+"""Hand-made tracks as JSON files: format, validator and loader.
+
+A file describes a closed polygon of corners with a turning radius at each one, like
+the showcase designs. The track is built through exactly the same path as the generator
+(``filleted_polygon`` then ``finish_centerline``), so a valid file gives the same kind of
+centerline the AI was trained on. Nothing reaches the environment without passing
+``validate_spec``: ``load_track_file`` always validates.
+
+Format (version 1)::
+
+    {
+      "format": 1,
+      "name": "Mi circuito",
+      "width": 12.0,
+      "decoration_seed": 0,
+      "corners": [[x, y, radius], ...]
+    }
+
+``corners`` are in metres, in driving order (the direction follows from the polygon:
+counterclockwise or clockwise are both fine). The start line is placed automatically on
+the straightest stretch, as the generator does. ``decoration_seed`` only affects the
+scenery of the pseudo-3D view.
+
+Extending the format: every file declares ``format``. Unknown fields are an error, so a
+file written for a newer version is never silently loaded half-understood. The field
+``crossings`` (level crossings for figure-eight tracks) is reserved: version 1 rejects
+it with its own message, and a future version 2 can accept it as an optional field
+while version 1 files stay valid unchanged.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from kartlab.common.io import write_text_atomic
+from kartlab.sim.kart import KartParams
+from kartlab.sim.showcase import SHOWCASE
+from kartlab.sim.track import (
+    MAX_ATTEMPTS,
+    Track,
+    TrackParams,
+    closed_length,
+    curvature,
+    filleted_polygon,
+    finish_centerline,
+    has_clearance,
+    random_layout,
+)
+
+FORMAT_VERSION = 1
+KNOWN_FIELDS = frozenset({"format", "name", "width", "decoration_seed", "corners"})
+RESERVED_FIELDS = frozenset({"crossings"})  # planned for a later format version
+
+_GENERATOR = TrackParams()
+# The tightest path curvature the generator allows, never above what the kart can steer.
+MIN_RADIUS = max(_GENERATOR.min_radius, 1.0 / KartParams().max_curvature)  # centerline (m)
+CLEARANCE = _GENERATOR.clearance  # grass gap between non-adjacent sections (m)
+MIN_WIDTH = 8.0  # asphalt (m); the generator's training range starts at 10
+MAX_WIDTH = 20.0
+MIN_LENGTH = 400.0  # centerline (m); generated tracks are 700-1200
+MAX_LENGTH = 2500.0
+MIN_CORNERS = 3
+MAX_CORNERS = 40
+MAX_COORDINATE = 3000.0  # m
+MAX_RADIUS = 500.0  # m
+MIN_EDGE = 5.0  # shortest straight edge of the polygon, before filleting (m)
+MAX_NAME = 40
+MAX_FILE_BYTES = 1_000_000
+MAX_DECORATION_SEED = 2**31 - 1
+
+_EPS = 1e-9
+
+
+class TrackFileError(ValueError):
+    """A track file that cannot be read or fails validation; ``problems`` lists why."""
+
+    def __init__(self, problems: list[str] | str) -> None:
+        self.problems = [problems] if isinstance(problems, str) else list(problems)
+        super().__init__("\n".join(self.problems))
+
+
+@dataclass(frozen=True)
+class TrackSpec:
+    """The contents of a track file: what the author draws."""
+
+    name: str
+    width: float
+    corners: tuple[tuple[float, float, float], ...]  # (x, y, radius) in metres
+    decoration_seed: int = 0
+
+
+@dataclass(frozen=True)
+class TrackReport:
+    """Result of validating a spec: ``problems`` is empty when the track is valid."""
+
+    problems: tuple[str, ...]
+    length: float | None = None  # centerline length (m)
+    min_radius: float | None = None  # tightest radius of the centerline (m)
+    gap: float | None = None  # narrowest grass gap between non-adjacent sections (m)
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+
+# -- reading and writing ---------------------------------------------------------------
+
+
+def _number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def spec_from_dict(data: Any) -> TrackSpec:
+    """Parse the JSON object of a file. Raises ``TrackFileError`` on any structural problem
+    (this checks types and fields only; ``validate_spec`` checks the geometry)."""
+    if not isinstance(data, dict):
+        raise TrackFileError("el fichero debe contener un objeto JSON { ... }")
+    problems: list[str] = []
+    reserved = sorted(RESERVED_FIELDS & data.keys())
+    for key in reserved:
+        problems.append(
+            f"el campo {key!r} está reservado para una versión futura del formato "
+            f"y esta versión ({FORMAT_VERSION}) no lo admite"
+        )
+    unknown = sorted(data.keys() - KNOWN_FIELDS - RESERVED_FIELDS)
+    if unknown:
+        problems.append(f"campos desconocidos: {', '.join(map(repr, unknown))}")
+
+    version = data.get("format")
+    if "format" not in data:
+        problems.append("falta el campo 'format'")
+    elif not isinstance(version, int) or isinstance(version, bool):
+        problems.append("'format' debe ser un número entero")
+    elif version != FORMAT_VERSION:
+        problems.append(f"formato {version} no soportado (esta versión lee el {FORMAT_VERSION})")
+
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        problems.append("'name' debe ser un texto no vacío")
+    elif len(name) > MAX_NAME or not name.isprintable():
+        problems.append(f"'name' debe tener como máximo {MAX_NAME} caracteres imprimibles")
+
+    width = data.get("width")
+    if not _number(width):
+        problems.append("'width' debe ser un número (metros)")
+
+    seed = data.get("decoration_seed", 0)
+    if not isinstance(seed, int) or isinstance(seed, bool) or not 0 <= seed <= MAX_DECORATION_SEED:
+        problems.append(f"'decoration_seed' debe ser un entero entre 0 y {MAX_DECORATION_SEED}")
+
+    corners = data.get("corners")
+    parsed: list[tuple[float, float, float]] = []
+    if not isinstance(corners, list):
+        problems.append("'corners' debe ser una lista de esquinas [x, y, radio]")
+    else:
+        for i, corner in enumerate(corners, start=1):
+            if not (isinstance(corner, list) and len(corner) == 3 and all(map(_number, corner))):
+                problems.append(f"esquina {i}: debe ser [x, y, radio] con tres números")
+            else:
+                parsed.append((float(corner[0]), float(corner[1]), float(corner[2])))
+    if problems:
+        raise TrackFileError(problems)
+    return TrackSpec(str(name).strip(), float(width), tuple(parsed), int(seed))
+
+
+def spec_to_dict(spec: TrackSpec) -> dict[str, Any]:
+    return {
+        "format": FORMAT_VERSION,
+        "name": spec.name,
+        "width": spec.width,
+        "decoration_seed": spec.decoration_seed,
+        "corners": [list(c) for c in spec.corners],
+    }
+
+
+def _plain(value: float) -> float | int:
+    return int(value) if float(value).is_integer() and abs(value) < 1e15 else float(value)
+
+
+def spec_to_json(spec: TrackSpec) -> str:
+    """Readable JSON text: one corner per line, ending in a newline."""
+    corners = ",\n".join(
+        "    [" + ", ".join(json.dumps(_plain(v)) for v in corner) + "]" for corner in spec.corners
+    )
+    return (
+        "{\n"
+        f'  "format": {FORMAT_VERSION},\n'
+        f'  "name": {json.dumps(spec.name, ensure_ascii=False)},\n'
+        f'  "width": {json.dumps(_plain(spec.width))},\n'
+        f'  "decoration_seed": {spec.decoration_seed},\n'
+        '  "corners": [\n'
+        f"{corners}\n"
+        "  ]\n"
+        "}\n"
+    )
+
+
+def save_spec(path: Path | str, spec: TrackSpec) -> None:
+    """Atomically write a spec as UTF-8 with LF line endings. Does not validate."""
+    write_text_atomic(Path(path), spec_to_json(spec))
+
+
+def _reject_constant(name: str) -> Any:
+    raise ValueError(f"valor no válido {name}")
+
+
+def load_spec(path: Path | str) -> TrackSpec:
+    """Read a track file. Raises ``TrackFileError`` with a clear message if it is missing,
+    too large, not UTF-8, not JSON (corrupt or truncated) or structurally wrong."""
+    path = Path(path)
+    try:
+        if path.stat().st_size > MAX_FILE_BYTES:
+            raise TrackFileError(f"{path}: el fichero es demasiado grande para ser un circuito")
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise TrackFileError(f"{path}: no existe el fichero") from None
+    except UnicodeDecodeError:
+        raise TrackFileError(f"{path}: no está en UTF-8") from None
+    except OSError as error:
+        raise TrackFileError(f"{path}: no se puede leer ({error.strerror or error})") from None
+    try:
+        data = json.loads(text, parse_constant=_reject_constant)
+    except ValueError as error:
+        raise TrackFileError(
+            f"{path}: JSON no válido o incompleto ({error}); ¿está truncado o corrupto?"
+        ) from None
+    try:
+        return spec_from_dict(data)
+    except TrackFileError as error:
+        raise TrackFileError([f"{path}: {p}" for p in error.problems]) from None
+
+
+# -- export ----------------------------------------------------------------------------
+
+
+def spec_from_seed(seed: int, params: TrackParams | None = None) -> TrackSpec:
+    """The corner design behind ``generate_track(seed, params)``, as an editable spec.
+
+    It replays the generator's random draws up to the accepted attempt and applies the
+    same scaling, rotation and driving direction to the corners. Rebuilding the spec
+    gives a centerline that follows the generated one (corners are rounded to 1 mm and
+    the start line may sit elsewhere), but it is not bit-identical: the reserved tracks
+    themselves never go through this path.
+    """
+    params = params or TrackParams()
+    rng = np.random.default_rng(seed)
+    for _ in range(MAX_ATTEMPTS):
+        verts, radii = random_layout(rng, params)
+        rotation = rng.uniform(0.0, 2 * np.pi)
+        clockwise = bool(rng.integers(2))
+        path, used = filleted_polygon(verts, radii)
+        if np.min(used) < params.min_radius:
+            continue
+        if (
+            finish_centerline(
+                path, params.width, params.min_radius, params.clearance, params.length
+            )
+            is None
+        ):
+            continue
+        scale = params.length / closed_length(path)
+        c, s = math.cos(rotation), math.sin(rotation)
+        corners = np.column_stack([verts * scale @ np.array([[c, s], [-s, c]]), radii * scale])
+        if clockwise:
+            corners = corners[::-1]
+        rounded = tuple((float(x), float(y), float(r)) for x, y, r in np.round(corners, 3))
+        return TrackSpec(f"Semilla {seed}", params.width, rounded, seed % (MAX_DECORATION_SEED + 1))
+    raise RuntimeError(f"could not generate a valid track for seed {seed}")
+
+
+def spec_from_showcase(key: str) -> TrackSpec:
+    """The hand-made showcase design ``key`` (``harbor``, ``canyon``, ``plateau``)."""
+    design = SHOWCASE[key]
+    return TrackSpec(design.name, design.width, design.corners)
+
+
+# -- validation ------------------------------------------------------------------------
+
+
+def _crossing(points: np.ndarray, stride: int = 1) -> tuple[int, int] | None:
+    """First pair of non-adjacent segments of a closed polyline that properly cross."""
+    pts = points[::stride]
+    a, b = pts, np.roll(pts, -1, axis=0)
+
+    def orient(p, q, r):
+        return (q[..., 0] - p[..., 0]) * (r[..., 1] - p[..., 1]) - (q[..., 1] - p[..., 1]) * (
+            r[..., 0] - p[..., 0]
+        )
+
+    a0, a1 = a[:, None, :], b[:, None, :]
+    b0, b1 = a[None, :, :], b[None, :, :]
+    cross = (orient(a0, a1, b0) * orient(a0, a1, b1) < -_EPS) & (
+        orient(b0, b1, a0) * orient(b0, b1, a1) < -_EPS
+    )
+    n = len(pts)
+    idx = np.arange(n)
+    sep = np.abs(idx[:, None] - idx[None, :])
+    cross &= np.minimum(sep, n - sep) > 1
+    found = np.argwhere(np.triu(cross))
+    return (int(found[0, 0]), int(found[0, 1])) if len(found) else None
+
+
+def narrowest_gap(points: np.ndarray, width: float) -> float:
+    """Smallest grass gap (m) between parts of the track that ``has_clearance`` compares.
+
+    Informative only: whether a track is valid is decided by ``has_clearance`` itself.
+    """
+    sub = points[::2]
+    spacing = closed_length(points) / len(sub)
+    idx = np.arange(len(sub))
+    sep = np.abs(idx[:, None] - idx[None, :])
+    arc = np.minimum(sep, len(sub) - sep) * spacing
+    required = width + CLEARANCE
+    far = arc > (math.pi / 2) * required
+    if not far.any():
+        return math.inf
+    d2 = np.sum(sub**2, axis=1)[:, None] + np.sum(sub**2, axis=1)[None, :] - 2.0 * sub @ sub.T
+    return float(math.sqrt(max(float(d2[far].min()), 0.0)) - width)
+
+
+def _check_parameters(spec: TrackSpec) -> list[str]:
+    problems = []
+    if not MIN_WIDTH <= spec.width <= MAX_WIDTH:
+        problems.append(
+            f"anchura {spec.width:g} m fuera de rango: debe estar entre {MIN_WIDTH:g} y "
+            f"{MAX_WIDTH:g} m"
+        )
+    count = len(spec.corners)
+    if not MIN_CORNERS <= count <= MAX_CORNERS:
+        problems.append(f"{count} esquinas: debe haber entre {MIN_CORNERS} y {MAX_CORNERS}")
+    for i, (x, y, radius) in enumerate(spec.corners, start=1):
+        if abs(x) > MAX_COORDINATE or abs(y) > MAX_COORDINATE:
+            problems.append(
+                f"esquina {i}: la posición ({x:g}, {y:g}) se sale de ±{MAX_COORDINATE:g} m"
+            )
+        if radius < MIN_RADIUS:
+            problems.append(
+                f"esquina {i}: radio {radius:g} m demasiado cerrado; el mínimo es {MIN_RADIUS:g} m"
+            )
+        elif radius > MAX_RADIUS:
+            problems.append(f"esquina {i}: radio {radius:g} m excesivo (máximo {MAX_RADIUS:g} m)")
+    return problems
+
+
+def _check_polygon(corners: np.ndarray) -> list[str]:
+    """Edge lengths and crossings of the corner polygon, before any rounding."""
+    problems = []
+    edges = np.roll(corners, -1, axis=0) - corners
+    lengths = np.hypot(edges[:, 0], edges[:, 1])
+    n = len(corners)
+    for i in np.flatnonzero(lengths < MIN_EDGE):
+        problems.append(
+            f"las esquinas {i + 1} y {(i + 1) % n + 1} están a {lengths[i]:.1f} m: "
+            f"separa más las esquinas (mínimo {MIN_EDGE:g} m entre dos consecutivas)"
+        )
+    if problems:
+        return problems
+    pair = _crossing(corners)
+    if pair is not None:
+        (a, b), (c, d) = (pair[0] + 1, (pair[0] + 1) % n + 1), (pair[1] + 1, (pair[1] + 1) % n + 1)
+        problems.append(
+            f"el circuito se cruza a sí mismo: el tramo de la esquina {a} a la {b} "
+            f"corta el de la {c} a la {d}"
+        )
+    return problems
+
+
+def _build_points(spec: TrackSpec) -> tuple[np.ndarray | None, list[str]]:
+    """Centerline of a spec through the generator's own functions, plus the problems found
+    while rounding the corners.
+
+    The final curvature and clearance checks are left out here (``finish_centerline`` is
+    called with neutral limits) so each can be reported on its own afterwards.
+    """
+    corners = np.array(spec.corners, dtype=np.float64)
+    path, used = filleted_polygon(corners[:, :2], corners[:, 2])
+    # As in the generator, a radius is an upper bound: when the neighbouring arcs would
+    # use more than 90 % of an edge it shrinks, and only a result below the minimum
+    # radius is rejected.
+    problems = []
+    for i, (want, got) in enumerate(zip(corners[:, 2], used, strict=True), start=1):
+        if got < MIN_RADIUS - 1e-6:
+            problems.append(
+                f"esquina {i}: el radio {want:g} m no cabe entre sus vecinas y se queda en "
+                f"{got:.1f} m (mínimo {MIN_RADIUS:g} m); separa las esquinas o acorta el radio"
+            )
+    if problems:
+        return None, problems
+    return finish_centerline(path, spec.width, 0.0, -spec.width), []
+
+
+def check_centerline(points: np.ndarray, width: float) -> TrackReport:
+    """The checks on a finished centerline: length, tightest curve, self-crossing and
+    clearance between non-adjacent sections. The same limits as the generator's, so it
+    also accepts every generated and showcase track."""
+    problems = []
+    length = closed_length(points)
+    kappa = float(np.max(np.abs(curvature(points))))
+    min_radius = 1.0 / kappa if kappa > 0 else math.inf
+    if not MIN_LENGTH <= length <= MAX_LENGTH:
+        problems.append(
+            f"longitud {length:.0f} m fuera de rango: debe estar entre {MIN_LENGTH:g} y "
+            f"{MAX_LENGTH:g} m"
+        )
+    if kappa * MIN_RADIUS > 1.0:
+        problems.append(
+            f"curva demasiado cerrada: radio mínimo {min_radius:.1f} m en el trazado "
+            f"(mínimo {MIN_RADIUS:g} m); ensancha alguna esquina o aléjala de las vecinas"
+        )
+    gap = None
+    if _crossing(points, stride=2) is not None:
+        problems.append("la línea central se cruza a sí misma")
+    else:
+        gap = narrowest_gap(points, width)
+        if not has_clearance(points, width, CLEARANCE):
+            problems.append(
+                f"dos partes del circuito están demasiado cerca: quedan {gap:.1f} m de hierba "
+                f"entre ellas y se necesitan al menos {CLEARANCE:g} m"
+            )
+    return TrackReport(tuple(problems), length, min_radius, gap)
+
+
+def _analyze(spec: TrackSpec) -> tuple[TrackReport, np.ndarray | None]:
+    problems = _check_parameters(spec)
+    if not MIN_CORNERS <= len(spec.corners) <= MAX_CORNERS or any(
+        abs(v) > MAX_COORDINATE for c in spec.corners for v in c[:2]
+    ):
+        return TrackReport(tuple(problems)), None  # nothing sensible to draw
+    problems += _check_polygon(np.array(spec.corners, dtype=np.float64)[:, :2])
+    if problems:
+        return TrackReport(tuple(problems)), None  # the track is not built from a bad design
+    points, rounding = _build_points(spec)
+    if points is None:
+        return TrackReport(tuple(rounding)), None
+    report = check_centerline(points, spec.width)
+    return report, points if report.ok else None
+
+
+def validate_spec(spec: TrackSpec) -> TrackReport:
+    """Check a spec against everything the generator guarantees. Never raises for a bad
+    design: the reasons come back in ``TrackReport.problems`` (Spanish, one per line)."""
+    return _analyze(spec)[0]
+
+
+def build_track(spec: TrackSpec) -> Track:
+    """Validate ``spec`` and build its ``Track``. Raises ``TrackFileError`` if it is invalid."""
+    report, points = _analyze(spec)
+    if points is None:
+        raise TrackFileError(list(report.problems))
+    return Track(
+        points,
+        spec.width,
+        name=spec.name,
+        clearance=CLEARANCE,
+        decoration_seed=spec.decoration_seed,
+    )
+
+
+def load_track_file(path: Path | str) -> Track:
+    """Read, validate and build a track file. The single entry point for loading custom
+    tracks (evaluation, training configs, manual driving and the viewers).
+
+    Raises ``TrackFileError`` (a ``ValueError``) with a readable message otherwise.
+    """
+    spec = load_spec(path)
+    try:
+        return build_track(spec)
+    except TrackFileError as error:
+        raise TrackFileError([f"{path}: {p}" for p in error.problems]) from None

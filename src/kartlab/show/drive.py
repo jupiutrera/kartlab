@@ -32,6 +32,7 @@ from kartlab.sim.kart import DT
 from kartlab.sim.race import Racer
 from kartlab.sim.showcase import showcase_track
 from kartlab.sim.track import Track
+from kartlab.sim.trackfile import TrackFileError, load_track_file
 from kartlab.sim.tracksets import (
     EVAL_SEEDS,
     eval_track,
@@ -114,7 +115,9 @@ class DriveApp:
         size = self.screen.get_size()
         if self.view_mode == "3d" and self.game is None:
             self._loading()
-            self.game = GameView(self.track, size, self.camera3d, self.variant)
+            self.game = GameView(
+                self.track, size, self.camera3d, self.variant, seed=self.track.decoration_seed
+            )
             self.game.diagnostics = self.diagnostics
         elif self.view_mode == "topdown" and self.view is None:
             self.view = TopDownView(self.track, size)
@@ -314,6 +317,9 @@ def main(argv: list[str] | None = None) -> None:
         help="harbor, canyon, plateau, eval:N (1-20) o una semilla de entrenamiento",
     )
     parser.add_argument(
+        "--track-file", type=Path, help="circuito en fichero JSON (sustituye a --track)"
+    )
+    parser.add_argument(
         "--scale", type=int, help="escala entera sobre 320x180 (por defecto, la mayor que quepa)"
     )
     parser.add_argument("--fullscreen", action="store_true", help="pantalla completa")
@@ -336,8 +342,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--screenshot", type=Path, help="guarda el último fotograma en este PNG")
     args = parser.parse_args(argv)
 
+    try:
+        track = load_track_file(args.track_file) if args.track_file else resolve_track(args.track)
+    except TrackFileError as error:
+        raise SystemExit(f"Circuito no válido:\n{error}") from None
     app = DriveApp(
-        resolve_track(args.track),
+        track,
         scale=args.scale,
         fullscreen=args.fullscreen,
         autopilot=args.autopilot,
