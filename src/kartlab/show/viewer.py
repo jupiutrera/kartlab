@@ -107,7 +107,7 @@ HELP_SECTIONS = (
         "Versiones",
         (
             ("← →", "versión anterior / siguiente"),
-            ("Re Pág / Av Pág", "saltar 10 versiones"),
+            ("Re Pág / Av Pág", "10 versiones atrás / adelante"),
             ("Inicio / Fin", "la primera / la última"),
             ("Rueda · clic", "en la barra de versiones"),
             ("", "En la carrera, ← → eligen a quién sigue la cámara."),

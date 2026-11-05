@@ -98,8 +98,10 @@ def test_escape_leaves_a_mode_for_the_title_and_the_title_for_the_exit(app):
     assert viewer.running is False
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("mode", ["watch", "race", "progression"])
+@pytest.mark.parametrize(
+    "mode",
+    [pytest.param("watch", marks=pytest.mark.smoke), "race", "progression"],
+)
 def test_each_mode_renders_frames(app, mode):
     viewer = app(mode=mode)
     viewer.run_loop(240)  # past the race countdown
@@ -148,6 +150,10 @@ def test_version_switching_in_watch_mode(app):
     scene.on_wheel(-1)
     viewer.run_loop(60)
     assert scene.shown == steps[-2]
+    press(viewer, pygame.K_PAGEUP)  # ten versions back (clamped to the first)
+    assert scene.index == 0
+    press(viewer, pygame.K_PAGEDOWN)
+    assert scene.index == len(steps) - 1
 
 
 def test_start_version_picks_the_nearest_checkpoint(app):

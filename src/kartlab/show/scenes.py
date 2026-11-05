@@ -321,8 +321,8 @@ class WatchScene(Scene):
         moves = {
             pygame.K_LEFT: self.index - 1,
             pygame.K_RIGHT: self.index + 1,
-            pygame.K_PAGEUP: self.index + JUMP,
-            pygame.K_PAGEDOWN: self.index - JUMP,
+            pygame.K_PAGEDOWN: self.index + JUMP,
+            pygame.K_PAGEUP: self.index - JUMP,
             pygame.K_HOME: 0,
             pygame.K_END: n - 1,
         }
