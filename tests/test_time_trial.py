@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -154,11 +155,21 @@ def test_record_of_a_changed_track_is_ignored(track, lap, tmp_path):
     moved = track.points.copy()
     moved[len(moved) // 3] += (1.0, 0.0)  # a metre-wide bump on a sampled point
     changed = Track(moved, track.width, track.name, clearance=track.clearance)
-    changed_path = store.path_for(changed)
-    assert changed_path == store.path_for(track), "same identity, different geometry"
+    shutil.copy(store.path_for(track), store.path_for(changed))  # as if it had been renamed
     with pytest.warns(RecordWarning, match="circuito"):
         assert store.load(changed) is None
     assert store.load(track) is not None
+
+
+def test_tracks_that_differ_only_in_shape_get_their_own_file(track):
+    from kartlab.sim.track import Track
+
+    stretched = Track(track.points * 1.1, track.width, track.name, clearance=track.clearance)
+    assert record_filename(stretched) != record_filename(track)
+    shifted = Track(
+        np.roll(track.points, 8, axis=0), track.width, track.name, clearance=track.clearance
+    )
+    assert record_filename(shifted) == record_filename(track), "the start sample is not identity"
 
 
 def test_record_of_another_track_is_not_loaded(track, lap, tmp_path):

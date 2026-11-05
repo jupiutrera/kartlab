@@ -7,8 +7,8 @@ lap was driven (drifting included) and it never records inputs.
 
 Storage is one small JSON file per track in ``records/`` (see ``RecordStore``). Its key:
 
-- the file name holds the track identity: name, seed, width and sample count, hashed (all
-  platform independent);
+- the file name holds the track identity: name, seed, width, sample count, length and
+  bounding box (to the metre), hashed (all platform independent);
 - inside, the record carries ``PHYSICS_VERSION`` and a signature of the centerline (64
   points, compared with a tolerance): the generator may pick a different start sample on
   Linux and Windows (see ``tests/test_track_pins.py``), which moves the finish line, and
@@ -97,7 +97,12 @@ def record_filename(track: Track) -> str:
     """``<name>-<hash>.json``; the hash only uses values that are stable across platforms."""
     ascii_name = unicodedata.normalize("NFKD", track.name).encode("ascii", "ignore").decode()
     slug = re.sub(r"[^a-z0-9]+", "-", ascii_name.lower()).strip("-")[:40] or "circuito"
-    identity = f"{track.name}|{track.seed}|{track.width:.3f}|{len(track)}"
+    # Length and bounding box to the nearest metre: they do not change when the generator
+    # picks another start sample, and platform noise (1e-12 m) will not cross a rounding
+    # boundary in practice. Tracks that only differ in shape get their own file.
+    low, high = np.round(track.points.min(axis=0)), np.round(track.points.max(axis=0))
+    shape = f"{round(track.length)}|{low[0]:.0f},{low[1]:.0f}|{high[0]:.0f},{high[1]:.0f}"
+    identity = f"{track.name}|{track.seed}|{track.width:.3f}|{len(track)}|{shape}"
     return f"{slug}-{hashlib.sha1(identity.encode('utf-8')).hexdigest()[:8]}.json"
 
 
