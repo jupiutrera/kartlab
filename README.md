@@ -138,6 +138,29 @@ Para elegir el tipo de VecEnv, el número de entornos y los hilos de PyTorch má
 uv run python scripts/benchmark_train.py
 ```
 
+## Vídeos
+
+Los vídeos se renderizan fuera de tiempo real y van directos a ffmpeg (sin fotogramas sueltos en disco), siempre a 1920×1080 y 60 fps exactos (H.264, `yuv420p`, crf 18). El mundo de 320×180 se escala ×6 y el HUD se dibuja a 1080p. No hace falta ventana ni GPU. Cada paso de física (1/60 s) es un fotograma, con acciones deterministas, así que el mismo run y el mismo circuito dan siempre el mismo vídeo.
+
+```sh
+RUN=runs/2026-11-04_2159_random-tracks
+uv run python scripts/make_video.py progression --run $RUN --track harbor --out videos/progresion.mp4
+uv run python scripts/make_video.py race --run $RUN --track harbor --laps 2 --out videos/carrera.mp4
+uv run python scripts/make_video.py demo --run $RUN --track eval:3 --laps 3 --out videos/demo.mp4
+```
+
+- `progression`: el mismo circuito recorrido por checkpoints en escala logarítmica de pasos (sin entrenar, 10k, 30k, 100k, 300k, 1M y el final). Cada versión rueda una vuelta o `--seconds` segundos (30 por defecto; el doble para la última). Lleva tarjeta de versión con transición suave, contador de pasos, curva de recompensa con un marcador y la cinta de versiones. Las malas siguen rodando por la hierba y se reinician al atascarse 3 s; tras el segundo reinicio se pasa a la siguiente versión.
+- `race`: todas las versiones a la vez desde una parrilla de dos columnas, con la mejor al final, sin colisiones. Cámara de retransmisión siguiendo a la mejor, clasificación, minimapa y una etiqueta y un color por versión. Termina cuando la mejor completa `--laps` vueltas.
+- `demo`: `best_model.zip` en un circuito que no vio durante el entrenamiento (`eval:3` por defecto), con cámara de persecución y un resumen de vueltas al final.
+
+![Vídeo de progresión](docs/img/fase-5-progresion.png)
+
+![Carrera de versiones](docs/img/fase-5-carrera.png)
+
+![Demo en un circuito inédito](docs/img/fase-5-demo.png)
+
+Otras opciones: `--camera broadcast|chase|top`, `--variant day|sunset|night`, `--steps 0,10000,100000` (versiones a mostrar) y `--normal-priority` (por defecto el proceso y ffmpeg van con prioridad baja). En un i5-1135G7 se renderizan unos 20-25 fotogramas por segundo de vídeo: la progresión de referencia (200 s de vídeo) tarda unos 10 minutos y pesa unos 170 MB. `videos/` está en `.gitignore`.
+
 ## Comandos
 
 | Qué | Comando |
@@ -176,7 +199,7 @@ tests/
 | 2 | Entorno Gymnasium | Hecha |
 | 3 | Entrenamiento | Hecha |
 | 4 | Render pseudo-3D y dirección de arte | En revisión |
-| 5 | Herramientas de exhibición | Pendiente |
+| 5 | Herramientas de exhibición | En curso (vídeos hechos) |
 | 6 | Editor de circuitos (opcional) | Pendiente |
 
 ## Licencia
