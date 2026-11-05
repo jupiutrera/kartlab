@@ -38,6 +38,7 @@ def validate_files(paths: list[Path]) -> int:
             print(
                 f"OK {path}: «{spec.name}», {report.length:.0f} m, anchura {spec.width:g} m, "
                 f"radio mínimo {report.min_radius:.1f} m, hierba mínima {report.gap:.1f} m"
+                + (f", {report.crossings} cruce(s) a nivel" if report.crossings else "")
             )
         else:
             failed += 1
