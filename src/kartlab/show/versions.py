@@ -75,8 +75,9 @@ class VersionLibrary:
         self._since_refresh = 0.0
         if not synchronous:
             self._pool = ThreadPoolExecutor(1, thread_name_prefix="version-loader")
-            self._pool.submit(warm_up_libraries)
+            self._warming: Future | None = self._pool.submit(warm_up_libraries)
         else:
+            self._warming = None
             warm_up_libraries()
 
     # -- listing ----------------------------------------------------------------------------
@@ -121,12 +122,18 @@ class VersionLibrary:
     def failed(self, steps: int) -> str | None:
         return self._failed.get(steps)
 
+    def clear_failure(self, steps: int) -> None:
+        self._failed.pop(steps, None)
+
     def is_loading(self, steps: int) -> bool:
         return steps in self._futures
 
     @property
     def busy(self) -> bool:
-        return bool(self._futures)
+        """True while the background thread is importing PyTorch or loading a version (the
+        frame rate dips a little meanwhile, which is not a reason for the light mode)."""
+        warming = self._warming is not None and not self._warming.done()
+        return warming or bool(self._futures)
 
     def request(self, steps: int) -> Version | None:
         """Start loading ``steps`` (a no-op if cached or on its way). In synchronous mode
