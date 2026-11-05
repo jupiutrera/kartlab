@@ -12,7 +12,10 @@ Todo el material gráfico, tipográfico y sonoro del proyecto es original o tien
 
 | Recurso | Tipo | Fichero | Autor | Licencia | Origen | Añadido |
 | --- | --- | --- | --- | --- | --- | --- |
-| IBM Plex Mono (Regular y SemiBold) | Fuente de la interfaz de la vista de depuración | `assets/fonts/ibm-plex-mono/` | IBM Corp. | SIL OFL 1.1 (`OFL.txt` junto a la fuente) | [google/fonts](https://github.com/google/fonts/tree/main/ofl/ibmplexmono) | 2026-11-04 |
+| IBM Plex Mono (Regular y SemiBold) | Fuente de la interfaz: cifras y vista de depuración | `assets/fonts/ibm-plex-mono/` | IBM Corp. | SIL OFL 1.1 (`OFL.txt` junto a la fuente) | [google/fonts](https://github.com/google/fonts/tree/main/ofl/ibmplexmono) | 2026-11-04 |
+| IBM Plex Sans (Regular y SemiBold) | Fuente de la interfaz: textos | `assets/fonts/ibm-plex-sans/` | IBM Corp. | SIL OFL 1.1 (`OFL.txt` junto a la fuente) | [IBM/plex](https://github.com/IBM/plex/tree/master/packages/plex-sans/fonts/complete/ttf) | 2026-11-04 |
+| Silkscreen | Fuente pixel para las etiquetas del mundo (320×180) | `assets/fonts/silkscreen/` | The Silkscreen Project Authors (Jason Kottke) | SIL OFL 1.1 (`OFL.txt` junto a la fuente) | [google/fonts](https://github.com/google/fonts/tree/main/ofl/silkscreen) | 2026-11-04 |
+| Resurrect 64 | Paleta de 64 colores usada en todo el mundo | `assets/palettes/resurrect-64.hex` | Kerrie Lake | Publicada en Lospec para uso libre (una lista de colores) | [lospec.com/palette-list/resurrect-64](https://lospec.com/palette-list/resurrect-64) | 2026-11-04 |
 
 ## Material propio
 

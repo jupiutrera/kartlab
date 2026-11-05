@@ -1,4 +1,4 @@
-"""Manual driving on the top-down debug view.
+"""Manual driving, in the pseudo-3D view (default) or the top-down debug view.
 
 Run with ``uv run python scripts/drive.py`` (``--help`` lists the options).
 """
@@ -14,6 +14,7 @@ import numpy as np
 import pygame
 
 from kartlab.render.display import open_window, set_window_mode
+from kartlab.render.scene import KartVisual
 from kartlab.render.topdown import (
     ACCENT,
     KART_COLOR,
@@ -23,7 +24,9 @@ from kartlab.render.topdown import (
     DebugHud,
     TopDownView,
     format_time,
+    load_fonts,
 )
+from kartlab.render.view import GameView, HudInfo
 from kartlab.sim.autopilot import Autopilot
 from kartlab.sim.kart import DT
 from kartlab.sim.race import Racer
@@ -40,14 +43,14 @@ from kartlab.sim.tracksets import (
 TITLE = "KART LAB · conducción manual"
 TRAIL_SECONDS = 4.0
 TRAIL_EVERY = 3  # physics steps between trail points
-CAMERA_RESPONSE = 4.0  # follow camera smoothing (1/s)
-CAMERA_LEAD = 0.6  # the follow camera aims this many seconds ahead of the kart (s)
+CAMERA_RESPONSE = 4.0  # top-down follow camera smoothing (1/s)
+CAMERA_LEAD = 0.6  # the top-down follow camera aims this many seconds ahead (s)
 MAX_PENDING = 0.1  # never simulate more than this after a stall (s)
 SHOWCASE_KEYS = {pygame.K_1: "harbor", pygame.K_2: "canyon", pygame.K_3: "plateau"}
 HELP = (
     "Flechas o WASD: conducir · R: reiniciar · 1-3: escaparate · E: evaluación · N: aleatorio",
-    "C: cámara · Tab: piloto automático · P: pausa · F11: pantalla completa · H: ayuda"
-    " · Esc: salir",
+    "C: cámara · V: día/atardecer/noche · G: sensores · T: vista cenital · Tab: piloto",
+    "P: pausa · F3: diagnóstico · L: modo ligero · F11: pantalla completa · H: ayuda · Esc: salir",
 )
 
 
@@ -67,7 +70,9 @@ class DriveApp:
         scale: int | None = None,
         fullscreen: bool = False,
         autopilot: bool = False,
-        follow: bool = True,
+        view: str = "3d",
+        camera: str = "chase",
+        variant: str = "day",
         realtime: bool = True,
         seed: int = 0,
     ) -> None:
@@ -78,33 +83,67 @@ class DriveApp:
         self.realtime = realtime
         self.rng = np.random.default_rng(seed)
         self.eval_index = -1
-        self.follow = follow
+        self.view_mode = view
+        self.camera3d = camera if camera in ("chase", "broadcast", "top") else "chase"
+        self.follow = camera != "track"
+        self.variant = variant
         self.paused = False
-        self.show_help = True
+        self.show_help = view == "topdown"  # in 3D it would cover the HUD
+        self.show_rays = False
+        self.diagnostics = False
         self.running = False
+        self.controls = (0.0, 0.0)
         self.clock = pygame.time.Clock()
         self.hud = DebugHud(self.screen.get_size())
+        self.view: TopDownView | None = None
+        self.game: GameView | None = None
         self.load_track(track)
+
+    # -- tracks and views -------------------------------------------------------------
 
     def load_track(self, track: Track) -> None:
         self.track = track
         self.racer = Racer(track)
         self.autopilot = Autopilot(track)
-        self.view = TopDownView(track, self.screen.get_size())
+        self.view = None
+        self.game = None
+        self._build_view()
         self.reset()
+
+    def _build_view(self) -> None:
+        size = self.screen.get_size()
+        if self.view_mode == "3d" and self.game is None:
+            self._loading()
+            self.game = GameView(self.track, size, self.camera3d, self.variant)
+            self.game.diagnostics = self.diagnostics
+        elif self.view_mode == "topdown" and self.view is None:
+            self.view = TopDownView(self.track, size)
+
+    def _loading(self) -> None:
+        font, _ = load_fonts(self.screen.get_height())
+        self.screen.fill((14, 14, 22))
+        text = font.render(f"Cargando {self.track.name}…", True, TEXT)
+        self.screen.blit(text, text.get_rect(center=self.screen.get_rect().center))
+        pygame.display.flip()
 
     def reset(self) -> None:
         self.racer.reset()
         self.camera = (self.racer.kart.x, self.racer.kart.y)
         self.trail: deque[tuple[float, float]] = deque(maxlen=int(TRAIL_SECONDS / DT / TRAIL_EVERY))
         self._steps = 0
+        if self.game is not None:
+            for camera in self.game.cameras.values():
+                camera.pose = None
 
     def toggle_fullscreen(self) -> None:
         self.fullscreen = not self.fullscreen
         self.screen = set_window_mode(self.scale, self.fullscreen)
         size = self.screen.get_size()
-        self.view.resize(size)
         self.hud.resize(size)
+        if self.view is not None:
+            self.view.resize(size)
+        if self.game is not None:
+            self.game.resize(size)
 
     def handle_key(self, key: int) -> None:
         if key == pygame.K_ESCAPE:
@@ -119,7 +158,24 @@ class DriveApp:
         elif key == pygame.K_n:
             self.load_track(train_track(sample_train_seed(self.rng)))
         elif key == pygame.K_c:
-            self.follow = not self.follow
+            if self.game is not None and self.view_mode == "3d":
+                self.camera3d = self.game.cycle_camera()
+            else:
+                self.follow = not self.follow
+        elif key == pygame.K_t:
+            self.view_mode = "topdown" if self.view_mode == "3d" else "3d"
+            self._build_view()
+        elif key == pygame.K_v and self.game is not None:
+            self.variant = self.game.cycle_variant()
+        elif key == pygame.K_g:
+            self.show_rays = not self.show_rays
+        elif key == pygame.K_F3:
+            self.diagnostics = not self.diagnostics
+            if self.game is not None:
+                self.game.diagnostics = self.diagnostics
+        elif key == pygame.K_l and self.game is not None:
+            self.game.auto_light = False
+            self.game.world.set_light_mode(not self.game.world.light_mode)
         elif key == pygame.K_TAB:
             self.autopilot_on = not self.autopilot_on
         elif key == pygame.K_p:
@@ -129,15 +185,24 @@ class DriveApp:
         elif key == pygame.K_h:
             self.show_help = not self.show_help
 
+    # -- main loop -------------------------------------------------------------------
+
     def physics_step(self) -> None:
         if self.autopilot_on:
             steer, throttle = self.autopilot.act(self.racer)
         else:
             steer, throttle = keyboard_controls(pygame.key.get_pressed())
+        self.controls = (steer, throttle)
         self.racer.step(steer, throttle)
         self._steps += 1
         if self._steps % TRAIL_EVERY == 0:
             self.trail.append((self.racer.kart.x, self.racer.kart.y))
+
+    @property
+    def target_fps(self) -> int:
+        if self.view_mode == "3d" and self.game is not None:
+            return self.game.target_fps
+        return 60
 
     def run(self, max_frames: int | None = None) -> None:
         """Main loop. Realtime mode keeps a fixed 1/60 s physics step with an accumulator;
@@ -147,7 +212,7 @@ class DriveApp:
         pending = 0.0
         while self.running:
             if self.realtime:
-                dt = self.clock.tick(60) / 1000.0
+                dt = self.clock.tick(self.target_fps) / 1000.0
             else:
                 self.clock.tick()
                 dt = DT
@@ -164,12 +229,40 @@ class DriveApp:
                         pending -= DT
                 else:
                     self.physics_step()
-            self.update_camera(dt)
-            self.draw()
+            if self.view_mode == "3d":
+                self.draw_3d(dt)
+            else:
+                self.update_camera(dt)
+                self.draw_topdown()
             pygame.display.flip()
             frames += 1
             if max_frames is not None and frames >= max_frames:
                 break
+
+    # -- drawing -----------------------------------------------------------------------
+
+    def draw_3d(self, dt: float) -> None:
+        racer = self.racer
+        visual = KartVisual(racer.kart, 0, on_grass=racer.on_grass, throttle=self.controls[1])
+        pose = self.game.update([visual], 0.0 if self.paused else dt)
+        self.game.set_rays(visual if self.show_rays else None)
+        extra = [self.track.name]
+        if self.paused:
+            extra.append("PAUSA")
+        if not self.show_help:
+            extra.append("H: ayuda")
+        info = HudInfo(
+            laps=racer.laps,
+            lap_time=racer.lap_time,
+            best_lap=racer.best_lap,
+            speed=racer.speed,
+            label="Piloto automático" if self.autopilot_on else "Conducción manual",
+            extra=extra,
+        )
+        fps = self.clock.get_fps() if self.realtime else None
+        self.game.draw(self.screen, pose, [visual], info, dt, fps)
+        if self.show_help:
+            self.hud.draw_block(self.screen, [(t, TEXT_DIM) for t in HELP], "bottom-left")
 
     def update_camera(self, dt: float) -> None:
         """North-up follow camera that eases towards a point ahead of the kart (never rotates)."""
@@ -180,7 +273,7 @@ class DriveApp:
         cx, cy = self.camera
         self.camera = (cx + (tx - cx) * k, cy + (ty - cy) * k)
 
-    def draw(self) -> None:
+    def draw_topdown(self) -> None:
         racer = self.racer
         self.view.draw(
             self.screen, [(racer.kart, KART_COLOR)], self.camera, self.follow, self.trail
@@ -214,7 +307,7 @@ class DriveApp:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Conduce un kart a mano en la vista cenital.")
+    parser = argparse.ArgumentParser(description="Conduce un kart a mano.")
     parser.add_argument(
         "--track",
         default="harbor",
@@ -226,11 +319,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--fullscreen", action="store_true", help="pantalla completa")
     parser.add_argument("--autopilot", action="store_true", help="empieza con piloto automático")
     parser.add_argument(
-        "--camera",
-        choices=("follow", "track"),
-        default="follow",
-        help="follow: sigue al kart; track: circuito completo",
+        "--view", choices=("3d", "topdown"), default="3d", help="3d o cenital de depuración"
     )
+    parser.add_argument(
+        "--camera",
+        choices=("chase", "broadcast", "top", "follow", "track"),
+        default="chase",
+        help="3D: chase, broadcast o top; cenital: follow o track",
+    )
+    parser.add_argument("--variant", choices=("day", "sunset", "night"), default="day")
+    parser.add_argument("--rays", action="store_true", help="muestra los sensores")
+    parser.add_argument("--diagnostics", action="store_true", help="tiempos de cada parte")
     parser.add_argument(
         "--frames", type=int, help="sale tras N fotogramas, con un paso de física por fotograma"
     )
@@ -242,9 +341,14 @@ def main(argv: list[str] | None = None) -> None:
         scale=args.scale,
         fullscreen=args.fullscreen,
         autopilot=args.autopilot,
-        follow=args.camera == "follow",
+        view=args.view,
+        camera=args.camera,
+        variant=args.variant,
         realtime=args.frames is None,
     )
+    app.show_rays = args.rays
+    if args.diagnostics:
+        app.handle_key(pygame.K_F3)
     try:
         app.run(max_frames=args.frames)
         if args.screenshot:

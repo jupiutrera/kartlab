@@ -57,6 +57,15 @@ Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames
 - Render: precalcular todo lo posible, arrays preasignados y ningún bucle de Python por píxel. numba solo si numpy no basta. En Windows, crear un array temporal de ~1,6 MB cuesta ~1,7 ms (fallos de página) frente a ~0,26 ms operando con `out=` sobre uno preasignado.
 - Entrenamiento: red MLP pequeña, hilos de PyTorch limitados y prioridad baja del proceso y sus subprocesos.
 
+## Render pseudo-3D (`render/`)
+
+- El mundo se dibuja a 320×180 en índices de la paleta Resurrect 64 (`render/palette.py`, nombres por uso en `Ink`). Nada sale de los 64 colores, salvo los halos aditivos de los fantasmas.
+- Atardecer y noche son reasignaciones de índices (`Palette.remap`); la niebla son tablas índice a índice por nivel que ya incluyen la variante.
+- El suelo (`render/floor.py`) se calcula con tablas precalculadas por cámara (`Lens`) y cuatro operaciones por fotograma más un `take` por grupo de mipmap. Sin bucles de Python por píxel y con buffers preasignados.
+- Textura y decorado se pintan una vez al cargar el circuito (`texture.py`, `scene.place_props`), sombras incluidas. Las marcas de derrape se estampan en la textura.
+- Los sprites se generan por código al tamaño en que se ven (sprite stacking para los karts) y se cachean, con un presupuesto de 3 ms por fotograma (`SpriteBank`). No reescalar pixel art.
+- La interfaz va a resolución de ventana con textos en caché (`TextCache`). Mide con F3 o con `scripts/benchmark_render.py` antes de optimizar.
+
 ## Windows
 
 - Los entornos en paralelo arrancan con spawn: los scripts necesitan `if __name__ == "__main__"` y nada pesado a nivel de módulo.

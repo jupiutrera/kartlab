@@ -32,7 +32,17 @@ def app():
     pygame.quit()
 
 
-def test_keys_switch_tracks_cameras_and_modes(app):
+@pytest.fixture
+def topdown_app():
+    app = DriveApp(
+        showcase_track("harbor"), scale=2, autopilot=True, view="topdown", realtime=False
+    )
+    yield app
+    pygame.quit()
+
+
+def test_keys_switch_tracks_cameras_and_modes(topdown_app):
+    app = topdown_app
     app.handle_key(pygame.K_2)
     assert app.track.name == "Cañón"
     app.handle_key(pygame.K_e)
@@ -45,6 +55,23 @@ def test_keys_switch_tracks_cameras_and_modes(app):
     assert not app.autopilot_on
     app.handle_key(pygame.K_p)
     assert app.paused
+
+
+def test_3d_keys_cycle_cameras_variants_and_overlays(app):
+    assert app.game is not None and app.game.camera_name == "chase"
+    app.handle_key(pygame.K_c)
+    assert app.game.camera_name == "broadcast"
+    app.handle_key(pygame.K_v)
+    assert app.game.world.variant == "sunset"
+    app.handle_key(pygame.K_g)
+    app.handle_key(pygame.K_F3)
+    app.run(max_frames=10)
+    assert app.game.world.show_rays and app.game.diagnostics
+    app.handle_key(pygame.K_l)
+    assert app.game.world.light_mode and not app.game.auto_light
+    app.handle_key(pygame.K_t)
+    assert app.view_mode == "topdown" and app.view is not None
+    app.run(max_frames=5)
 
 
 def test_reset_returns_to_the_start_line(app):
