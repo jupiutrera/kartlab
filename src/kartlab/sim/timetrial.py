@@ -257,12 +257,14 @@ class RecordStore:
 
 @dataclass(frozen=True)
 class LapEvent:
-    """A lap was completed. ``record`` tells whether it is the new best."""
+    """A lap was completed. ``record`` tells whether it is the new best; ``valid`` whether
+    the lap could count at all (driven by hand from the start line, a full lap of progress)."""
 
     lap_time: float
     record: bool
     previous: float | None  # the record it had to beat
     saved: bool = True
+    valid: bool = True
 
 
 class TimeTrial:
@@ -333,7 +335,7 @@ class TimeTrial:
         # lap along the centerline (going back and forth over the line never adds up).
         complete = self._valid and self._distance(racer) >= self.track.length - 1e-6
         if not complete:
-            return LapEvent(lap_time, False, previous)
+            return LapEvent(lap_time, False, previous, valid=False)
         if previous is not None and lap_time >= previous:
             return LapEvent(lap_time, False, previous)
         self._sample(racer)

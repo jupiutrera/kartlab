@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 
 import numpy as np
+import pygame
 import pytest
 
+from kartlab.render.view import format_delta
+from kartlab.show.drive import DriveApp, main
 from kartlab.sim import timetrial
 from kartlab.sim.autopilot import Autopilot
 from kartlab.sim.drift import DriftState
@@ -437,3 +441,90 @@ def test_physics_fingerprint(name, drifting):
     update PINNED_PHYSICS_VERSION and PINNED_FINGERPRINT here, so old records are ignored."""
     assert PHYSICS_VERSION == PINNED_PHYSICS_VERSION
     assert run_fingerprint(drifting) == pytest.approx(PINNED_FINGERPRINT[name], abs=1e-4)
+
+
+# -- the drive.py application -------------------------------------------------------------------
+
+
+@pytest.fixture
+def app_factory(tmp_path):
+    apps = []
+
+    def make(**kwargs):
+        kwargs.setdefault("scale", 2)
+        kwargs.setdefault("realtime", False)
+        kwargs.setdefault("time_trial", True)
+        kwargs.setdefault("records_dir", tmp_path)
+        app = DriveApp(showcase_track("harbor"), **kwargs)
+        apps.append(app)
+        return app
+
+    yield make
+    pygame.quit()
+
+
+def test_drive_time_trial_headless_smoke_with_ghost(track, lap, tmp_path, app_factory):
+    RecordStore(tmp_path).save(track, lap)
+    app = app_factory(autopilot=True)
+    assert app.trial is not None and app.trial.record is not None
+    app.run(max_frames=240)
+    assert app.ghost_visual is not None and app.ghost_visual.ghost
+    assert app.ghost_visual.kart.x == pytest.approx(app.trial.record.pose_at(app.racer.lap_time)[0])
+    assert app.hud_trial.record == lap.lap_time and app.hud_trial.delta is not None
+    app.handle_key(pygame.K_f)  # ghost off
+    app.run(max_frames=2)
+    assert app.ghost_visual is None
+    app.handle_key(pygame.K_f)
+    app.handle_key(pygame.K_t)  # top-down view also works
+    app.run(max_frames=5)
+    app.handle_key(pygame.K_k)  # leave the time trial
+    assert app.trial is None
+    app.run(max_frames=5)
+
+
+def test_drive_reset_and_track_change_restart_the_recording(track, lap, tmp_path, app_factory):
+    RecordStore(tmp_path).save(track, lap)
+    app = app_factory(autopilot=True)
+    app.run(max_frames=100)
+    assert len(app.trial._samples) > 10
+    app.handle_key(pygame.K_r)
+    assert len(app.trial._samples) == 1
+    app.handle_key(pygame.K_2)
+    assert app.trial.record is None and app.track.name == "Cañón"
+    app.handle_key(pygame.K_1)
+    assert app.trial.record is not None
+
+
+def test_drive_tab_autopilot_invalidates_the_lap(app_factory):
+    app = app_factory(autopilot=False)
+    app.run(max_frames=5)
+    assert app.trial._valid
+    app.handle_key(pygame.K_TAB)
+    app.run(max_frames=2)
+    assert not app.trial._valid
+
+
+def test_drive_main_time_trial_screenshot(track, lap, tmp_path):
+    RecordStore(tmp_path).save(track, lap)
+    shot = tmp_path / "shot.png"
+    main([
+        "--time-trial", "--records-dir", str(tmp_path), "--autopilot", "--frames", "150",
+        "--scale", "2", "--screenshot", str(shot),
+    ])  # fmt: skip
+    assert shot.stat().st_size > 1000
+    assert os.environ["SDL_VIDEODRIVER"] == "dummy"
+
+
+def test_drive_without_time_trial_touches_no_records(tmp_path, app_factory):
+    app = app_factory(time_trial=False)
+    app.run(max_frames=10)
+    assert app.trial is None and app.ghost_visual is None and app.hud_trial is None
+    assert not list(Path(tmp_path).iterdir())
+
+
+@pytest.mark.parametrize(
+    "delta, text",
+    [(-0.42, "−0,42"), (1.034, "+1,03"), (0.0, "+0,00"), (-0.004, "+0,00"), (-12.5, "−12,50")],
+)
+def test_format_delta(delta, text):
+    assert format_delta(delta) == text
