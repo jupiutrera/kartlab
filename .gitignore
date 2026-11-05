@@ -20,6 +20,9 @@ checkpoints/
 *.pt
 events.out.tfevents.*
 
+# Contrarreloj: la mejor vuelta de cada circuito
+records/
+
 # Vídeos y capturas generadas
 videos/
 *.mp4
