@@ -57,6 +57,7 @@ class DriftState:
     push_left: float = 0.0  # time left of the push after a release (s)
     push_total: float = 0.0  # length the current push started with (s)
     push_speed: float = 0.0  # extra top speed the current push started with (m/s)
+    push_id: int = 0  # counts the pushes awarded (lets the renderer flash once per push)
 
     @property
     def charge(self) -> float:
@@ -132,6 +133,7 @@ def _update_mode(
             drift.active = False
             if length > 0.0:
                 drift.push_speed, drift.push_total, drift.push_left = extra, length, length
+                drift.push_id += 1
             drift.time = 0.0
             drift.direction = 0.0
     elif drift.active:

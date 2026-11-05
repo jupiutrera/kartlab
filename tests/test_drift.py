@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from dataclasses import replace
 
 import numpy as np
@@ -340,3 +341,66 @@ def test_a_racer_drives_a_corner_with_the_sweep():
         if i == 400:
             drift.hold = False
     assert math.isfinite(racer.kart.x) and racer.progress.distance > 100.0
+
+
+# -- the manual drive mode, headless ------------------------------------------------------
+
+
+def _hold(monkeypatch, *pressed: int):
+    """Make ``pygame.key.get_pressed`` report exactly these keys as down."""
+    import pygame
+
+    keys = defaultdict(bool, dict.fromkeys(pressed, True))
+    monkeypatch.setattr(pygame.key, "get_pressed", lambda: keys)
+
+
+@pytest.mark.parametrize("view", ["3d", "topdown"])
+def test_drive_mode_draws_a_sweep_through_a_corner(monkeypatch, view):
+    import pygame
+
+    from kartlab.render.palette import Ink
+    from kartlab.show.drive import DriveApp, drift_pressed
+
+    app = DriveApp(showcase_track("harbor"), scale=1, view=view, realtime=False)
+    try:
+        _hold(monkeypatch, pygame.K_UP)
+        assert not drift_pressed(pygame.key.get_pressed())
+        app.run(max_frames=150)  # build up speed on the straight
+        assert app.racer.speed > 12.0 and not app.drift.active
+        _hold(monkeypatch, pygame.K_UP, pygame.K_LEFT, pygame.K_LSHIFT)
+        assert drift_pressed(pygame.key.get_pressed())
+        sparks = 0
+        for _ in range(40):
+            app.run(max_frames=1)
+            if app.game is not None:
+                sparks += sum(1 for p in app.game.world.particles.items if p[7] == Ink.YELLOW)
+        assert app.drift.active and app.drift.charge > 0.3
+        if app.game is not None:
+            assert sparks > 0
+        before = pygame.surfarray.array3d(app.screen).copy()
+        _hold(monkeypatch, pygame.K_UP)  # release
+        flashes = 0
+        for _ in range(30):
+            app.run(max_frames=1)
+            if app.game is not None:
+                flashes += sum(1 for p in app.game.world.particles.items if p[7] == Ink.ORANGE)
+        assert not app.drift.active and app.drift.push_id == 1
+        if app.game is not None:
+            assert flashes > 0
+        assert (pygame.surfarray.array3d(app.screen) != before).any()
+    finally:
+        pygame.quit()
+
+
+def test_the_autopilot_never_sweeps(monkeypatch):
+    import pygame
+
+    from kartlab.show.drive import DriveApp
+
+    app = DriveApp(showcase_track("harbor"), scale=1, autopilot=True, realtime=False)
+    try:
+        _hold(monkeypatch, pygame.K_LSHIFT, pygame.K_LEFT)
+        app.run(max_frames=200)
+        assert not app.drift.active and app.drift.push_id == 0
+    finally:
+        pygame.quit()
