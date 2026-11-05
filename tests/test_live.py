@@ -122,3 +122,13 @@ def test_ghosts_are_earlier_versions_on_a_log_scale(tiny_run):
         assert steps and all(s < latest for s in steps)
     finally:
         pygame.quit()
+
+
+def test_a_driver_can_be_placed_on_a_grid_slot():
+    track = showcase_track("harbor")
+    driver = PolicyDriver(Version(0, still), track, EnvConfig(), (255, 0, 0))
+    driver.place(-11.0, 2.4)
+    position = driver.racer.position
+    assert position.s == pytest.approx(track.length - 11.0, abs=0.5)
+    assert position.lateral == pytest.approx(2.4, abs=0.1)
+    assert driver.restarts == 0

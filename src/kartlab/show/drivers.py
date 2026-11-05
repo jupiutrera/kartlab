@@ -78,8 +78,13 @@ class PolicyDriver:
     def throttle(self) -> float:
         return self._action[1]
 
-    def restart(self) -> None:
-        self.racer.reset()
+    def place(self, start_s: float, lateral: float = 0.0) -> None:
+        """Put the kart at an arc position and lateral offset (e.g. a grid slot)."""
+        self.restart(start_s, lateral)
+        self.restarts -= 1  # not a restart caused by getting stuck
+
+    def restart(self, start_s: float = 0.0, lateral: float = 0.0) -> None:
+        self.racer.reset(start_s, lateral)
         self.env.hold_action(np.zeros(2))
         self._phase = 0
         self._best_distance = 0.0
