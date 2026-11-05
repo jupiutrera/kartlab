@@ -175,6 +175,7 @@ class GameView:
         info: HudInfo,
         dt: float,
         fps: float | None = None,
+        hud: bool = True,
     ) -> None:
         now = self.now()
         timings = self.world.render(pose, visuals, now)
@@ -187,7 +188,8 @@ class GameView:
         else:
             pygame.transform.scale(self.world.world, self.world_rect.size, target)
         t1 = time.perf_counter()
-        self._draw_hud(screen, visuals, info, dt, now)
+        if hud:
+            self._draw_hud(screen, visuals, info, dt, now)
         t2 = time.perf_counter()
         timings["escalado"] = (t1 - t0) * 1000
         timings["HUD"] = (t2 - t1) * 1000

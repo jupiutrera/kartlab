@@ -4,11 +4,11 @@ import pytest
 from kartlab.show import video
 from kartlab.show.charts import RewardChart
 from kartlab.show.overlays import count_steps, version_name
+from kartlab.show.versions import pick_checkpoints
 from kartlab.show.video import (
     FPS,
     VIDEO_SIZE,
     VideoWriter,
-    pick_checkpoints,
     probe_video,
     render_demo,
     render_progression,

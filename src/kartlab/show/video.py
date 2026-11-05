@@ -24,7 +24,7 @@ import pygame
 from kartlab.render.scene import KartVisual
 from kartlab.render.topdown import KART_COLOR, format_time
 from kartlab.render.view import SANS_REGULAR, GameView, HudInfo
-from kartlab.show.drivers import PolicyDriver, Version, format_steps, load_version
+from kartlab.show.drivers import PolicyDriver, format_steps, load_version
 from kartlab.show.overlays import (
     CARD_SECONDS,
     Overlays,
@@ -32,11 +32,16 @@ from kartlab.show.overlays import (
     version_name,
     visual_of,
 )
+from kartlab.show.versions import (
+    PROGRESSION_TARGETS,
+    load_best_version,
+    pick_checkpoints,
+)
 from kartlab.sim.kart import DT
 from kartlab.sim.track import Track
 from kartlab.sim.tracksets import resolve_track
 from kartlab.train.config import TrainConfig
-from kartlab.train.run import Checkpoint, RunPaths
+from kartlab.train.run import RunPaths
 
 VIDEO_SIZE = (1920, 1080)
 FPS = 60
@@ -45,7 +50,6 @@ PRESET = "medium"
 PIXEL_FORMAT = "bgr0"  # memory layout of a 32-bit pygame surface (little endian)
 BGRX_MASKS = (0xFF0000, 0x00FF00, 0x0000FF)
 
-PROGRESSION_TARGETS = (0, 10_000, 30_000, 100_000, 300_000, 1_000_000)
 FADE_IN = 0.8  # seconds from black at the start of a segment
 FADE_OUT = 0.5  # seconds to black at its end
 COUNTDOWN_SECONDS = 3.0
@@ -223,36 +227,6 @@ class Compositor(Overlays):
 
 
 # -- choosing versions -----------------------------------------------------------------------
-
-
-def pick_checkpoints(
-    run: RunPaths, targets: tuple[int, ...] = PROGRESSION_TARGETS
-) -> list[Checkpoint]:
-    """The checkpoints closest (on a log scale) to each target, plus the final one."""
-    available = run.list_checkpoints()
-    if not available:
-        raise SystemExit(f"{run.root} no tiene checkpoints")
-    picks: dict[int, Checkpoint] = {}
-    final = available[-1]
-    for target in targets:
-        if target >= final.steps:
-            continue
-        best = min(available, key=lambda c: abs(math.log1p(c.steps) - math.log1p(target)))
-        picks[best.steps] = best
-    picks[final.steps] = final
-    return [picks[s] for s in sorted(picks)]
-
-
-def load_best_version(run: RunPaths) -> Version:
-    """``best_model.zip`` (the best evaluated policy) as a driveable version."""
-    from stable_baselines3 import PPO
-
-    from kartlab.train.evaluate import model_predictor
-
-    if not run.best_model.exists():
-        raise SystemExit(f"{run.root} no tiene best_model.zip")
-    model = PPO.load(run.best_model, device="cpu")
-    return Version(int(model.num_timesteps), model_predictor(model, run.best_vecnormalize))
 
 
 def _env_config(run: RunPaths):
