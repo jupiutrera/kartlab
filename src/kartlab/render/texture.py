@@ -147,6 +147,44 @@ def _project(track: Track, x: np.ndarray, y: np.ndarray, seg: np.ndarray):
     return best_s % track.length, best_lat, best_seg
 
 
+def _refine_crossings(track: Track, x, y, s, lat, nearest):
+    """Exact nearest-branch coordinates around each level crossing.
+
+    The coarse field picks one segment per 1 m cell, which can be the wrong road where the
+    two are equally near. Here every segment of both branches within reach is tried, so the
+    distance is that to the closest of the two roads: the asphalt is their union, the edge
+    lines and kerbs follow its outline, and nothing of one road is painted across the other.
+    """
+    n = len(track)
+    reach = 2.5 * track.width
+    window = math.ceil((reach + 4.0) * n / track.length)
+    s, lat, nearest = s.copy(), lat.copy(), nearest.copy()
+    for crossing in track.crossings:
+        near = np.hypot(x - crossing.x, y - crossing.y) < reach
+        if not near.any():
+            continue
+        px, py = x[near], y[near]
+        best_d = np.full(px.shape, np.inf)
+        best_s = np.zeros(px.shape)
+        best_lat = np.zeros(px.shape)
+        best_seg = np.zeros(px.shape, dtype=np.int64)
+        for centre in (crossing.index_a, crossing.index_b):
+            for offset in range(-window, window + 1):
+                i = (centre + offset) % n
+                ax, ay = track.points[i]
+                dx, dy = track.segment_dirs[i]
+                length = track.segment_lengths[i]
+                along = np.clip((px - ax) * dx + (py - ay) * dy, 0.0, length)
+                d = np.hypot(px - (ax + dx * along), py - (ay + dy * along))
+                better = d < best_d
+                best_d = np.where(better, d, best_d)
+                best_s = np.where(better, track.s[i] + along, best_s)
+                best_lat = np.where(better, dx * (py - ay) - dy * (px - ax), best_lat)
+                best_seg = np.where(better, i, best_seg)
+        s[near], lat[near], nearest[near] = best_s % track.length, best_lat, best_seg
+    return s, lat, nearest
+
+
 def build_floor_texture(track: Track, seed: int = 0, tpm: int = TEXELS_PER_METRE) -> FloorTexture:
     xmin, ymin, xmax, ymax = track.bounds
     origin = (xmin - MARGIN, ymax + MARGIN)
@@ -173,6 +211,8 @@ def build_floor_texture(track: Track, seed: int = 0, tpm: int = TEXELS_PER_METRE
     vs, us = np.nonzero(near)
     x, y = wx[vs, us], wy[vs, us]
     s, lat, nearest = _project(track, x, y, seg[vs // tpm, us // tpm])
+    if track.crossings:
+        s, lat, nearest = _refine_crossings(track, x, y, s, lat, nearest)
     alat = np.abs(lat)
     n_band = noise[vs, us]
     dither = BAYER4[vs % 4, us % 4]

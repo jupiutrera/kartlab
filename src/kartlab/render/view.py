@@ -97,6 +97,7 @@ class GameView:
         self._speed = Smoothed()
         self._notice: tuple[str, float] | None = None
         self.sensor = RaySensor(track, 11, math.pi, 60.0)
+        self._ray_hint: int | None = None  # previous centerline index (tracks with crossings)
         self.resize(window)
         # The karts in front of the chase camera, in every view, before the first frame.
         chase = self.cameras["chase"]
@@ -151,9 +152,11 @@ class GameView:
     def set_rays(self, visual: KartVisual | None) -> None:
         if visual is None:
             self.world.show_rays = []
+            self._ray_hint = None
             return
         kart = visual.kart
-        index = self.track.locate(kart.x, kart.y).index
+        index = self.track.locate_following(kart.x, kart.y, self._ray_hint).index
+        self._ray_hint = index
         self.world.ray_lengths = self.sensor.cast(kart.x, kart.y, kart.heading, index)
         self.world.ray_angles = self.sensor.angles
         self.world.show_rays = [(kart.x, kart.y, kart.heading)]
