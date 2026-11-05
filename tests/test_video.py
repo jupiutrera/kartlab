@@ -3,17 +3,16 @@ import pytest
 
 from kartlab.show import video
 from kartlab.show.charts import RewardChart
+from kartlab.show.overlays import count_steps, version_name
 from kartlab.show.video import (
     FPS,
     VIDEO_SIZE,
     VideoWriter,
-    count_steps,
     pick_checkpoints,
     probe_video,
     render_demo,
     render_progression,
     render_race,
-    version_name,
 )
 from kartlab.train.config import PPOParams, TrainConfig
 from kartlab.train.run import RunPaths
