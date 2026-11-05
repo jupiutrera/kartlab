@@ -39,6 +39,8 @@ from kartlab.render.view import GameView, HudInfo
 from kartlab.show.charts import MetricsReader, RewardChart
 from kartlab.show.drivers import PolicyDriver, Version, format_steps, load_version
 from kartlab.sim.kart import DT
+from kartlab.sim.track import Track
+from kartlab.sim.trackfile import TrackFileError, load_track_file
 from kartlab.sim.tracksets import resolve_track
 from kartlab.train.config import TrainConfig
 from kartlab.train.run import Checkpoint, RunPaths, latest_run
@@ -103,6 +105,7 @@ class LiveApp:
         view: str = "3d",
         camera: str = "broadcast",
         variant: str = "day",
+        track: Track | None = None,
     ) -> None:
         self.run_paths = run
         self.view_mode = view
@@ -113,7 +116,7 @@ class LiveApp:
         self.config = TrainConfig.from_yaml(run.config)
         self.env_config = self.config.env_config()
         choice = track_choice or self.config.env.get("track") or "eval:1"
-        self.track = resolve_track(str(choice))
+        self.track = track if track is not None else resolve_track(str(choice))
         self.max_ghosts = ghosts
         self.realtime = realtime
         self.screen = open_window(TITLE, scale, fullscreen)
@@ -149,7 +152,12 @@ class LiveApp:
         self.panel_bg.fill(PANEL)
         if self.view_mode == "3d" and self.game is None:
             self.game = GameView(
-                self.track, (width, height), self.camera, self.variant, ramps=(0, 1, 2, 3)
+                self.track,
+                (width, height),
+                self.camera,
+                self.variant,
+                seed=self.track.decoration_seed,
+                ramps=(0, 1, 2, 3),
             )
             self.chart3d = RewardChart((int(width * 0.26), int(height * 0.2)), regular)
 
@@ -419,6 +427,9 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Muestra un entrenamiento en directo.")
     parser.add_argument("--run", type=Path, help="carpeta del run (por defecto, el último)")
     parser.add_argument("--track", help="circuito (por defecto, el del entrenamiento o eval:1)")
+    parser.add_argument(
+        "--track-file", type=Path, help="circuito en fichero JSON (sustituye a --track)"
+    )
     parser.add_argument("--ghosts", type=int, default=2, help="versiones anteriores (0-3)")
     parser.add_argument("--scale", type=int, help="escala entera sobre 320x180")
     parser.add_argument("--fullscreen", action="store_true")
@@ -441,6 +452,10 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit("No hay ningún run en runs/. Lanza antes scripts/train.py.")
     if not run.config.exists():
         raise SystemExit(f"{run.root} no tiene config.yaml")
+    try:
+        track = load_track_file(args.track_file) if args.track_file else None
+    except TrackFileError as error:
+        raise SystemExit(f"Circuito no válido:\n{error}") from None
     realtime = args.frames is None
     app = LiveApp(
         run,
@@ -452,6 +467,7 @@ def main(argv: list[str] | None = None) -> None:
         args.view,
         args.camera,
         args.variant,
+        track,
     )
     try:
         app.preload_ghosts()

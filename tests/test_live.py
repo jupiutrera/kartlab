@@ -132,3 +132,22 @@ def test_a_driver_can_be_placed_on_a_grid_slot():
     assert position.s == pytest.approx(track.length - 11.0, abs=0.5)
     assert position.lateral == pytest.approx(2.4, abs=0.1)
     assert driver.restarts == 0
+
+
+def test_live_viewer_runs_on_a_track_file(tiny_run, tmp_path):
+    from kartlab.show.live import main
+
+    out = tmp_path / "file.png"
+    argv = ["--run", str(tiny_run.root), "--scale", "2", "--frames", "10", "--screenshot", str(out)]
+    main([*argv, "--track-file", "tracks/ejemplo.json"])
+    assert out.stat().st_size > 0
+
+
+def test_live_viewer_rejects_an_invalid_track_file(tiny_run, tmp_path):
+    from kartlab.show.live import main
+
+    bad = tmp_path / "mal.json"
+    bad.write_text('{"format": 1, "name": "x", "width": 12, "corners": []}', encoding="utf-8")
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--run", str(tiny_run.root), "--track-file", str(bad), "--frames", "1"])
+    assert "Circuito no válido" in str(exit_info.value)
