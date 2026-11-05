@@ -84,12 +84,21 @@ class BroadcastCamera:
         self.max_turn = max_turn
         self.pose: CameraPose | None = None
         self._focus: tuple[float, float] | None = None
+        self._hint: int | None = None  # centerline index of the previous frame (crossings)
+        self.target_heading = 0.0  # where the last update wanted to look
 
     def update(self, kart: KartState, dt: float, track: Track | None = None) -> CameraPose:
+        if self.pose is None:
+            self._hint = None  # a new start (reset, camera switch): look the branch up afresh
         if track is not None:
-            target_heading = track.heading_at_index(track.locate(kart.x, kart.y).index)
+            # At a level crossing "the nearest part of the track" flips between the two
+            # roads, so the heading would snap 90 degrees; the hint keeps the kart's branch.
+            position = track.locate_following(kart.x, kart.y, self._hint)
+            self._hint = position.index
+            target_heading = track.heading_at_index(position.index)
         else:
             target_heading = kart.heading
+        self.target_heading = target_heading
         if self.pose is None:
             self.pose = CameraPose(kart.x, kart.y, target_heading)
             self._focus = (kart.x, kart.y)
