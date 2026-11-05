@@ -31,6 +31,13 @@ if it is a clean X: the branches meet at 60 degrees or more, both stay straight 
 the crossing zone, the zone is clear of the start line, and no other parts of the track
 touch (``has_clearance_with_crossings``).
 
+A format 2 file may also say where the start line goes: ``"start": [x, y]``, a point within
+3 m of the centerline on a straight stretch. Sample 0 is then the centerline sample nearest
+to it. Without ``start`` the line goes on the straightest stretch away from the crossing,
+but near-ties between equally straight stretches can resolve differently on another
+platform, so a file that is meant to be shared should declare it. ``start`` is only
+valid in format 2.
+
 Extending the format: every file declares ``format``. Unknown fields are an error, so a
 file written for a newer version is never silently loaded half-understood. Format 1
 rejects ``crossings`` with its own message.
@@ -72,7 +79,12 @@ from kartlab.sim.track import (
 
 FORMAT_VERSION = 1  # tracks without crossings are written in this format
 CROSSINGS_FORMAT_VERSION = 2  # tracks with level crossings
-KNOWN_FIELDS = frozenset({"format", "name", "width", "decoration_seed", "corners", "crossings"})
+KNOWN_FIELDS = frozenset(
+    {"format", "name", "width", "decoration_seed", "corners", "crossings", "start"}
+)
+START_SNAP = 3.0  # a declared start must be this close to the centerline (m)
+START_HALF_WINDOW = 30.0  # the start line sits on a straight stretch this long around it (m)
+START_MAX_CURVATURE = 1 / 100  # (1/m)
 CROSSING_MATCH = 12.0  # a declared crossing must be this close to a real one (m)
 MAX_CROSSINGS = 4
 
@@ -113,6 +125,7 @@ class TrackSpec:
     corners: tuple[tuple[float, float, float], ...]  # (x, y, radius) in metres
     decoration_seed: int = 0
     crossings: tuple[tuple[float, float], ...] = ()  # approximate (x, y) of level crossings
+    start: tuple[float, float] | None = None  # (x, y) of the start line (format 2 only)
 
 
 @dataclass(frozen=True)
@@ -176,6 +189,12 @@ def spec_from_dict(data: Any) -> TrackSpec:
             f"{FORMAT_VERSION}"
         )
 
+    if data.get("format") == FORMAT_VERSION and "start" in data:
+        problems.append(
+            f"el campo 'start' solo existe en el formato {CROSSINGS_FORMAT_VERSION}, el de los "
+            "circuitos con cruces"
+        )
+
     name = data.get("name")
     if not isinstance(name, str) or not name.strip():
         problems.append("'name' debe ser un texto no vacío")
@@ -201,9 +220,16 @@ def spec_from_dict(data: Any) -> TrackSpec:
             else:
                 parsed.append((float(corner[0]), float(corner[1]), float(corner[2])))
     crossings = _parse_crossings(data.get("crossings", []), problems)
+    start = None
+    if "start" in data:
+        raw = data["start"]
+        if isinstance(raw, list) and len(raw) == 2 and all(map(_number, raw)):
+            start = (float(raw[0]), float(raw[1]))
+        else:
+            problems.append("'start' debe ser [x, y] con dos números (metros)")
     if problems:
         raise TrackFileError(problems)
-    return TrackSpec(str(name).strip(), float(width), tuple(parsed), int(seed), crossings)
+    return TrackSpec(str(name).strip(), float(width), tuple(parsed), int(seed), crossings, start)
 
 
 def _parse_crossings(raw: Any, problems: list[str]) -> tuple[tuple[float, float], ...]:
@@ -231,6 +257,8 @@ def spec_to_dict(spec: TrackSpec) -> dict[str, Any]:
     }
     if spec.crossings:
         data["crossings"] = [list(c) for c in spec.crossings]
+    if spec.start is not None:
+        data["start"] = list(spec.start)
     return data
 
 
@@ -250,6 +278,9 @@ def spec_to_json(spec: TrackSpec) -> str:
             for point in spec.crossings
         )
         crossings = f',\n  "crossings": [\n{lines}\n  ]'
+        if spec.start is not None:
+            start = ", ".join(json.dumps(_plain(v)) for v in spec.start)
+            crossings += f',\n  "start": [{start}]'
     version = CROSSINGS_FORMAT_VERSION if spec.crossings else FORMAT_VERSION
     return (
         "{\n"
@@ -475,8 +506,31 @@ def _build_points(spec: TrackSpec) -> tuple[np.ndarray | None, list[str]]:
     if not MIN_LENGTH <= length <= MAX_LENGTH:
         return None, [_length_problem(length)]
     if spec.crossings:
-        return finish_crossing_centerline(path, spec.width, CLEARANCE), []
+        points = finish_crossing_centerline(path, spec.width, CLEARANCE, start=spec.start)
+        if spec.start is not None:
+            problems = _check_start(points, spec.start)
+            if problems:
+                return None, problems
+        return points, []
     return finish_centerline(path, spec.width, 0.0, -spec.width), []
+
+
+def _check_start(points: np.ndarray, start: tuple[float, float]) -> list[str]:
+    """A declared start must be on the centerline, on a straight stretch (sample 0 is it)."""
+    offset = math.hypot(points[0, 0] - start[0], points[0, 1] - start[1])
+    if offset > START_SNAP:
+        return [
+            f"la salida ({start[0]:g}, {start[1]:g}) no está sobre el circuito: la línea central "
+            f"más cercana queda a {offset:.1f} m (máximo {START_SNAP:g} m)"
+        ]
+    reach = round(START_HALF_WINDOW * len(points) / closed_length(points))
+    window = np.arange(-reach, reach + 1) % len(points)
+    if float(np.max(np.abs(curvature(points))[window])) > START_MAX_CURVATURE:
+        return [
+            f"la salida ({start[0]:g}, {start[1]:g}) está en una curva: la línea de meta necesita "
+            f"{2 * START_HALF_WINDOW:g} m rectos a su alrededor"
+        ]
+    return []
 
 
 def _length_problem(length: float) -> str:

@@ -53,6 +53,7 @@ EIGHT = TrackSpec(
     ),
     3,
     ((0.0, 0.0),),
+    (206.6, -54.3),
 )
 
 
@@ -143,7 +144,8 @@ def test_an_enormous_track_with_crossings_is_rejected_before_the_quadratic_check
 
 
 def test_a_declared_crossing_must_exist():
-    plain = replace(EIGHT, corners=EIGHT.corners[:1] + ((300.0, 0.0, 40.0), (150.0, 200.0, 40.0)))
+    corners = EIGHT.corners[:1] + ((300.0, 0.0, 40.0), (150.0, 200.0, 40.0))
+    plain = replace(EIGHT, corners=corners, start=None)
     assert "no existe" in problems(plain)
 
 
@@ -178,6 +180,54 @@ def test_a_crossing_on_the_start_line_is_rejected(eight, crossing):
 def test_the_build_keeps_the_start_away_from_the_crossing(eight):
     for c in find_crossings(eight.points):
         assert math.hypot(eight.points[0, 0] - c.x, eight.points[0, 1] - c.y) > 70.0
+
+
+# -- the declared start line (the same on every platform) ----------------------------------
+
+
+def test_the_declared_start_is_where_sample_0_goes(eight):
+    assert math.hypot(eight.points[0, 0] - 206.6, eight.points[0, 1] + 54.3) < 0.6
+    # Another straight stretch of the same circuit: far from the first start and from the
+    # crossing, with no bend within 30 m either way.
+    bend = np.abs(eight.curvature)
+    straight = np.array(
+        [bend[np.arange(i - 30, i + 31) % len(bend)].max() for i in range(len(bend))]
+    )
+    away = np.hypot(*(eight.points - eight.points[0]).T) > 150.0
+    cross = eight.crossings[0]
+    away &= np.hypot(eight.points[:, 0] - cross.x, eight.points[:, 1] - cross.y) > 100.0
+    pick = int(np.flatnonzero(away & (straight < 1 / 500))[0])
+    target = (round(float(eight.points[pick, 0]), 1), round(float(eight.points[pick, 1]), 1))
+    moved = build_track(replace(EIGHT, start=target))
+    assert math.hypot(moved.points[0, 0] - target[0], moved.points[0, 1] - target[1]) < 0.6
+    assert moved.length == pytest.approx(eight.length, abs=0.01)  # same circuit, other line
+
+
+def test_without_start_the_line_is_still_placed_automatically(crossing):
+    auto = build_track(replace(EIGHT, start=None))
+    assert len(auto.crossings) == 1
+    c = auto.crossings[0]
+    assert math.hypot(auto.points[0, 0] - c.x, auto.points[0, 1] - c.y) > 70.0
+
+
+def test_a_bad_start_is_rejected(eight):
+    assert "no está sobre el circuito" in problems(replace(EIGHT, start=(0.0, 300.0)))
+    bend = np.argmax(np.abs(eight.curvature))
+    corner = tuple(float(v) for v in eight.points[bend])
+    assert "está en una curva" in problems(replace(EIGHT, start=corner))
+    near = (eight.crossings[0].x, eight.crossings[0].y)
+    assert "línea de meta" in problems(replace(EIGHT, start=near))
+
+
+def test_start_is_part_of_format_2_only(tmp_path):
+    data = spec_to_dict(EIGHT)
+    assert data["start"] == [206.6, -54.3]
+    assert spec_from_dict(data).start == (206.6, -54.3)
+    with pytest.raises(TrackFileError, match="'start'"):
+        spec_from_dict({k: v for k, v in data.items() if k != "crossings"} | {"format": 1})
+    for bad in ([1], "x", [1, "a"], [float("inf"), 0]):
+        with pytest.raises(TrackFileError, match="'start'"):
+            spec_from_dict({**data, "start": bad})
 
 
 def test_other_near_touching_sections_are_still_rejected(eight, crossing):

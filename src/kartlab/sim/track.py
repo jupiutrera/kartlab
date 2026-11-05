@@ -418,19 +418,28 @@ def has_clearance_with_crossings(
 
 
 def finish_crossing_centerline(
-    path: np.ndarray, width: float, clearance: float, length: float | None = None
+    path: np.ndarray,
+    width: float,
+    clearance: float,
+    length: float | None = None,
+    start: tuple[float, float] | None = None,
 ) -> np.ndarray:
     """``finish_centerline`` for paths that cross themselves, without its validation.
 
     It resamples and smooths the same way, and rolls the samples so that sample 0 (the
-    start line) is the straightest stretch that stays clear of every crossing zone. The
-    caller validates the result (``find_crossings``, ``has_clearance_with_crossings``).
+    start line) is the sample nearest to ``start`` when given (the author's choice, the same
+    on every platform), or else the straightest stretch that stays clear of every crossing
+    zone. The caller validates the result (``find_crossings``,
+    ``has_clearance_with_crossings``, whether ``start`` is on the track).
     """
     target = length if length is not None else closed_length(path)
     path = path * (target / closed_length(path))
     count = max(int(round(target / SAMPLE_SPACING)), 8)
     pts = smooth_closed(resample_closed(path, count), SMOOTHING, target / count)
     pts *= target / closed_length(pts)
+    if start is not None:
+        nearest = int(np.argmin(np.hypot(pts[:, 0] - start[0], pts[:, 1] - start[1])))
+        return np.roll(pts, -nearest, axis=0)
     bend = np.abs(curvature(pts))
     keep_out = crossing_zone(width, clearance) + CROSSING_START_MARGIN
     for c in find_crossings(pts):
