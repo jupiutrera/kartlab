@@ -50,6 +50,7 @@ GRID_FIRST, GRID_ROW, GRID_SIDE = (
     7.0,
     2.4,
 )  # start grid: m behind the line, per row, off-centre
+MAX_RESTARTS = 2  # progression: a version that gets stuck this many times has shown enough
 FINAL_FACTOR = 2.0  # the last (best) version gets this many times the time limit, to finish a lap
 SUMMARY_SECONDS = 3.5  # demo: how long the results card stays up at the end
 
@@ -415,9 +416,9 @@ def render_progression(
     """The same track driven by checkpoints on a log scale of steps, one after another.
 
     Each segment lasts one lap or ``max_seconds`` (twice that for the final version).
-    Bad versions keep rolling on the grass (the driver restarts them at the line after
-    getting stuck). A step counter and the reward curve with a marker show where in the
-    training each version is.
+    Bad versions keep rolling on the grass; the driver restarts them at the line after
+    getting stuck, and the segment ends after the second restart. A step counter and
+    the reward curve with a marker show where in the training each version is.
     """
     from kartlab.show.charts import MetricsReader, RewardChart
 
@@ -447,7 +448,9 @@ def render_progression(
             frame = 0
             while end_frame is None or frame < end_frame:
                 event = driver.step()
-                if end_frame is None and (event == "lap" or frame + 1 >= max_frames):
+                if end_frame is None and (
+                    event == "lap" or frame + 1 >= max_frames or driver.restarts >= MAX_RESTARTS
+                ):
                     end_frame = frame + round(FADE_OUT * FPS)
                 racer = driver.racer
                 info = HudInfo(
@@ -455,7 +458,9 @@ def render_progression(
                     lap_time=racer.lap_time,
                     best_lap=driver.best_lap,
                     speed=racer.speed,
-                    label=f"Versión {version_name(version.steps).lower()}",
+                    label="Versión sin entrenar"
+                    if version.steps == 0
+                    else f"Versión {version.label}",
                     extra=[f"Circuito: {track.name}", f"{index + 1} de {len(checkpoints)}"],
                 )
                 comp.draw_world([visual_of(driver, 0)], 0, info)
@@ -657,9 +662,10 @@ def render_demo(
             if end_frame is None and (len(lap_times) >= laps or frame + 1 >= max_frames):
                 end_frame = frame + summary_frames
             racer = driver.racer
+            finished = len(lap_times) >= laps
             info = HudInfo(
                 laps=min(len(lap_times), laps - 1),
-                lap_time=racer.lap_time,
+                lap_time=lap_times[-1] if finished else racer.lap_time,  # frozen at the flag
                 best_lap=driver.best_lap,
                 speed=racer.speed,
                 label=f"Mejor modelo · {format_steps(version.steps)} pasos",
@@ -694,8 +700,10 @@ def render_demo(
 
 def main(argv: list[str] | None = None) -> None:
     import argparse
+    import sys
     import time
 
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Spanish text in any console
     parser = argparse.ArgumentParser(
         description="Vídeos 1080p a 60 fps de un entrenamiento, renderizados fuera de tiempo real."
     )
