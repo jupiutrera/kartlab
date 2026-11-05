@@ -164,13 +164,13 @@ Un circuito es un fichero JSON con las esquinas del trazado: `[x, y, radio]` en 
 ```
 
 El circuito se construye por el mismo camino que el generador y no llega a la IA si no pasa el validador. Rechaza, con un mensaje que dice qué esquina o qué tramo falla:
-- cruces del trazado consigo mismo;
+- cruces del trazado consigo mismo, salvo los cruces a nivel declarados (ver «El circuito en 8»);
 - esquinas con radio menor de 14 m (lo que el kart puede tomar) o curvas más cerradas que eso una vez suavizadas;
 - anchura fuera de 8-20 m;
 - menos de 8 m de hierba entre tramos que no son vecinos;
 - longitud fuera de 400-2500 m, entre 3 y 40 esquinas, esquinas a menos de 5 m una de otra.
 
-Los campos desconocidos son un error, y `crossings` queda reservado para una versión futura del formato (pasos a nivel).
+Los campos desconocidos son un error. El campo `crossings` solo existe en el formato 2 (ver abajo); un fichero de formato 1 que lo traiga se rechaza.
 
 ```sh
 uv run python scripts/track_file.py validate tracks/ejemplo.json
@@ -182,6 +182,28 @@ uv run python scripts/evaluate.py --track-file tracks/ejemplo.json     # 3 vuelt
 
 `evaluate.py` se niega a evaluar un fichero que no pasa la validación (código de salida distinto de cero) y no pisa el resultado oficial del run.
 `tracks/ejemplo.json` es un diseño original; el detalle del formato está en `src/kartlab/sim/trackfile.py`.
+
+### El circuito en 8 (cruce a nivel)
+
+![Cruce a nivel de «Lazo del Molino» en la vista de persecución](docs/img/circuito-ocho.png)
+
+`tracks/ocho.json` («Lazo del Molino», 1.277 m, 13 m de ancho) es un 8 con **cruce a nivel**: las dos carreteras se cortan a 90° sobre el mismo plano, sin puente ni túnel. Es un circuito de exhibición: no se usa para entrenar ni para la evaluación oficial.
+
+```sh
+uv run python scripts/drive.py --track-file tracks/ocho.json                     # a mano, vista 3D
+uv run python scripts/drive.py --track-file tracks/ocho.json --view topdown      # cenital
+uv run python scripts/drive.py --track-file tracks/ocho.json --camera broadcast  # cámara de retransmisión
+uv run python scripts/evaluate.py --track-file tracks/ocho.json --laps 3         # modelo de referencia
+```
+
+Un circuito con cruces usa el **formato 2**: el de siempre más `"crossings": [[x, y], ...]` con los puntos aproximados donde la línea central se cruza consigo misma (el formato 2 exige al menos un cruce; sin cruces el fichero sigue siendo de formato 1). El validador solo acepta un autocruce donde esté declarado (a menos de 12 m) y si es una X limpia: ángulo de al menos 60°, los dos tramos rectos en 34 m alrededor, lejos de la meta y sin otras partes del circuito demasiado cerca.
+
+Cómo se trata el cruce:
+- **Rama.** Cada punto del kart pertenece a una de las dos carreteras (la que sigue desde el paso anterior), de modo que el progreso, la cámara y los sensores no saltan de una a otra al cruzar. Si el kart gira dentro del cruce y sale por la otra carretera, pasa a esa rama sin sumar ni restar distancia.
+- **Hierba.** En el cruce, la otra carretera también es asfalto. Con cruces, `Racer.on_grass` pregunta a todo el circuito; sin cruces es el cálculo de siempre.
+- **Vueltas.** Una vuelta solo cuenta si se ha avanzado por todas las décimas del circuito, así que girar en el cruce para repetir un solo lazo no suma vueltas.
+- **Salida y reinicios.** La línea de meta queda fuera de la zona del cruce. Si un reinicio cae justo en el cruce, la rama es la de `start_s`; sin hint (por ejemplo, `locate(x, y)` suelto) gana la muestra más cercana, y en un empate exacto la de menor índice.
+- **Sensores.** Los rayos ven solo los bordes de la propia rama, así que dentro del cruce detectan «paredes» que en realidad son la otra carretera. Es un límite conocido; ver `docs/experimentos.md`.
 
 ## Comandos
 
