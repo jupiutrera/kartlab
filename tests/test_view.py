@@ -100,3 +100,26 @@ def test_eight_kart_colours_are_distinct():
 
     assert len(KART_RAMPS) == 8
     assert len({ramp[1] for ramp in KART_RAMPS}) == 8
+
+
+def _render_with_effects(track, seed: int) -> bytes:
+    """A kart skidding on the grass with the throttle down: particles and marks every frame."""
+    view = GameView(track, (640, 360), "chase", seed=seed)
+    screen = pygame.Surface((640, 360))
+    x, y, heading = track.pose_at(30.0)
+    for frame in range(45):
+        view.fixed_time = 1.0 + frame * DT
+        kart = KartState(x + frame * 0.1, y, heading, vx=6.0 * math.cos(heading), vy=6.0)
+        visual = KartVisual(kart, 0, on_grass=True, throttle=1.0)
+        pose = view.update([visual], DT)
+        view.draw(screen, pose, [visual], HudInfo(), DT)
+    return pygame.image.tobytes(screen, "RGB")
+
+
+def test_same_seed_gives_identical_frames_with_effects(track):
+    first = _render_with_effects(track, seed=5)
+    assert _render_with_effects(track, seed=5) == first
+
+
+def test_effects_depend_on_the_seed(track):
+    assert _render_with_effects(track, seed=5) != _render_with_effects(track, seed=6)

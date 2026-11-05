@@ -154,6 +154,7 @@ class WorldRenderer:
         self._prop_h = np.array([PROP_HEIGHTS[p.kind] for p in self.props])
         self.sprites = SpriteBank(self.palette, variant)
         self.particles = Particles()
+        self._effects_rng = np.random.default_rng([seed, 1])  # reproducible particles and marks
         self.buffer = np.empty((WORLD_SIZE[1], WORLD_SIZE[0]), dtype=np.uint8)
         self.indexed = pygame.Surface(WORLD_SIZE, depth=8)
         self.indexed.set_palette([tuple(int(c) for c in rgb) for rgb in self.palette.rgb])
@@ -202,7 +203,7 @@ class WorldRenderer:
 
     def update_effects(self, visuals: list[KartVisual], dt: float) -> None:
         """Skid marks and particles from what each kart is doing this frame."""
-        rng = np.random.default_rng()
+        rng = self._effects_rng
         rate = 0.5 if self.light_mode else 1.0
         for v in visuals:
             kart = v.kart
