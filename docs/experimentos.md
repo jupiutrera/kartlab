@@ -14,6 +14,18 @@ Registro de los entrenamientos relevantes, el más reciente arriba. Cada entrada
 - **Siguiente paso:**
 ```
 
+## 2026-11-05 · modelo de referencia en el circuito en 8 (solo medición)
+
+- **Commit:** `3665e94` (rama `feat/circuito-ocho`; el código de simulación y evaluación del cruce es el mismo en los commits posteriores).
+- **Run:** `runs/2026-11-04_2159_random-tracks/` (modelo de referencia, `best_model`). No se reentrena y no se escribe nada en la carpeta del run.
+- **Configuración:** `uv run python scripts/evaluate.py --run runs/2026-11-04_2159_random-tracks --checkpoint best --track-file tracks/ocho.json --laps 3`.
+- **Qué se probó:** si un modelo entrenado solo con circuitos aleatorios sin cruces (rayos que ven solo los bordes de la propia rama) sabe cruzar «Lazo del Molino», un 8 con cruce a nivel a 90° (1.277 m, 13 m de ancho).
+- **Resultados:** 3 vueltas completas sin salirse (éxito 100 %), con vueltas de 53,7, 52,5 y 52,5 s. Cada vuelta pasa dos veces por el cruce. El piloto automático de referencia en el mismo circuito tarda 57,4, 56,3 y 56,3 s: el modelo es algo más rápido.
+- **Conclusiones:**
+  - Los «muros falsos» del cruce (los rayos de una rama ven su propio borde dentro de la carretera de la otra) no bastan para sacarlo de la pista: completa tres vueltas sin salirse (cada una con dos pasos por el cruce). Con recta y 90° es el caso fácil; un cruce más oblicuo o con curvas pegadas podría comportarse distinto, no se ha medido.
+  - Es una medición en una sola salida (la meta, sin salida aleatoria) y con un único circuito: no es un resultado de generalización.
+  - El 8 queda como circuito de exhibición. Entrenar con cruces (más de 30 min) requiere el permiso del usuario y no se ha hecho.
+
 ## 2026-11-04 · demo-live (demo en directo)
 
 - **Commit:** `4a5d3f6`
