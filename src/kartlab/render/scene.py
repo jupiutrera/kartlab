@@ -63,6 +63,8 @@ def place_props(track: Track, seed: int = 0) -> list[Prop]:
 
     def add(kind: str, s: float, lateral: float, clearance: float) -> None:
         x, y, _ = track.pose_at(s, lateral)
+        # The unhinted locate is the nearest part of the track, so with a level crossing
+        # this also keeps props off the second road.
         if abs(track.locate(x, y).lateral) >= clearance:  # not on another part of the track
             props.append(Prop(kind, x, y, int(rng.integers(4))))
 

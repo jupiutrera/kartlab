@@ -28,6 +28,18 @@ class Progress:
         """Jump to ``s`` without counting the distance (e.g. a shortcut across the grass)."""
         self.s = s % self.length
 
+    def charge(self, s: float, delta: float) -> None:
+        """Jump to ``s`` and add ``delta`` (never positive) to the net distance.
+
+        Used for a branch switch at a level crossing, where ``s`` jumps along the
+        centerline although the kart barely moved. The distance then stays congruent to
+        ``s`` modulo the track length, and the jump never credits anything.
+        """
+        if delta > 0.0:
+            raise ValueError("a jump can only subtract from the net distance")
+        self.s = s % self.length
+        self.distance += delta
+
     @property
     def lap_fraction(self) -> float:
         """Fraction of the current lap already driven, in [0, 1)."""

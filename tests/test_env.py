@@ -305,3 +305,83 @@ def test_config_validation():
         EnvConfig(action_repeat=0)
     with pytest.raises(ValueError):
         EnvConfig(track_width=(16.0, 12.0))
+
+
+# -- the figure eight: a branch switch at the level crossing never pays -----------------------
+
+
+def eight_env(**overrides) -> KartEnv:
+    from pathlib import Path
+
+    path = str(Path(__file__).resolve().parents[1] / "tracks" / "ocho.json")
+    return fixed_env(track=path, steer_change_penalty=0.0, **{**NO_LIMITS, **overrides})
+
+
+def turn_kart(env: KartEnv, index: int) -> None:
+    """Point the kart along the track heading at ``index``, keeping its speed (a sharp turn)."""
+    kart = env.racer.kart
+    speed = kart.forward_speed
+    kart.heading = env.track.heading_at_index(index)
+    kart.vx, kart.vy = speed * math.cos(kart.heading), speed * math.sin(kart.heading)
+
+
+@pytest.mark.parametrize("lobe", [1, 2])
+def test_looping_one_lobe_of_the_eight_earns_no_progress_reward(lobe):
+    env = eight_env()
+    cross, length = env.track.crossings[0], env.track.length
+    if lobe == 1:  # out along the first lobe to the far branch, then back onto the first
+        start, end_s, back_to = cross.s_a + 20.0, cross.s_b, cross.index_a
+    else:
+        start, end_s, back_to = cross.s_b + 20.0, cross.s_a, cross.index_b
+    env.racer.reset(start_s=start, speed=10.0)
+    pilot = Autopilot(env.track)
+    total, best, settled, last_turn, turns, noted = 0.0, 0.0, [], -99.0, 0, True
+    for _ in range(300 * 15):  # 300 s of 15 Hz decisions
+        action = np.array(pilot.act(env.racer), dtype=np.float32)
+        _, reward, terminated, truncated, info = env.step(action)
+        assert not terminated
+        total += reward
+        best = max(best, total)
+        if not noted and env.racer.time - last_turn > 3.0:  # the switch is long done
+            settled.append(total)
+            noted = True
+        if abs(env.racer.position.s - end_s) < 4.0 and env.racer.time - last_turn > 10.0:
+            turn_kart(env, back_to)
+            last_turn, turns, noted = env.racer.time, turns + 1, False
+    assert turns >= 6 and len(settled) >= turns - 1
+    assert best < 0.1 * length  # the progress reward never nears a lap's worth, however long
+    assert all(abs(t - settled[0]) < 0.5 for t in settled)  # each loop nets zero
+    assert info["laps"] == 0 and info["progress"] < length
+
+
+def test_skipping_a_lobe_of_the_eight_is_not_rewarded():
+    env = eight_env()
+    cross = env.track.crossings[0]
+    env.racer.reset(start_s=cross.s_a - 40.0, speed=10.0)
+    pilot = Autopilot(env.track)
+    for _ in range(15):
+        env.step(np.array(pilot.act(env.racer), dtype=np.float32))
+    before, turned = env.racer.progress.distance, False
+    rewards = []
+    for _ in range(60):
+        if not turned and abs(env.racer.position.s - cross.s_a) < 3.0:
+            turn_kart(env, cross.index_b)  # 90 degrees onto the other road, skipping a lobe
+            turned = True
+        action = np.array(pilot.act(env.racer), dtype=np.float32)
+        _, reward, *_ = env.step(action)
+        rewards.append(reward)
+    assert turned
+    assert min(rewards) < -10.0  # the skipped part is charged, not credited
+    assert max(rewards) < 0.1 * 8.0  # no step is worth more than driving 8 m
+    assert env.racer.progress.distance < before
+
+
+def test_a_normal_lap_of_the_eight_keeps_its_progress_and_bonus():
+    env = eight_env(max_laps=1, max_seconds=200.0)
+    env.reset(seed=0)
+    rewards, infos = drive_with_autopilot(env, 4000)
+    length = env.track.length
+    assert infos[-1]["laps"] == 1
+    assert infos[-1]["progress"] == pytest.approx(length, abs=15.0)
+    assert sum(rewards) == pytest.approx(0.1 * infos[-1]["progress"] + 10.0, abs=1e-6)
+    assert max(rewards) < 0.1 * 8.0 + 10.0 and min(rewards) > -1.0
