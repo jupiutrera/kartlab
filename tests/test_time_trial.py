@@ -34,8 +34,8 @@ from kartlab.sim.version import PHYSICS_VERSION
 # Pinned state of the physics fingerprint below (see sim/version.py).
 PINNED_PHYSICS_VERSION = 1
 PINNED_FINGERPRINT = {
-    "plain": (92.92293, 134.78164, 1.28053, 5.64117, 19.83995),
-    "drift": (-40.39967, 72.42166, 2.55791, -17.65391, 11.33072),
+    "plain": (46.65317995, 80.2135172412, 1.5081925968, 0.4222852541, 9.677378705),
+    "drift": (18.5753618667, 71.8692185505, 1.8487398, -2.8331828527, 9.2591821099),
 }
 
 
@@ -424,15 +424,19 @@ def test_time_at_distance_survives_standing_and_reversing(lap):
 # -- physics fingerprint --------------------------------------------------------------------
 
 
-def run_fingerprint(drifting: bool) -> tuple[float, ...]:
+def run_fingerprint(drifting: bool, params: KartParams | None = None) -> tuple[float, ...]:
+    """600 steps of fixed inputs over asphalt and two grass stretches (one in a turn, one
+    under full throttle), so every physics parameter shows up in the final state."""
     kart = KartState(0.0, 0.0, 0.0)
     drift = DriftState() if drifting else None
+    params = params or KartParams()
     for step in range(600):
         steer = 0.6 if 100 <= step < 400 else -0.2
+        on_grass = 200 <= step < 260 or 430 <= step < 500
         if drift is not None:
             drift.hold = 150 <= step < 330
-        step_kart(kart, steer, 1.0 if step < 500 else 0.0, False, KartParams(), drift=drift)
-    return tuple(round(v, 5) for v in (kart.x, kart.y, kart.heading, kart.vx, kart.vy))
+        step_kart(kart, steer, 1.0 if step < 520 else 0.0, on_grass, params, drift=drift)
+    return tuple(round(v, 10) for v in (kart.x, kart.y, kart.heading, kart.vx, kart.vy))
 
 
 @pytest.mark.parametrize("name, drifting", [("plain", False), ("drift", True)])
@@ -440,7 +444,23 @@ def test_physics_fingerprint(name, drifting):
     """If this fails, the physics changed: bump PHYSICS_VERSION (sim/version.py), then
     update PINNED_PHYSICS_VERSION and PINNED_FINGERPRINT here, so old records are ignored."""
     assert PHYSICS_VERSION == PINNED_PHYSICS_VERSION
-    assert run_fingerprint(drifting) == pytest.approx(PINNED_FINGERPRINT[name], abs=1e-4)
+    assert run_fingerprint(drifting) == pytest.approx(PINNED_FINGERPRINT[name], abs=1e-8, rel=0)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"max_speed": 31.0}, {"accel": 11.0}, {"grip": 7.0}, {"rolling_drag": 0.7},
+        {"grass_max_speed": 9.5}, {"grass_drag": 5.5}, {"grass_grip": 5.5},
+    ],
+)  # fmt: skip
+def test_physics_fingerprint_notices_every_parameter(change):
+    """A tweak of any single parameter must move the fingerprint by more than its tolerance."""
+    base = KartParams()
+    changed = KartParams(**{**{k: getattr(base, k) for k in change}, **change})
+    assert getattr(base, next(iter(change))) != next(iter(change.values()))
+    moved = run_fingerprint(False, changed)
+    assert max(abs(a - b) for a, b in zip(moved, PINNED_FINGERPRINT["plain"], strict=True)) > 1e-6
 
 
 # -- the drive.py application -------------------------------------------------------------------
