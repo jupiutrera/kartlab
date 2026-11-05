@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -643,3 +644,68 @@ def test_a_crossing_through_a_sample_point_is_still_rejected():
     s = np.linspace(0, 2 * np.pi, 600, endpoint=False)  # samples sit on the crossing
     eight = np.stack([120 * np.sin(s), 60 * np.sin(2 * s)], 1)
     assert not check_centerline(eight, 12.0).ok
+
+
+# -- hostile files ---------------------------------------------------------------------
+
+
+def write_json(path: Path, text: str) -> Path:
+    path.write_text(text, encoding="utf-8", newline="\n")
+    return path
+
+
+def test_huge_integers_are_a_clear_error_not_a_traceback(tmp_path):
+    data = good_dict()
+    data["corners"][0][0] = 10**400
+    path = write_json(tmp_path / "t.json", json.dumps(data))
+    with pytest.raises(TrackFileError, match="esquina 1"):
+        load_spec(path)
+    data = good_dict()
+    data["width"] = 10**400
+    with pytest.raises(TrackFileError, match="'width'"):
+        load_spec(write_json(tmp_path / "w.json", json.dumps(data)))
+
+
+def test_deeply_nested_json_is_a_clear_error(tmp_path):
+    path = write_json(tmp_path / "t.json", "[" * 100_000 + "]" * 100_000)
+    with pytest.raises(TrackFileError, match="anidado|JSON"):
+        load_spec(path)
+
+
+def test_utf8_bom_is_accepted_but_never_written(tmp_path):
+    path = tmp_path / "t.json"
+    save_spec(path, GOOD)
+    assert not path.read_bytes().startswith(b"\xef\xbb\xbf")
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    assert load_spec(path) == GOOD
+
+
+def _timed_problems(spec: TrackSpec) -> tuple[str, float]:
+    start = time.perf_counter()
+    text = problems(spec)
+    return text, time.perf_counter() - start
+
+
+def test_enormous_tracks_are_rejected_quickly():
+    star = tuple(
+        (
+            float(2900 * np.cos(t) * (1.0 if i % 2 else 0.3)),
+            float(2900 * np.sin(t) * (1.0 if i % 2 else 0.3)),
+            30.0,
+        )
+        for i, t in enumerate(np.linspace(0, 2 * np.pi, 40, endpoint=False))
+    )
+    square = ((-3000.0, -3000.0, 40.0), (3000.0, -3000.0, 40.0), (3000.0, 3000.0, 40.0))
+    square += ((-3000.0, 3000.0, 40.0),)
+    for corners in (star, square):
+        text, seconds = _timed_problems(TrackSpec("Enorme", 12.0, corners))
+        assert "longitud" in text
+        assert seconds < 2.0
+
+
+def test_cli_export_refuses_negative_seeds(tmp_path, capsys):
+    with pytest.raises(SystemExit) as refused:
+        cli_main(["export", "--seed", "-5", "--out", str(tmp_path / "n.json")])
+    assert refused.value.code == 2 and "negativa" in capsys.readouterr().err
+    with pytest.raises(ValueError, match="negativa"):
+        spec_from_seed(-1)

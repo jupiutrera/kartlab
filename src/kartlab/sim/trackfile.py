@@ -113,7 +113,13 @@ class TrackReport:
 
 
 def _number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    """A real JSON number that fits a float (a 400-digit integer does not)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
 
 
 def spec_from_dict(data: Any) -> TrackSpec:
@@ -217,7 +223,8 @@ def load_spec(path: Path | str) -> TrackSpec:
     try:
         if path.stat().st_size > MAX_FILE_BYTES:
             raise TrackFileError(f"{path}: el fichero es demasiado grande para ser un circuito")
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig: PowerShell 5.1 writes a BOM; files are always written without one
+        text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         raise TrackFileError(f"{path}: no existe el fichero") from None
     except UnicodeDecodeError:
@@ -226,6 +233,8 @@ def load_spec(path: Path | str) -> TrackSpec:
         raise TrackFileError(f"{path}: no se puede leer ({error.strerror or error})") from None
     try:
         data = json.loads(text, parse_constant=_reject_constant)
+    except RecursionError:
+        raise TrackFileError(f"{path}: JSON anidado demasiado hondo para ser un circuito") from None
     except ValueError as error:
         raise TrackFileError(
             f"{path}: JSON no válido o incompleto ({error}); ¿está truncado o corrupto?"
@@ -248,6 +257,8 @@ def spec_from_seed(seed: int, params: TrackParams | None = None) -> TrackSpec:
     the start line may sit elsewhere), but it is not bit-identical: the reserved tracks
     themselves never go through this path.
     """
+    if seed < 0:
+        raise ValueError("la semilla no puede ser negativa")
     params = params or TrackParams()
     rng = np.random.default_rng(seed)
     for _ in range(MAX_ATTEMPTS):
@@ -392,7 +403,19 @@ def _build_points(spec: TrackSpec) -> tuple[np.ndarray | None, list[str]]:
             )
     if problems:
         return None, problems
+    # finish_centerline keeps the length of the path, so a wrong length is known here;
+    # the checks that follow cost O(samples^2) and must never see an enormous track.
+    length = closed_length(path)
+    if not MIN_LENGTH <= length <= MAX_LENGTH:
+        return None, [_length_problem(length)]
     return finish_centerline(path, spec.width, 0.0, -spec.width), []
+
+
+def _length_problem(length: float) -> str:
+    return (
+        f"longitud {length:.0f} m fuera de rango: debe estar entre {MIN_LENGTH:g} y "
+        f"{MAX_LENGTH:g} m"
+    )
 
 
 def check_centerline(points: np.ndarray, width: float) -> TrackReport:
@@ -404,15 +427,15 @@ def check_centerline(points: np.ndarray, width: float) -> TrackReport:
     kappa = float(np.max(np.abs(curvature(points))))
     min_radius = 1.0 / kappa if kappa > 0 else math.inf
     if not MIN_LENGTH <= length <= MAX_LENGTH:
-        problems.append(
-            f"longitud {length:.0f} m fuera de rango: debe estar entre {MIN_LENGTH:g} y "
-            f"{MAX_LENGTH:g} m"
-        )
+        problems.append(_length_problem(length))
     if kappa * MIN_RADIUS > 1.0:
         problems.append(
             f"curva demasiado cerrada: radio mínimo {min_radius:.1f} m en el trazado "
             f"(mínimo {MIN_RADIUS:g} m); ensancha alguna esquina o aléjala de las vecinas"
         )
+    if not MIN_LENGTH <= length <= MAX_LENGTH:
+        # The O(samples^2) checks below are skipped: the track may be enormous.
+        return TrackReport(tuple(problems), length, min_radius)
     gap = None
     if _crossing(points, stride=2) is not None:
         problems.append("la línea central se cruza a sí misma")

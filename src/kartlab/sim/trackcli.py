@@ -79,6 +79,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "validate":
         raise SystemExit(validate_files(args.files))
     if args.seed is not None:
+        if args.seed < 0:
+            print(f"ERROR la semilla {args.seed} no puede ser negativa", file=sys.stderr)
+            raise SystemExit(2)
         if is_eval_seed(args.seed):
             print(f"ERROR la semilla {args.seed} está reservada para evaluación", file=sys.stderr)
             raise SystemExit(2)
