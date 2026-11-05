@@ -88,11 +88,19 @@ class TrackMap:
         left = self.to_px_array(track.left_edge).tolist()
         right = self.to_px_array(track.right_edge).tolist()
         edge_px = max(1, round(0.3 * ppm))
-        pygame.draw.lines(surf, EDGE, True, left, edge_px)
-        pygame.draw.lines(surf, EDGE, True, right, edge_px)
+        n = len(track)
+        if track.crossings:
+            # Where another branch's asphalt passes over an edge there is no edge: draw
+            # the outline only along the stretches that are not covered.
+            covered_left, covered_right = track.edge_covered()
+            for edge, covered in ((left, covered_left), (right, covered_right)):
+                for i in np.flatnonzero(~(covered | np.roll(covered, -1))).tolist():
+                    pygame.draw.line(surf, EDGE, edge[i], edge[(i + 1) % n], edge_px)
+        else:
+            pygame.draw.lines(surf, EDGE, True, left, edge_px)
+            pygame.draw.lines(surf, EDGE, True, right, edge_px)
         kerb_px = max(2, round(0.9 * ppm))
         kerb = np.abs(track.curvature) > KERB_CURVATURE
-        n = len(track)
         for i in np.flatnonzero(kerb).tolist():
             color = KERB_RED if (i // 2) % 2 else KERB_WHITE
             j = (i + 1) % n
