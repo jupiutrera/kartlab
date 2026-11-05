@@ -6,14 +6,9 @@ import pygame
 import pytest
 
 from kartlab.env.kart_env import EnvConfig
-from kartlab.show.live import (
-    LiveApp,
-    MetricsReader,
-    PolicyDriver,
-    RewardChart,
-    Version,
-    format_steps,
-)
+from kartlab.show.charts import MetricsReader, RewardChart
+from kartlab.show.drivers import PolicyDriver, Version, format_steps
+from kartlab.show.live import LiveApp
 from kartlab.sim.showcase import showcase_track
 from kartlab.train.config import PPOParams, TrainConfig
 
