@@ -57,6 +57,7 @@ class Track:
         name: str,
         seed: int | None = None,
         clearance: float = 0.0,
+        decoration_seed: int = 0,
     ) -> None:
         pts = np.ascontiguousarray(points, dtype=np.float64)
         if pts.ndim != 2 or pts.shape[1] != 2 or len(pts) < 8:
@@ -66,6 +67,9 @@ class Track:
         self.half_width = self.width / 2
         self.name = name
         self.seed = seed
+        # Seed for the scenery of the pseudo-3D view (props, texture noise); it never
+        # affects the simulation.
+        self.decoration_seed = int(decoration_seed)
         # Guaranteed grass gap between sections: closer than half_width + clearance to
         # the centerline, a point cannot be on another section's asphalt.
         self.clearance = float(clearance)
