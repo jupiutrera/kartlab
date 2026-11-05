@@ -14,7 +14,7 @@ Todo el material gráfico, tipográfico y sonoro del proyecto es original o tien
 | --- | --- | --- | --- | --- | --- | --- |
 | IBM Plex Mono (Regular y SemiBold) | Fuente de la interfaz: cifras y vista de depuración | `assets/fonts/ibm-plex-mono/` | IBM Corp. | SIL OFL 1.1 (`OFL.txt` junto a la fuente) | [google/fonts](https://github.com/google/fonts/tree/main/ofl/ibmplexmono) | 2026-11-04 |
 | IBM Plex Sans (Regular y SemiBold) | Fuente de la interfaz: textos | `assets/fonts/ibm-plex-sans/` | IBM Corp. | SIL OFL 1.1 (`OFL.txt` junto a la fuente) | [IBM/plex](https://github.com/IBM/plex/tree/master/packages/plex-sans/fonts/complete/ttf) | 2026-11-04 |
-| Silkscreen | Fuente pixel para las etiquetas del mundo (320×180) | `assets/fonts/silkscreen/` | The Silkscreen Project Authors (Jason Kottke) | SIL OFL 1.1 (`OFL.txt` junto a la fuente) | [google/fonts](https://github.com/google/fonts/tree/main/ofl/silkscreen) | 2026-11-04 |
+| Silkscreen | Fuente pixel para las etiquetas del mundo (320×180) y el rótulo y el aviso «Pulsa una tecla» de la pantalla de título | `assets/fonts/silkscreen/` | The Silkscreen Project Authors (Jason Kottke) | SIL OFL 1.1 (`OFL.txt` junto a la fuente) | [google/fonts](https://github.com/google/fonts/tree/main/ofl/silkscreen) | 2026-11-04 |
 | Resurrect 64 | Paleta de 64 colores usada en todo el mundo | `assets/palettes/resurrect-64.hex` | Kerrie Lake | Publicada en Lospec para uso libre (una lista de colores) | [lospec.com/palette-list/resurrect-64](https://lospec.com/palette-list/resurrect-64) | 2026-11-04 |
 
 ## Material propio
@@ -24,3 +24,5 @@ Todo el material gráfico, tipográfico y sonoro del proyecto es original o tien
 - **Circuitos aleatorios y de evaluación**: generados por código a partir de una semilla (`src/kartlab/sim/track.py`).
 - **Vista cenital de depuración**: colores, pianos, línea de meta y flechas dibujados por código (`src/kartlab/render/topdown.py`). La paleta definitiva del juego se elige en la fase 4.
 - **Efectos del barrido** (chispas, estela y destello del impulso, marcas en el asfalto y barra de carga): partículas y rectángulos dibujados por código con colores de la paleta Resurrect 64 (`src/kartlab/render/scene.py` y `view.py`). Sin recursos externos.
+- **Pantalla de título del visor** (`src/kartlab/show/title.py`): el rótulo «KART LAB» es la fuente Silkscreen dibujada sin suavizado con un degradado de colores de la paleta Resurrect 64, contorno y relieve, escalada con el mismo factor entero que el mundo; la franja de cuadros que se desplaza y el destello son rectángulos y polígonos dibujados por código. El fondo es el propio mundo 3D con el mejor modelo conduciendo. Sin recursos externos.
+- **Paneles del visor de exhibición** (`src/kartlab/show/overlays.py`, `scenes.py`, `viewer.py`): barra de versiones, clasificación, tarjetas, ayuda y avisos, dibujados por código con las fuentes IBM Plex.

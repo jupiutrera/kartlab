@@ -20,13 +20,14 @@ uv run python scripts/benchmark_env.py   # pasos/s: 1 entorno y DummyVecEnv/Subp
 uv run python scripts/benchmark_train.py # pasos/s entrenando con PPO
 uv run python scripts/train.py configs/fixed_track.yaml   # entrenar (runs/<fecha>_<nombre>/)
 uv run python scripts/live.py            # visor en directo del último run
+uv run python scripts/viewer.py          # visor de exhibición: título y modos ver, carrera y progresión
 uv run python scripts/make_video.py progression|race|demo --run runs/<run> --out videos/x.mp4   # vídeos 1080p60
 uv run python scripts/evaluate.py --tracks 20   # 3 vueltas en los circuitos reservados
 uv run python scripts/evaluate.py --track-file tracks/ejemplo.json   # un circuito propio (se valida antes)
 uv run python scripts/track_file.py validate tracks/ejemplo.json     # validar / exportar (export --seed N)
 ```
 
-Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames N --screenshot f.png`.
+Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames N --screenshot f.png` (igual en `viewer.py`).
 
 ## Estructura
 
@@ -35,7 +36,7 @@ Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames
 - `src/kartlab/env/`: entorno Gymnasium sobre `sim`.
 - `src/kartlab/train/`: PPO, entornos vectorizados, checkpoints, evaluación y métricas.
 - `src/kartlab/render/`: render pseudo-3D que lee el estado de `sim`. numpy + pygame-ce.
-- `src/kartlab/show/`: visor en directo (`live.py`), conductores de políticas (`drivers.py`), curvas (`charts.py`) y vídeos (`video.py`).
+- `src/kartlab/show/`: visor de exhibición (`viewer.py`, `scenes.py`, `title.py`), visor en directo (`live.py`), conductores de políticas (`drivers.py`), versiones cargadas en segundo plano (`versions.py`), paneles compartidos (`overlays.py`), curvas (`charts.py`) y vídeos (`video.py`).
 - `scripts/`: lanzadores finos con `if __name__ == "__main__"`; la lógica va en el paquete.
 - `configs/`: YAML de entrenamiento. `assets/`: fuentes OFL y paleta.
 - `docs/assets.md`: procedencia y licencia de cada recurso. `docs/experimentos.md`: registro de entrenamientos.
@@ -76,6 +77,13 @@ Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames
 - Siempre 1920×1080 a 60 fps exactos, enviados a ffmpeg con `imageio_ffmpeg.write_frames` (sin fotogramas en disco). Un paso de física por fotograma y acciones deterministas.
 - Fuera de tiempo real, el reloj de `GameView` se fija con `fixed_time` (cielo, entrada del HUD y avisos); sin eso dependería del reloj de pared.
 - Los vídeos van a `videos/` (ignorado por git). Un nuevo tipo de vídeo reutiliza `Compositor`, `PolicyDriver` y `VideoWriter`.
+
+## Visor de exhibición (`show/viewer.py`)
+
+- `ViewerApp` es dueña de la ventana, el `GameView`, el reloj y las teclas comunes; cada modo es una `Scene` (`scenes.py`: `WatchScene`, `RaceScene`, `ProgressionScene`, y `AttractScene` tras el título). Un modo nuevo es una clase más en `SCENES`.
+- Nada bloquea el fotograma: `VersionLibrary` carga checkpoints en un hilo y los cachea (en modo síncrono, el de `--frames` y los tests, carga al pedirlos); el circuito nuevo se construye tras mostrar «Cargando…» (`ViewerApp.defer`). Los cambios de escena pasan por `ViewerApp.fade`.
+- La física avanza con un acumulador a pasos de 1/60 s y el factor de pausa y cámara lenta (`SPEEDS`); sin ventana, un fotograma es un paso. Los paneles (`Overlays`) los comparten el visor y los vídeos.
+- Teclas: coherentes con `drive.py` (C, V, G, P, L, F3, F11, H, 1-3, E, N, R, Esc). Si añades una, anótala en `HELP_SECTIONS` y en la tabla del README.
 
 ## Windows
 

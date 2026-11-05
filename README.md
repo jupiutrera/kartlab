@@ -149,6 +149,59 @@ Para elegir el tipo de VecEnv, el número de entornos y los hilos de PyTorch má
 uv run python scripts/benchmark_train.py
 ```
 
+## Visor de exhibición
+
+Para enseñar un entrenamiento terminado (o en curso) sin tocar nada más que el teclado: una pantalla de título con el kart conduciendo detrás y tres modos. Es un proceso aparte, solo CPU, y va a 60 fps.
+
+```sh
+uv run python scripts/viewer.py                                   # el último run con checkpoints
+uv run python scripts/viewer.py --run runs/2026-11-04_2159_random-tracks --fullscreen
+uv run python scripts/viewer.py --mode race --track canyon        # sin título, directo a la carrera
+uv run python scripts/viewer.py --mode watch --version 300000     # empieza en la versión de 300k pasos
+uv run python scripts/viewer.py --track-file tracks/ejemplo.json  # un circuito propio
+uv run python scripts/viewer.py --help
+```
+
+![Pantalla de título](docs/img/fase-5-titulo.png)
+
+El título muestra el mejor modelo conduciendo, con la luz cambiando despacio de día a noche. Se elige el modo con ↑ ↓ y cualquier otra tecla (o un clic) lo empieza.
+
+| Modo | Qué enseña |
+| --- | --- |
+| Ver conducir | Una versión al volante, con la curva de recompensa y una barra con todas las versiones del run. Se cambia con ← →. |
+| Carrera de versiones | Hasta ocho versiones a la vez desde la misma parrilla (la peor en la pole), con cuenta atrás, clasificación y minimapa. Al acabar, otra carrera empieza sola. |
+| Progresión | De «sin entrenar» a la última versión, una detrás de otra en escala logarítmica de pasos, con contador, curva y cinta de versiones. Al llegar al final vuelve a empezar. |
+
+![Modo «Ver conducir» en el Cañón con la versión de 300k pasos](docs/img/fase-5-visor.png)
+
+| Tecla | Acción |
+| --- | --- |
+| M | Cambiar de modo (ver, carrera, progresión) |
+| Esc | Volver al título; en el título, salir |
+| ← → | Versión anterior o siguiente (en la carrera, a quién sigue la cámara; en la progresión, salta de versión) |
+| Re Pág, Av Pág | Diez versiones atrás o adelante |
+| Inicio, Fin | La primera o la última versión |
+| Rueda del ratón, clic en la barra | Lo mismo con el ratón |
+| 1, 2, 3 | Circuitos escaparate: Puerto, Cañón y Meseta |
+| E | Siguiente circuito de evaluación |
+| N | Circuito aleatorio |
+| R | Reiniciar (la vuelta o la carrera) |
+| C | Cámara: persecución, retransmisión o cenital |
+| V | Día, atardecer o noche |
+| G | Mostrar los sensores (rayos) |
+| L | Modo ligero (30 fps) |
+| P o Espacio | Pausa |
+| S | Cámara lenta: 0,5× y 0,25× |
+| F3 | Diagnóstico: fps y milisegundos de cada parte, incluida la simulación con la IA |
+| F11 | Pantalla completa |
+| H | Ayuda con todas las teclas |
+
+Las teclas son las mismas que en `drive.py` donde significan lo mismo; aquí no se conduce, así que las flechas y la S quedan libres. Cada modo elige su cámara hasta que se pulsa C: persecución en el título y con versiones ya entrenadas, retransmisión en la carrera, la progresión y las versiones torpes (marean menos).
+
+- **Sin tirones.** Los checkpoints se cargan en un hilo aparte y se guardan en caché (el primero tarda unos segundos porque hay que importar PyTorch, con el título ya en pantalla). Mientras tanto, la ventana sigue dibujando y avisa con «Cargando…». Cambiar de circuito tarda un segundo y medio la primera vez y es instantáneo al volver a uno ya visto.
+- **Checkpoints que faltan.** Se muestran los que haya: los huecos no estorban, un fichero que no se puede leer se salta con un aviso, y si no hay `best_model.zip` el título usa la última versión. Si el entrenamiento sigue en marcha, la curva se actualiza y, en «Ver conducir», las versiones nuevas entran solas en la barra.
+- **Sin ventana.** `SDL_VIDEODRIVER=dummy uv run python scripts/viewer.py --mode race --frames 600 --screenshot carrera.png` avanza un paso de física por fotograma y guarda el último.
+
 ## Vídeos
 
 Los vídeos se renderizan fuera de tiempo real y van directos a ffmpeg (sin fotogramas sueltos en disco), siempre a 1920×1080 y 60 fps exactos (H.264, `yuv420p`, crf 18). El mundo de 320×180 se escala ×6 y el HUD se dibuja a 1080p. No hace falta ventana ni GPU. Cada paso de física (1/60 s) es un fotograma, con acciones deterministas, así que el mismo run y el mismo circuito dan siempre el mismo vídeo.
@@ -225,7 +278,7 @@ src/kartlab/
   env/      entorno Gymnasium
   train/    entrenamiento PPO, checkpoints y métricas
   render/   render pseudo-3D (numpy + pygame-ce)
-  show/     visor, vídeos y carreras de fantasmas
+  show/     visor de exhibición, visor en directo, vídeos y carreras de fantasmas
 scripts/    puntos de entrada
 tracks/     circuitos en fichero JSON
 configs/    configuraciones de entrenamiento (YAML)
@@ -245,7 +298,7 @@ tests/
 | 2 | Entorno Gymnasium | Hecha |
 | 3 | Entrenamiento | Hecha |
 | 4 | Render pseudo-3D y dirección de arte | En revisión |
-| 5 | Herramientas de exhibición | En curso (vídeos hechos) |
+| 5 | Herramientas de exhibición | En revisión (vídeos y visor) |
 | 6 | Editor de circuitos (opcional) | Pendiente |
 
 ## Licencia
