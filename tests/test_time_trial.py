@@ -528,3 +528,38 @@ def test_drive_without_time_trial_touches_no_records(tmp_path, app_factory):
 )
 def test_format_delta(delta, text):
     assert format_delta(delta) == text
+
+
+def test_drive_manual_lap_saves_the_record_and_announces_it(
+    track, tmp_path, app_factory, monkeypatch
+):
+    app = app_factory(autopilot=False)
+    pilot = Autopilot(track)
+    monkeypatch.setattr(
+        "kartlab.show.drive.keyboard_controls", lambda pressed: pilot.act(app.racer)
+    )
+    for _ in range(60 * 120):
+        app.physics_step()
+        if app.trial.record is not None:
+            break
+    assert app.trial.record is not None
+    assert app._message[0].startswith("¡Primer récord!")
+    assert RecordStore(tmp_path).load(track).lap_time == app.trial.record.lap_time
+    app.run(max_frames=3)  # and the HUD carries it
+    assert app.hud_trial.record == app.trial.record.lap_time
+    assert app.hud_trial.last == app.trial.last_lap
+
+
+@pytest.mark.parametrize(
+    "event, start",
+    [
+        (LapEvent(60.0, True, 61.5), "¡NUEVO RÉCORD! 1:00.00 (−1,50)"),
+        (LapEvent(62.0, False, 61.5), "Vuelta 1:02.00 (+0,50)"),
+        (LapEvent(62.0, False, 61.5, valid=False), "Vuelta 1:02.00 · no cuenta"),
+        (LapEvent(60.0, True, 61.5, saved=False), "¡NUEVO RÉCORD! 1:00.00 (−1,50) · no se pudo"),
+    ],
+)
+def test_drive_lap_messages(app_factory, event, start):
+    app = app_factory()
+    app._on_lap(event)
+    assert app._message[0].startswith(start)
