@@ -56,7 +56,7 @@ class Ink:
     PINK = 60
 
 
-# Kart body ramps (dark, main, light): one per agent version in a race.
+# Kart body ramps (dark, main, light): one per agent version in a race (eight at most).
 KART_RAMPS: tuple[tuple[int, int, int], ...] = (
     (21, 16, 23),  # orange
     (46, 47, 48),  # blue
@@ -64,6 +64,8 @@ KART_RAMPS: tuple[tuple[int, int, int], ...] = (
     (40, 41, 42),  # teal
     (59, 60, 61),  # pink
     (17, 18, 28),  # yellow
+    (6, 8, 9),  # white
+    (14, 15, 61),  # red
 )
 
 # Per variant: lighting of the world as (multiplier, light colour, light amount). The

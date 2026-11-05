@@ -94,6 +94,7 @@ class GameView:
         self.last_timings: dict[str, float] = {}
         self._fps: deque[float] = deque(maxlen=120)
         self._start = time.perf_counter()
+        self.fixed_time: float | None = None  # offline rendering: time of the frame (s)
         self._speed = Smoothed()
         self._notice: tuple[str, float] | None = None
         self.sensor = RaySensor(track, 11, math.pi, 60.0)
@@ -139,8 +140,14 @@ class GameView:
         self.world.set_variant(variant)
         return variant
 
+    def now(self) -> float:
+        """Seconds since the view opened; frame-exact if ``fixed_time`` is set (videos)."""
+        if self.fixed_time is not None:
+            return self.fixed_time
+        return time.perf_counter() - self._start
+
     def notify(self, text: str) -> None:
-        self._notice = (text, time.perf_counter())
+        self._notice = (text, self.now())
 
     # -- per frame ------------------------------------------------------------------------
 
@@ -167,7 +174,7 @@ class GameView:
         dt: float,
         fps: float | None = None,
     ) -> None:
-        now = time.perf_counter() - self._start
+        now = self.now()
         timings = self.world.render(pose, visuals, now)
         t0 = time.perf_counter()
         if self.world_rect.size != screen.get_size():
@@ -237,7 +244,9 @@ class GameView:
             y += surface.get_height()
 
         # Model label and view settings (top right).
-        colour = tuple(int(c) for c in game_palette().rgb[KART_RAMPS[info.ramp % 6][1]])
+        colour = tuple(
+            int(c) for c in game_palette().rgb[KART_RAMPS[info.ramp % len(KART_RAMPS)][1]]
+        )
         label = self.text.get(info.label, WHITE)
         sub = self.small.get(
             f"Cámara {CAMERA_NAMES[self.camera_name]} · {VARIANT_NAMES[self.world.variant]}", DIM
@@ -300,7 +309,7 @@ class GameView:
         radius = max(panel.get_height() // 30, 3)
         for k, v in enumerate(visuals):
             x, y = to_px(v.kart.x, v.kart.y)
-            colour = tuple(int(c) for c in rgb[KART_RAMPS[v.ramp % 6][1]])
+            colour = tuple(int(c) for c in rgb[KART_RAMPS[v.ramp % len(KART_RAMPS)][1]])
             r = radius + (1 if k == 0 else 0)
             pygame.draw.circle(screen, (10, 10, 16), (at[0] + x, at[1] + y), r + 1)
             pygame.draw.circle(screen, colour, (at[0] + x, at[1] + y), r)
@@ -309,7 +318,7 @@ class GameView:
         if self._notice is None:
             return
         text, start = self._notice
-        age = time.perf_counter() - start
+        age = self.now() - start
         if age > 3.0:
             self._notice = None
             return

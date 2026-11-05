@@ -83,3 +83,20 @@ def test_sprite_budget_reuses_a_neighbour_instead_of_drawing(view):
     bank.begin_frame()
     bank.kart(2, 0.0, math.radians(22), 1.12)
     assert len(bank._karts) == cached + 1
+
+
+def test_fixed_time_makes_the_hud_clock_frame_exact(track):
+    view = GameView(track, (640, 360))
+    view.fixed_time = 5.0
+    assert view.now() == 5.0
+    view.notify("Aviso")
+    assert view._notice == ("Aviso", 5.0)
+    view.fixed_time = None
+    assert view.now() < 5.0  # back to the wall clock
+
+
+def test_eight_kart_colours_are_distinct():
+    from kartlab.render.palette import KART_RAMPS
+
+    assert len(KART_RAMPS) == 8
+    assert len({ramp[1] for ramp in KART_RAMPS}) == 8
