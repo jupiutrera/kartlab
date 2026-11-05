@@ -74,6 +74,11 @@ def scale_for(window: tuple[int, int]) -> int:
     return max(1, min(window[0] // WORLD_SIZE[0], window[1] // WORLD_SIZE[1]))
 
 
+def unit_for(window: tuple[int, int]) -> int:
+    """Base size of the interface text (px) for a window."""
+    return max(window[1] // 40, 12)
+
+
 class GameView:
     def __init__(
         self,
@@ -116,7 +121,7 @@ class GameView:
         self.scale = scale_for(window)
         w, h = WORLD_SIZE[0] * self.scale, WORLD_SIZE[1] * self.scale
         self.world_rect = pygame.Rect((window[0] - w) // 2, (window[1] - h) // 2, w, h)
-        unit = max(window[1] // 40, 12)
+        unit = unit_for(window)
         self.unit = unit
         self.text = TextCache(pygame.font.Font(SANS, unit))
         self.small = TextCache(pygame.font.Font(SANS_REGULAR, max(int(unit * 0.75), 10)))
@@ -200,6 +205,10 @@ class GameView:
             self._watch_fps(fps)
         if self.diagnostics:
             self._draw_diagnostics(screen, fps)
+
+    def forget_fps(self) -> None:
+        """Drop the frame-rate samples (after a stall that was not the view being slow)."""
+        self._fps.clear()
 
     def _watch_fps(self, fps: float) -> None:
         self._fps.append(fps)

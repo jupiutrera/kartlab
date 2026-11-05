@@ -123,3 +123,28 @@ def test_same_seed_gives_identical_frames_with_effects(track):
 
 def test_effects_depend_on_the_seed(track):
     assert _render_with_effects(track, seed=5) != _render_with_effects(track, seed=6)
+
+
+def test_hud_can_be_left_out(track, view):
+    kart = KartState(*track.pose_at(30.0))
+    visual = KartVisual(kart, 0)
+    pose = view.update([visual], DT)
+    with_hud, without = pygame.Surface((1366, 768)), pygame.Surface((1366, 768))
+    view.draw(with_hud, pose, [visual], HudInfo(laps=1, lap_time=12.3), DT)
+    view.draw(without, pose, [visual], HudInfo(laps=1, lap_time=12.3), DT, hud=False)
+    corner = (60, 40, 150, 60)  # where the lap panel sits
+    assert pygame.image.tobytes(with_hud.subsurface(corner), "RGB") != pygame.image.tobytes(
+        without.subsurface(corner), "RGB"
+    )
+    assert without.get_at((683, 300))[:3] != (0, 0, 0)  # the world is still drawn
+
+
+def test_forgetting_fps_samples_keeps_the_light_mode_off(track):
+    view = GameView(track, (640, 360))
+    screen = pygame.Surface((640, 360))
+    visual = KartVisual(KartState(*track.pose_at(10.0)))
+    pose = view.update([visual], DT)
+    for _ in range(130):
+        view.draw(screen, pose, [visual], HudInfo(), DT, fps=22.0)
+        view.forget_fps()  # e.g. while a checkpoint loads in the background
+    assert not view.world.light_mode
