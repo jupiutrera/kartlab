@@ -45,6 +45,7 @@ uv run python scripts/drive.py --help             # todas las opciones
 | V | Día, atardecer o noche |
 | G | Mostrar los sensores (rayos) sobre el suelo |
 | T | Vista cenital de depuración |
+| Mayús (izquierda o derecha) | Barrido: mantener con el volante girado (ver abajo) |
 | Tab | Piloto automático de referencia |
 | P | Pausa |
 | F3 | Diagnóstico: fps y milisegundos de cada parte del dibujo |
@@ -52,6 +53,16 @@ uv run python scripts/drive.py --help             # todas las opciones
 | F11 | Pantalla completa |
 | H | Mostrar u ocultar la ayuda |
 | Esc | Salir |
+
+### Barrido (deslizamiento)
+
+![Barrido con chispas y barra de carga](docs/img/derrape.png)
+
+Solo en conducción manual. Con el kart a más de 10 m/s (36 km/h), el volante girado más de un tercio y sin pisar la hierba, mantén **Mayús** para entrar en un barrido: el kart pierde agarre lateral, desliza y cierra más la curva. La dirección del barrido queda fijada al entrar; girar hacia dentro la cierra y contravolantear la abre. Se sale soltando Mayús, bajando de unos 7 m/s o tocando la hierba.
+
+Al soltar, el kart recibe un impulso **proporcional al tiempo barrido**, con un tope (1,5 s dan el máximo, unos +6 m/s durante poco más de un segundo). Es continuo: no hay niveles ni colores por nivel. La barra de abajo muestra la carga mientras barres y se vacía mientras dura el impulso. Salir por la hierba o por falta de velocidad no da impulso.
+
+El piloto automático y el entorno de aprendizaje no usan el barrido: no cambia las observaciones, las acciones ni la física del entrenamiento. Las constantes están en `src/kartlab/sim/drift.py` (`DriftParams`).
 
 La ventana usa la mayor escala entera de 320×180 que cabe en la pantalla: ×4 (1280×720) en una de 1366×768 y ×5 (1600×900) en una de 1920×1080. A pantalla completa en 1080p, ×6 encaja exacto.
 

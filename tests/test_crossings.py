@@ -136,6 +136,12 @@ def test_a_crossing_must_be_declared():
     assert "no existe" in text and "no está declarado" in text
 
 
+def test_an_enormous_track_with_crossings_is_rejected_before_the_quadratic_checks():
+    huge = replace(EIGHT, corners=tuple((x * 8.0, y * 8.0, 45.0) for x, y, _ in EIGHT.corners))
+    report = validate_spec(huge)
+    assert not report.ok and "longitud" in "\n".join(report.problems)
+
+
 def test_a_declared_crossing_must_exist():
     plain = replace(EIGHT, corners=EIGHT.corners[:1] + ((300.0, 0.0, 40.0), (150.0, 200.0, 40.0)))
     assert "no existe" in problems(plain)

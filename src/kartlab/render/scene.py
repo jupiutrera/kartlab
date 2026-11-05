@@ -21,6 +21,7 @@ from kartlab.render.palette import FOG_COLOR, KART_RAMPS, Ink, game_palette
 from kartlab.render.sky import Sky
 from kartlab.render.sprites import PROP_HEIGHTS, VOXEL, SpriteBank, to_surface
 from kartlab.render.texture import build_floor_texture
+from kartlab.sim.drift import DriftState
 from kartlab.sim.kart import KartState
 from kartlab.sim.track import Track
 
@@ -30,6 +31,8 @@ NEAR = 0.8  # nothing is drawn closer than this to the camera (m)
 SUN = (0.55, -0.35)  # direction shadows are cast on the floor (unit-ish, world x/y)
 SKID_SPEED = 1.6  # lateral speed above which tyres leave marks (m/s)
 MAX_PARTICLES = 220
+SPARK_SIZE = 0.07  # sparks are smaller than dust puffs (m)
+SPARK_GRAVITY = 9.0  # (m/s²)
 
 
 @dataclass
@@ -41,6 +44,7 @@ class KartVisual:
     on_grass: bool = False
     throttle: float = 0.0
     trail: list[tuple[float, float]] = field(default_factory=list)
+    drift: DriftState | None = None  # manual sweep, if the kart has one
 
 
 @dataclass(frozen=True)
@@ -105,14 +109,15 @@ def bake_shadows(texture, props: list[Prop]) -> None:
 
 
 class Particles:
-    """Dust and smoke puffs in world space (simple arrays, no per-pixel work)."""
+    """Dust, smoke and sparks in world space (simple arrays, no per-pixel work)."""
 
     def __init__(self) -> None:
-        self.items: list[list[float]] = []  # x, y, z, vx, vy, vz, life, colour
+        # x, y, z, vx, vy, vz, life, colour, size (m), gravity (m/s²)
+        self.items: list[list[float]] = []
 
-    def emit(self, x, y, z, vx, vy, vz, life, colour) -> None:
+    def emit(self, x, y, z, vx, vy, vz, life, colour, size=0.35, gravity=0.0) -> None:
         if len(self.items) < MAX_PARTICLES:
-            self.items.append([x, y, z, vx, vy, vz, life, colour])
+            self.items.append([x, y, z, vx, vy, vz, life, colour, size, gravity])
 
     def update(self, dt: float) -> None:
         alive = []
@@ -120,6 +125,7 @@ class Particles:
             p[0] += p[3] * dt
             p[1] += p[4] * dt
             p[2] = max(p[2] + p[5] * dt, 0.0)
+            p[5] -= p[9] * dt
             p[3] *= 0.92
             p[4] *= 0.92
             p[6] -= dt
@@ -157,12 +163,14 @@ class WorldRenderer:
         self.label_font = pygame.font.Font(LABEL_FONT, 8)
         self._labels: dict[tuple[str, int], pygame.Surface] = {}
         self._halos: dict[tuple[int, int], pygame.Surface] = {}
+        self._ink_rgb: dict[int, tuple[int, int, int]] = {}
         self.show_rays: list[tuple[float, float, float]] = []  # (x, y, heading) for overlay
         self.ray_lengths: np.ndarray | None = None
         self.ray_angles: np.ndarray | None = None
         self.light_mode = light_mode
         self.variant = variant
         self.lens = lens
+        self._pushes_seen: dict[int, int] = {}  # sweep pushes already flashed, by drift id
         self._configure()
 
     # -- configuration ------------------------------------------------------------------
@@ -184,6 +192,7 @@ class WorldRenderer:
             self.variant = variant
             self.sprites.set_variant(variant)
             self._halos.clear()
+            self._ink_rgb.clear()
             self._configure()
 
     def set_light_mode(self, on: bool) -> None:
@@ -214,7 +223,47 @@ class WorldRenderer:
                 x, y = rear[int(rng.integers(2))]
                 self.particles.emit(x, y, 0.3, rng.normal(0, 0.4), rng.normal(0, 0.4), 0.8,
                                     0.7, Ink.MIST)  # fmt: skip
+            if v.drift is not None and not v.ghost:
+                self._drift_effects(v, v.drift, rear, rng, rate)
         self.particles.update(dt)
+
+    def _drift_effects(self, v: KartVisual, drift: DriftState, rear, rng, rate: float) -> None:
+        """Wider skid marks and yellow sparks while sweeping; a short flash and an orange
+        trail while the push lasts. Everything in palette inks, nothing allocated per pixel."""
+        kart = v.kart
+        c, s = math.cos(kart.heading), math.sin(kart.heading)
+        if drift.active:
+            if abs(kart.lateral_speed) <= SKID_SPEED:  # the sweep always leaves marks
+                for x, y in rear:
+                    self.texture.stamp(x, y, 0.14, Ink.ASPHALT_DARK)
+            count = 2 if rng.random() < rate else 1
+            for _ in range(count):
+                x, y = rear[int(rng.integers(2))]
+                back = rng.uniform(1.5, 4.5)
+                side = drift.direction * rng.uniform(-1.0, 3.0)
+                self.particles.emit(
+                    x, y, 0.15, -c * back - s * side, -s * back + c * side, rng.uniform(1.0, 2.5),
+                    rng.uniform(0.2, 0.4), Ink.YELLOW, SPARK_SIZE, SPARK_GRAVITY,
+                )  # fmt: skip
+        key = id(drift)
+        if drift.pushing:
+            if self._pushes_seen.get(key) != drift.push_id:  # first frame of this push
+                self._pushes_seen[key] = drift.push_id
+                for x, y in rear:
+                    for _ in range(3):
+                        self.particles.emit(
+                            x, y, 0.2, -c * rng.uniform(2, 7) + rng.normal(0, 1.5),
+                            -s * rng.uniform(2, 7) + rng.normal(0, 1.5), rng.uniform(0.5, 2.0),
+                            0.3, Ink.WHITE, 0.15, 4.0,
+                        )  # fmt: skip
+            level = drift.push_level
+            if rng.random() < (0.5 + 0.5 * level) * rate:
+                x, y = (kart.x - c * 1.0, kart.y - s * 1.0)
+                ink = Ink.ORANGE if rng.random() < 0.7 else Ink.AMBER
+                self.particles.emit(
+                    x + rng.normal(0, 0.15), y + rng.normal(0, 0.15), 0.35,
+                    -c * 4.0, -s * 4.0, 0.2, 0.18 + 0.12 * level, ink, 0.2 + 0.12 * level,
+                )  # fmt: skip
 
     # -- drawing -------------------------------------------------------------------------
 
@@ -269,12 +318,17 @@ class WorldRenderer:
                 if tdepth > NEAR:
                     drawables.append((float(tdepth), 1, (self._draw_dot, v.ramp, tsx, tsy, j)))
 
-        for p in self.particles.items:
-            psx, psy, pdepth = proj.project(pose, p[0], p[1], p[2])
-            if pdepth > NEAR:
-                size = max(1, int(0.35 * focal / pdepth))
+        if self.particles.items:  # one projection for all of them
+            cloud = np.array(self.particles.items)
+            psx, psy, pdepth = proj.project(pose, cloud[:, 0], cloud[:, 1], cloud[:, 2])
+            sizes = np.maximum((cloud[:, 8] * focal / np.maximum(pdepth, 1e-6)).astype(int), 1)
+            for i in np.flatnonzero(pdepth > NEAR):
                 drawables.append(
-                    (float(pdepth), 1, (self._draw_particle, psx, psy, size, int(p[7])))
+                    (
+                        float(pdepth[i]),
+                        1,
+                        (self._draw_particle, psx[i], psy[i], int(sizes[i]), int(cloud[i, 7])),
+                    )
                 )
 
         drawables.sort(key=lambda d: (-d[0], d[1]))
@@ -321,10 +375,11 @@ class WorldRenderer:
         self.world.set_at((round(sx), round(sy)), tuple(int(c) for c in colour))
 
     def _draw_particle(self, sx: float, sy: float, size: int, colour: int) -> None:
-        rgb = self.palette.rgb[self.sprites.remap[colour]]
-        self.world.fill(
-            tuple(int(c) for c in rgb), (round(sx - size / 2), round(sy - size), size, size)
-        )
+        rgb = self._ink_rgb.get(colour)
+        if rgb is None:  # per variant, so looked up once per ink
+            rgb = tuple(int(c) for c in self.palette.rgb[self.sprites.remap[colour]])
+            self._ink_rgb[colour] = rgb
+        self.world.fill(rgb, (int(sx - size / 2 + 0.5), int(sy - size + 0.5), size, size))
 
     def _draw_rays(self, pose: CameraPose) -> None:
         colour = tuple(int(c) for c in self.palette.rgb[Ink.YELLOW])
