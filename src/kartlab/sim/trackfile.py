@@ -519,9 +519,10 @@ def _check_start(points: np.ndarray, start: tuple[float, float]) -> list[str]:
     """A declared start must be on the centerline, on a straight stretch (sample 0 is it)."""
     offset = math.hypot(points[0, 0] - start[0], points[0, 1] - start[1])
     if offset > START_SNAP:
+        away = f"{offset:.1f} m" if offset < 10_000 else "más de 10000 m"
         return [
             f"la salida ({start[0]:g}, {start[1]:g}) no está sobre el circuito: la línea central "
-            f"más cercana queda a {offset:.1f} m (máximo {START_SNAP:g} m)"
+            f"más cercana queda a {away} (máximo {START_SNAP:g} m)"
         ]
     reach = round(START_HALF_WINDOW * len(points) / closed_length(points))
     window = np.arange(-reach, reach + 1) % len(points)

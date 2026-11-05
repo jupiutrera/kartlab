@@ -79,10 +79,11 @@ class Racer:
 
     @property
     def laps(self) -> int:
-        """Completed laps. On a track with crossings, turning from one branch onto the other
-        inside the crossing can skip a whole loop, so a lap only counts if the kart drove
-        forward through every tenth of the track since the last one; the distance still
-        counts exactly as before. Other tracks just use the net distance."""
+        """Completed laps. Other tracks just use the net distance. On a track with crossings,
+        turning from one branch onto the other inside the crossing skips part of the track:
+        the jump is charged to the distance (see ``step``), so repeating a lobe adds nothing,
+        and as a second guard a lap only counts if the kart also drove forward through every
+        tenth of the track since the last one."""
         return self._laps if self.track.crossings else self.progress.laps
 
     @property
@@ -116,8 +117,16 @@ class Racer:
         laps = self.progress.laps
         jump = (self.position.s - previous.s + self.track.length / 2) % self.track.length
         if abs(jump - self.track.length / 2) > MAX_STEP_DISTANCE:
-            self.progress.rebase(self.position.s)
-            delta = 0.0
+            if self.track.crossings:
+                # A branch switch at a crossing: s jumps although the kart barely moved. It
+                # never credits distance; it is charged as the way back along the centerline,
+                # so any closed loop (one lobe over and over) nets zero, however it is driven.
+                back = (self.position.s - previous.s) % self.track.length
+                delta = back - self.track.length if back > 0.0 else 0.0
+                self.progress.charge(self.position.s, delta)
+            else:
+                self.progress.rebase(self.position.s)
+                delta = 0.0
         else:
             delta = self.progress.update(self.position.s)
         self.time += DT

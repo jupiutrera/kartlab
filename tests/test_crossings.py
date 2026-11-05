@@ -212,6 +212,8 @@ def test_without_start_the_line_is_still_placed_automatically(crossing):
 
 def test_a_bad_start_is_rejected(eight):
     assert "no está sobre el circuito" in problems(replace(EIGHT, start=(0.0, 300.0)))
+    huge = problems(replace(EIGHT, start=(1e308, 1e308)))
+    assert "no está sobre el circuito" in huge and len(huge) < 200  # no 300-digit distances
     bend = np.argmax(np.abs(eight.curvature))
     corner = tuple(float(v) for v in eight.points[bend])
     assert "está en una curva" in problems(replace(EIGHT, start=corner))
@@ -365,9 +367,11 @@ def test_a_90_degree_turn_inside_the_crossing_follows_the_new_branch(eight, cros
     assert racer.position.s > crossing.s_b  # on branch B, going its way (not back to A)
     assert racer.position.s < crossing.s_b + 100.0
     assert abs(racer.position.lateral) < eight.half_width
-    # The switch did not credit the jump from one branch to the other.
-    assert max(abs(delta) for _, delta, _ in trace) < MAX_STEP_DISTANCE
-    assert 0.0 < racer.progress.distance - before < 3 * 20.0
+    # The switch is one big negative step (never a credit); the rest are ordinary steps.
+    deltas = sorted(delta for _, delta, _ in trace)
+    assert -eight.length < deltas[0] < -eight.length / 2
+    assert deltas[1] > -1.0 and deltas[-1] < MAX_STEP_DISTANCE
+    assert racer.progress.distance < before
     assert racer.laps == 0
 
 
@@ -375,25 +379,62 @@ def test_circling_at_the_crossing_gains_nothing(eight, crossing):
     for steer in (0.3, -0.3, 1.0, -1.0):
         racer = racer_at(eight, crossing.s_a, 8.0)
         drive(racer, 60 * 60, steer=steer, throttle=0.25)
-        assert abs(racer.progress.distance) < 60.0 and racer.laps == 0
+        assert racer.progress.distance < 60.0 and racer.laps == 0  # never adds up
 
 
-def test_skipping_a_loop_at_the_crossing_does_not_count_laps(eight, crossing):
-    """Turning from branch A onto B at the crossing repeats the second loop. The distance
-    keeps adding up honestly, but a lap needs every part of the track, so none counts."""
-    racer = racer_at(eight, crossing.s_b + 20.0, 10.0)
+def loop_one_lobe(eight, crossing, lobe: int, seconds: float = 300.0):
+    """Drive one lobe over and over, turning at the crossing from where the lobe ends onto
+    where it starts. Returns the net distance after each turn and the largest ever seen."""
+    if lobe == 1:  # from branch A through the first lobe to branch B and back onto A
+        start, end_s, back_to = crossing.s_a + 20.0, crossing.s_b, crossing.index_a
+    else:
+        start, end_s, back_to = crossing.s_b + 20.0, crossing.s_a, crossing.index_b
+    racer = racer_at(eight, start, 10.0)
     pilot = Autopilot(eight)
-    turns, last_turn = 0, -99.0
-    for _ in range(60 * 600):
+    after_turn, best, last_turn = [], 0.0, -99.0
+    while racer.time < seconds:
         racer.step(*pilot.act(racer))
-        if abs(racer.position.s - crossing.s_a) < 2.0 and racer.time - last_turn > 10.0:
-            turn_onto(racer, eight.heading_at_index(crossing.index_b))
-            turns, last_turn = turns + 1, racer.time
-            if turns == 3:
-                break
-    assert turns == 3
-    assert racer.progress.distance > 1.5 * eight.length
+        best = max(best, racer.progress.distance)
+        if abs(racer.position.s - end_s) < 2.0 and racer.time - last_turn > 10.0:
+            turn_onto(racer, eight.heading_at_index(back_to))
+            last_turn = racer.time
+            charge = 0.0
+            for _ in range(180):  # the kart leaves the first road a few metres later
+                charge = racer.step(*pilot.act(racer))
+                if charge < -50.0:
+                    break
+            assert charge < -50.0  # the switch happened, and was charged
+            after_turn.append(racer.progress.distance)
+    return racer, after_turn, best
+
+
+@pytest.mark.parametrize("lobe", [1, 2])
+def test_looping_one_lobe_gains_nothing(eight, crossing, lobe):
+    """Turning at the crossing to repeat one lobe neither adds progress nor counts laps."""
+    racer, after_turn, best = loop_one_lobe(eight, crossing, lobe)
+    assert len(after_turn) >= 6  # many loops in 300 s
+    # Each completed loop nets about zero (a metre or two of the next lap's start).
+    assert all(abs(d - after_turn[0]) < 5.0 for d in after_turn)
+    assert best < eight.length  # never anywhere near a lap, however long it runs
     assert racer.laps == 0 and racer.lap_times == []
+
+
+def test_skipping_a_lobe_gives_no_credit_for_the_skipped_part(eight, crossing):
+    racer = racer_at(eight, crossing.s_a - 15.0, 10.0)
+    drive(racer, 60)
+    before, s_before = racer.progress.distance, racer.position.s
+    turn_onto(racer, eight.heading_at_index(crossing.index_b))
+    delta = 0.0
+    for _ in range(180):  # until the kart has left the first road and the branch switches
+        delta = racer.step(0.0, 0.3)
+        if delta < -50.0:
+            break
+    assert delta < 0.0 and racer.position.s - s_before > 400.0  # s jumped forward ...
+    assert racer.progress.distance < before  # ... and none of it was credited
+    # The net distance stays congruent to the arc position (modulo one lap) from the start:
+    # skipping a lobe never makes the track "completed".
+    off = (racer.progress.distance - (racer.position.s - (crossing.s_a - 15.0))) % eight.length
+    assert min(off, eight.length - off) < 1.0
 
 
 def test_the_autopilot_drives_laps_through_the_crossing(eight):
