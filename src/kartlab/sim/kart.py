@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from kartlab.sim.drift import DriftState
 
 DT = 1.0 / 60.0  # physics step (s)
 STOP_SPEED = 0.3  # below this forward speed, "brake" engages reverse (m/s)
@@ -84,8 +88,18 @@ def step_kart(
     on_grass: bool,
     params: KartParams,
     dt: float = DT,
+    drift: DriftState | None = None,
 ) -> None:
-    """Advance ``state`` by one step in place."""
+    """Advance ``state`` by one step in place.
+
+    ``drift`` is the optional manual-drive sweep (see ``sim/drift.py``). With ``None``
+    (the default, and always in the RL environment) the physics below runs untouched.
+    """
+    if drift is not None:
+        from kartlab.sim.drift import step_drift  # drift.py builds on this function
+
+        step_drift(state, steer, throttle, on_grass, params, dt, drift)
+        return
     steer = _clamp(steer, -1.0, 1.0)
     throttle = _clamp(throttle, -1.0, 1.0)
 

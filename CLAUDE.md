@@ -22,6 +22,8 @@ uv run python scripts/train.py configs/fixed_track.yaml   # entrenar (runs/<fech
 uv run python scripts/live.py            # visor en directo del último run
 uv run python scripts/make_video.py progression|race|demo --run runs/<run> --out videos/x.mp4   # vídeos 1080p60
 uv run python scripts/evaluate.py --tracks 20   # 3 vueltas en los circuitos reservados
+uv run python scripts/evaluate.py --track-file tracks/ejemplo.json   # un circuito propio (se valida antes)
+uv run python scripts/track_file.py validate tracks/ejemplo.json     # validar / exportar (export --seed N)
 ```
 
 Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames N --screenshot f.png`.
@@ -48,6 +50,8 @@ Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames
 - Convenciones de la simulación: metros, `y` hacia arriba, rumbos en radianes en sentido antihorario, desplazamiento lateral positivo a la izquierda, `steer > 0` gira a la izquierda. La muestra 0 de cada circuito es la línea de meta.
 - El progreso es la distancia neta a lo largo de la línea central (`sim/progress.py`): ir hacia atrás resta y una vuelta solo cuenta una vez.
 - Las semillas de evaluación (`sim/tracksets.py`) están fuera del rango de entrenamiento; nunca entrenes con ellas.
+- Circuitos en fichero: JSON en `tracks/` (`sim/trackfile.py`). `load_track_file` (y `resolve_track` con una ruta `*.json`) valida siempre y construye por el mismo camino que el generador; la IA nunca recibe un circuito sin validar. `tests/test_track_pins.py` fija el hash de los circuitos de evaluación, de 10 semillas de entrenamiento y de los escaparates: no lo cambies para que un cambio pase.
+- El barrido (`sim/drift.py`) es solo de conducción manual: `step_kart(..., drift=None)` ejecuta la física de siempre y el entorno nunca pasa un `DriftState`. `tests/test_drift.py` compara con `==` contra una copia literal de `step_kart`; no toques esa ruta.
 - Entorno: `env/kart_env.py` (`KartEnv`, `EnvConfig`). Cualquier cambio de la recompensa necesita su test en `tests/test_env.py` (ir y volver sobre la meta y dar vueltas en círculo nunca deben sumar).
 
 ## Nada de GPU (no negociable)

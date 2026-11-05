@@ -10,6 +10,7 @@ import numpy as np
 
 from kartlab.sim.showcase import SHOWCASE, showcase_track
 from kartlab.sim.track import Track, TrackParams, generate_track
+from kartlab.sim.trackfile import load_track_file
 
 TRAIN_SEED_LIMIT = 1_000_000
 EVAL_SEEDS: tuple[int, ...] = tuple(range(TRAIN_SEED_LIMIT, TRAIN_SEED_LIMIT + 20))
@@ -36,8 +37,11 @@ def eval_track(index: int) -> Track:
 
 
 def resolve_track(choice: str) -> Track:
-    """A showcase key (``harbor``, ``canyon``, ``plateau``), ``eval:N`` (1-based) or a
-    training seed."""
+    """A showcase key (``harbor``, ``canyon``, ``plateau``), ``eval:N`` (1-based), a
+    training seed or the path of a track file (``*.json``, validated on load: raises
+    ``TrackFileError`` if it is invalid)."""
+    if choice.lower().endswith(".json"):
+        return load_track_file(choice)
     if choice in SHOWCASE:
         return showcase_track(choice)
     if choice.startswith("eval:"):

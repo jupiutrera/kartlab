@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 
+from kartlab.sim.drift import DriftState
 from kartlab.sim.kart import DT, KartParams, KartState, step_kart
 from kartlab.sim.progress import Progress
 from kartlab.sim.track import Track, TrackPosition
@@ -79,9 +80,12 @@ class Racer:
         track_heading = self.track.heading_at_index(self.position.index)
         return math.remainder(self.kart.heading - track_heading, math.tau)
 
-    def step(self, steer: float, throttle: float) -> float:
-        """Advance one physics step and return the net progress gained (m)."""
-        step_kart(self.kart, steer, throttle, self.on_grass, self.params)
+    def step(self, steer: float, throttle: float, drift: DriftState | None = None) -> float:
+        """Advance one physics step and return the net progress gained (m).
+
+        ``drift`` is only passed by manual driving; with ``None`` nothing changes.
+        """
+        step_kart(self.kart, steer, throttle, self.on_grass, self.params, drift=drift)
         self._keep_in_world()
         previous = self.position
         self.position = self.track.locate(self.kart.x, self.kart.y, hint=previous.index)

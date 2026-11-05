@@ -45,6 +45,7 @@ uv run python scripts/drive.py --help             # todas las opciones
 | V | Día, atardecer o noche |
 | G | Mostrar los sensores (rayos) sobre el suelo |
 | T | Vista cenital de depuración |
+| Mayús (izquierda o derecha) | Barrido: mantener con el volante girado (ver abajo) |
 | Tab | Piloto automático de referencia |
 | P | Pausa |
 | F3 | Diagnóstico: fps y milisegundos de cada parte del dibujo |
@@ -52,6 +53,16 @@ uv run python scripts/drive.py --help             # todas las opciones
 | F11 | Pantalla completa |
 | H | Mostrar u ocultar la ayuda |
 | Esc | Salir |
+
+### Barrido (deslizamiento)
+
+![Barrido con chispas y barra de carga](docs/img/derrape.png)
+
+Solo en conducción manual. Con el kart a más de 10 m/s (36 km/h), el volante girado más de un tercio y sin pisar la hierba, mantén **Mayús** para entrar en un barrido: el kart pierde agarre lateral, desliza y cierra más la curva. La dirección del barrido queda fijada al entrar; girar hacia dentro la cierra y contravolantear la abre. Se sale soltando Mayús, bajando de unos 7 m/s o tocando la hierba.
+
+Al soltar, el kart recibe un impulso **proporcional al tiempo barrido**, con un tope (1,5 s dan el máximo, unos +6 m/s durante poco más de un segundo). Es continuo: no hay niveles ni colores por nivel. La barra de abajo muestra la carga mientras barres y se vacía mientras dura el impulso. Salir por la hierba o por falta de velocidad no da impulso.
+
+El piloto automático y el entorno de aprendizaje no usan el barrido: no cambia las observaciones, las acciones ni la física del entrenamiento. Las constantes están en `src/kartlab/sim/drift.py` (`DriftParams`).
 
 La ventana usa la mayor escala entera de 320×180 que cabe en la pantalla: ×4 (1280×720) en una de 1366×768 y ×5 (1600×900) en una de 1920×1080. A pantalla completa en 1080p, ×6 encaja exacto.
 
@@ -161,6 +172,40 @@ uv run python scripts/make_video.py demo --run $RUN --track eval:3 --laps 3 --ou
 
 Otras opciones: `--camera broadcast|chase|top`, `--variant day|sunset|night`, `--steps 0,10000,100000` (versiones a mostrar) y `--normal-priority` (por defecto el proceso y ffmpeg van con prioridad baja). En un i5-1135G7 se renderizan unos 20-25 fotogramas por segundo de vídeo: la progresión de referencia (200 s de vídeo) tarda unos 10 minutos y pesa unos 170 MB. `videos/` está en `.gitignore`.
 
+## Circuitos propios
+
+Un circuito es un fichero JSON con las esquinas del trazado: `[x, y, radio]` en metros, en el orden de conducción (vale en sentido horario o antihorario). El radio es un máximo: si las esquinas vecinas no dejan sitio, el arco se reduce, como hace el generador. La línea de meta se coloca sola en la recta más larga.
+
+```json
+{
+  "format": 1,
+  "name": "Bahía del Faro",
+  "width": 12,
+  "decoration_seed": 7,
+  "corners": [[0, 0, 40], [320, -10, 30], [400, 100, 25], [330, 190, 16]]
+}
+```
+
+El circuito se construye por el mismo camino que el generador y no llega a la IA si no pasa el validador. Rechaza, con un mensaje que dice qué esquina o qué tramo falla:
+- cruces del trazado consigo mismo;
+- esquinas con radio menor de 14 m (lo que el kart puede tomar) o curvas más cerradas que eso una vez suavizadas;
+- anchura fuera de 8-20 m;
+- menos de 8 m de hierba entre tramos que no son vecinos;
+- longitud fuera de 400-2500 m, entre 3 y 40 esquinas, esquinas a menos de 5 m una de otra.
+
+Los campos desconocidos son un error, y `crossings` queda reservado para una versión futura del formato (pasos a nivel).
+
+```sh
+uv run python scripts/track_file.py validate tracks/ejemplo.json
+uv run python scripts/track_file.py export --seed 7 --out mio.json     # punto de partida desde un circuito generado
+uv run python scripts/track_file.py export --showcase harbor --out mio.json
+uv run python scripts/drive.py --track-file tracks/ejemplo.json        # conducirlo a mano
+uv run python scripts/evaluate.py --track-file tracks/ejemplo.json     # 3 vueltas con el último modelo
+```
+
+`evaluate.py` se niega a evaluar un fichero que no pasa la validación (código de salida distinto de cero) y no pisa el resultado oficial del run.
+`tracks/ejemplo.json` es un diseño original; el detalle del formato está en `src/kartlab/sim/trackfile.py`.
+
 ## Comandos
 
 | Qué | Comando |
@@ -182,6 +227,7 @@ src/kartlab/
   render/   render pseudo-3D (numpy + pygame-ce)
   show/     visor, vídeos y carreras de fantasmas
 scripts/    puntos de entrada
+tracks/     circuitos en fichero JSON
 configs/    configuraciones de entrenamiento (YAML)
 assets/     fuentes y paleta
 docs/       procedencia de recursos y registro de experimentos

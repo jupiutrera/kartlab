@@ -28,10 +28,12 @@ from kartlab.render.topdown import (
 )
 from kartlab.render.view import GameView, HudInfo
 from kartlab.sim.autopilot import Autopilot
+from kartlab.sim.drift import DriftState
 from kartlab.sim.kart import DT
 from kartlab.sim.race import Racer
 from kartlab.sim.showcase import showcase_track
 from kartlab.sim.track import Track
+from kartlab.sim.trackfile import TrackFileError, load_track_file
 from kartlab.sim.tracksets import (
     EVAL_SEEDS,
     eval_track,
@@ -50,6 +52,7 @@ SHOWCASE_KEYS = {pygame.K_1: "harbor", pygame.K_2: "canyon", pygame.K_3: "platea
 HELP = (
     "Flechas o WASD: conducir · R: reiniciar · 1-3: escaparate · E: evaluación · N: aleatorio",
     "C: cámara · V: día/atardecer/noche · G: sensores · T: vista cenital · Tab: piloto",
+    "Mayús: barrido (deslizamiento): mantén con el volante girado y suelta para el impulso",
     "P: pausa · F3: diagnóstico · L: modo ligero · F11: pantalla completa · H: ayuda · Esc: salir",
 )
 
@@ -61,6 +64,11 @@ def keyboard_controls(pressed) -> tuple[float, float]:
     up = pressed[pygame.K_UP] or pressed[pygame.K_w]
     down = pressed[pygame.K_DOWN] or pressed[pygame.K_s]
     return float(left) - float(right), float(up) - float(down)
+
+
+def drift_pressed(pressed) -> bool:
+    """Whether the sweep button (either Shift key) is down."""
+    return bool(pressed[pygame.K_LSHIFT] or pressed[pygame.K_RSHIFT])
 
 
 class DriveApp:
@@ -93,6 +101,7 @@ class DriveApp:
         self.diagnostics = False
         self.running = False
         self.controls = (0.0, 0.0)
+        self.drift = DriftState()
         self.clock = pygame.time.Clock()
         self.hud = DebugHud(self.screen.get_size())
         self.view: TopDownView | None = None
@@ -114,7 +123,9 @@ class DriveApp:
         size = self.screen.get_size()
         if self.view_mode == "3d" and self.game is None:
             self._loading()
-            self.game = GameView(self.track, size, self.camera3d, self.variant)
+            self.game = GameView(
+                self.track, size, self.camera3d, self.variant, seed=self.track.decoration_seed
+            )
             self.game.diagnostics = self.diagnostics
         elif self.view_mode == "topdown" and self.view is None:
             self.view = TopDownView(self.track, size)
@@ -128,6 +139,7 @@ class DriveApp:
 
     def reset(self) -> None:
         self.racer.reset()
+        self.drift.reset()
         self.camera = (self.racer.kart.x, self.racer.kart.y)
         self.trail: deque[tuple[float, float]] = deque(maxlen=int(TRAIL_SECONDS / DT / TRAIL_EVERY))
         self._steps = 0
@@ -178,6 +190,7 @@ class DriveApp:
             self.game.world.set_light_mode(not self.game.world.light_mode)
         elif key == pygame.K_TAB:
             self.autopilot_on = not self.autopilot_on
+            self.drift.reset()
         elif key == pygame.K_p:
             self.paused = not self.paused
         elif key == pygame.K_F11:
@@ -190,10 +203,14 @@ class DriveApp:
     def physics_step(self) -> None:
         if self.autopilot_on:
             steer, throttle = self.autopilot.act(self.racer)
+            drift = None  # the sweep is for manual driving only
         else:
-            steer, throttle = keyboard_controls(pygame.key.get_pressed())
+            pressed = pygame.key.get_pressed()
+            steer, throttle = keyboard_controls(pressed)
+            self.drift.hold = drift_pressed(pressed)
+            drift = self.drift
         self.controls = (steer, throttle)
-        self.racer.step(steer, throttle)
+        self.racer.step(steer, throttle, drift=drift)
         self._steps += 1
         if self._steps % TRAIL_EVERY == 0:
             self.trail.append((self.racer.kart.x, self.racer.kart.y))
@@ -243,7 +260,13 @@ class DriveApp:
 
     def draw_3d(self, dt: float) -> None:
         racer = self.racer
-        visual = KartVisual(racer.kart, 0, on_grass=racer.on_grass, throttle=self.controls[1])
+        visual = KartVisual(
+            racer.kart,
+            0,
+            on_grass=racer.on_grass,
+            throttle=self.controls[1],
+            drift=None if self.autopilot_on else self.drift,
+        )
         pose = self.game.update([visual], 0.0 if self.paused else dt)
         self.game.set_rays(visual if self.show_rays else None)
         extra = [self.track.name]
@@ -258,6 +281,7 @@ class DriveApp:
             speed=racer.speed,
             label="Piloto automático" if self.autopilot_on else "Conducción manual",
             extra=extra,
+            drift=None if self.autopilot_on else self.drift,
         )
         fps = self.clock.get_fps() if self.realtime else None
         self.game.draw(self.screen, pose, [visual], info, dt, fps)
@@ -295,6 +319,10 @@ class DriveApp:
             (f"Cámara: {'seguimiento' if self.follow else 'circuito'}", TEXT_DIM),
             (f"{self.clock.get_fps():3.0f} fps", TEXT_DIM),
         ]
+        if not self.autopilot_on and self.drift.active:
+            status.append((f"Barrido {self.drift.charge * 100:3.0f} %", ACCENT))
+        elif not self.autopilot_on and self.drift.pushing:
+            status.append((f"Impulso {self.drift.push_level * 100:3.0f} %", ACCENT))
         if self.paused:
             status.append(("PAUSA", WARNING))
         self.hud.draw_block(self.screen, status, "top-right")
@@ -312,6 +340,9 @@ def main(argv: list[str] | None = None) -> None:
         "--track",
         default="harbor",
         help="harbor, canyon, plateau, eval:N (1-20) o una semilla de entrenamiento",
+    )
+    parser.add_argument(
+        "--track-file", type=Path, help="circuito en fichero JSON (sustituye a --track)"
     )
     parser.add_argument(
         "--scale", type=int, help="escala entera sobre 320x180 (por defecto, la mayor que quepa)"
@@ -336,8 +367,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--screenshot", type=Path, help="guarda el último fotograma en este PNG")
     args = parser.parse_args(argv)
 
+    try:
+        track = load_track_file(args.track_file) if args.track_file else resolve_track(args.track)
+    except TrackFileError as error:
+        raise SystemExit(f"Circuito no válido:\n{error}") from None
     app = DriveApp(
-        resolve_track(args.track),
+        track,
         scale=args.scale,
         fullscreen=args.fullscreen,
         autopilot=args.autopilot,
