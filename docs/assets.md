@@ -22,3 +22,4 @@ Todo el material gráfico, tipográfico y sonoro del proyecto es original o tien
 - **Circuitos escaparate** (Puerto, Cañón y Meseta): trazados diseñados para este proyecto en `src/kartlab/sim/showcase.py`.
 - **Circuitos aleatorios y de evaluación**: generados por código a partir de una semilla (`src/kartlab/sim/track.py`).
 - **Vista cenital de depuración**: colores, pianos, línea de meta y flechas dibujados por código (`src/kartlab/render/topdown.py`). La paleta definitiva del juego se elige en la fase 4.
+- **Efectos del barrido** (chispas, estela y destello del impulso, marcas en el asfalto y barra de carga): partículas y rectángulos dibujados por código con colores de la paleta Resurrect 64 (`src/kartlab/render/scene.py` y `view.py`). Sin recursos externos.
