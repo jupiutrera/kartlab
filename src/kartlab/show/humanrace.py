@@ -25,9 +25,9 @@ class Difficulty:
 # A pedal cap (65 to 100 % throttle) barely changes the lap because the top speed is almost
 # flat there, so the level is a speed limiter instead; measured lap times are in the PR.
 DIFFICULTIES: tuple[Difficulty, ...] = (
-    Difficulty("facil", "Fácil", 0.82),
-    Difficulty("normal", "Normal", 0.90),
-    Difficulty("dificil", "Difícil", 0.97),
+    Difficulty("facil", "Fácil", 0.76),
+    Difficulty("normal", "Normal", 0.84),
+    Difficulty("dificil", "Difícil", 0.93),
     Difficulty("campeon", "Campeón", 1.0),
 )
 DEFAULT_DIFFICULTY = "normal"
