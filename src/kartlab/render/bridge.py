@@ -47,6 +47,8 @@ DASH = (1.0, 3.0)  # centre dash of every other section, from-to along it (m)
 DASH_HALF_WIDTH = 0.12
 LINTEL = 0.5  # height of the lintel over a tunnel mouth (m)
 JAMB = 0.35  # how far the lintel and the jambs stand out beside the opening (m)
+FIT_MARGIN = 200.0  # polygons reaching farther than this off screen are cut to it (px)
+LOD_DEPTH = 32.0  # farther than this, pairs of sections are drawn as one of 8 m (m)
 LINES_UNTIL = 55.0  # the painted lines of the deck are drawn up to this depth (m)
 LAMP_EVERY = 3  # a lamp strip on the roof of the tunnel every this many segments
 
@@ -110,6 +112,39 @@ def _lerp(p: tuple[float, float], q: tuple[float, float], t: float) -> tuple[flo
     return p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t
 
 
+def _fit(points: list[tuple[float, float]], width: int, height: int) -> list[tuple[float, float]]:
+    """A polygon cut to the screen when it reaches far outside it.
+
+    ``pygame.draw.polygon`` walks every row of the polygon, on screen or not, so a strip that
+    is almost edge-on (thousands of pixels tall) costs a millisecond. Most polygons are already
+    inside the margin and come back untouched.
+    """
+    margin = FIT_MARGIN
+    if all(-margin <= x <= width + margin and -margin <= y <= height + margin for x, y in points):
+        return points
+    for axis, bound, keep_above in (
+        (0, -1.0, True),
+        (0, width + 1.0, False),
+        (1, -1.0, True),
+        (1, height + 1.0, False),
+    ):
+        out = []
+        count = len(points)
+        for i in range(count):
+            a, b = points[i], points[(i + 1) % count]
+            a_in = (a[axis] >= bound) if keep_above else (a[axis] <= bound)
+            b_in = (b[axis] >= bound) if keep_above else (b[axis] <= bound)
+            if a_in:
+                out.append(a)
+            if a_in != b_in:
+                t = (bound - a[axis]) / (b[axis] - a[axis])
+                out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+        points = out
+        if len(points) < 3:
+            return []
+    return points
+
+
 def _clip(points: list[tuple[float, float, float]], depths: list[float]):
     """Part of a polygon in front of the near plane (Sutherland-Hodgman), in world points."""
     out = []
@@ -145,6 +180,7 @@ class BridgeRenderer:
         self.visible_sections: list[int] = []
         self._frame: dict | None = None
         self.camera_in_tunnel = False
+        self._size = (320, 180)
         self.exit_depth = 0.0  # depth of the far mouth while the camera is inside
 
     # -- geometry ------------------------------------------------------------------------
@@ -215,6 +251,7 @@ class BridgeRenderer:
         normal = np.stack([-np.sin(self.heading), np.cos(self.heading)], axis=1)  # left of the road
         lit_left = (normal @ -self.sun) > 0.0
         self.lit_left = lit_left[:-1] | lit_left[1:]
+        self._pair_first = np.arange(0, count - 1, 2)  # first section of every pair
         self._col_a = np.array([p[0] for p in STRIPS])
         self._col_b = np.array([p[1] for p in STRIPS])
         self._in_far_left = np.ones((count, len(STRIPS)), dtype=bool)
@@ -228,6 +265,13 @@ class BridgeRenderer:
         self._corners = [
             [
                 [(int(self.corner_k[k, s, i]), int(self.corner_j[k, s, i])) for i in range(4)]
+                for s in range(len(STRIPS))
+            ]
+            for k in range(count)
+        ]
+        self._corners_pair = [
+            [
+                [(k + 2 * (i // 2), j) for i, (_, j) in enumerate(self._corners[k][s])]
                 for s in range(len(STRIPS))
             ]
             for k in range(count)
@@ -331,6 +375,7 @@ class BridgeRenderer:
         self._pose = pose
         self._projection = projection
         self._setup_camera(pose, projection, lens)
+        self._size = (projection.width, projection.height)
         drawables: list[tuple[float, int, tuple]] = []
         if inside:
             # The inside is drawn after what is beyond the far mouth (seen through it) and
@@ -364,12 +409,24 @@ class BridgeRenderer:
         near_key = np.minimum(left_depth, right_depth)
         in_far = self._in_far_left.copy()
         in_far[~far_is_left] = self._in_far_right[~far_is_left]
+        # Far away, two neighbouring sections are one polygon per strip: half the polygons for
+        # a difference of less than a pixel (the ramp is a smooth curve; 8 m of it is flat enough).
+        pair = np.zeros(self.count, dtype=bool)
+        first, second = self._pair_first, self._pair_first + 1
+        pair[first] = (near_key[first] > LOD_DEPTH) & (near_key[second] > LOD_DEPTH)
+        pair[first] &= ~(partial[first].any(axis=1) | partial[second].any(axis=1))
+        head = first[pair[first]]
+        show[head] |= show[head + 1]
+        show[head + 1] = False
+        far_key[head] = (far_key[head] + far_key[head + 1]) / 2.0
+        near_key[head] = (near_key[head] + near_key[head + 1]) / 2.0
         self._frame = {
             "sx": sx.tolist(),
             "sy": sy.tolist(),
             "partial": partial.tolist(),
             "show": show.tolist(),
             "far_is_left": far_is_left.tolist(),
+            "pair": pair.tolist(),
         }
         for index in np.flatnonzero((show & in_far).any(axis=1)).tolist():
             drawables.append((float(far_key[index]), 0, (self._draw_section, index, True)))
@@ -448,6 +505,7 @@ class BridgeRenderer:
         inks = self._inks[k]
         sx, sy = frame["sx"], frame["sy"]
         far_is_left = frame["far_is_left"][k]
+        corners_pair = self._corners_pair[k]
         if far:
             order = FAR_LEFT if far_is_left else FAR_RIGHT
         else:
@@ -460,8 +518,11 @@ class BridgeRenderer:
                 if len(points) < 3:
                     continue
             else:
-                points = [(sx[a][b], sy[a][b]) for a, b in self._corners[k][strip]]
-            pygame.draw.polygon(surface, rgb(inks[strip], fog), points)
+                corners = (corners_pair if frame["pair"][k] else self._corners[k])[strip]
+                points = [(sx[a][b], sy[a][b]) for a, b in corners]
+            points = _fit(points, self._size[0], self._size[1])
+            if len(points) >= 3:
+                pygame.draw.polygon(surface, rgb(inks[strip], fog), points)
         if far and k % 2 == 0 and show[DECK_STRIP]:
             self._draw_dash(k // 2, fog)
 
@@ -534,7 +595,7 @@ class BridgeRenderer:
             if max(depths) <= NEAR:
                 return
             world = _clip(world, depths)
-        points = [self._screen_of(*p) for p in world]
+        points = _fit([self._screen_of(*p) for p in world], self._size[0], self._size[1])
         if len(points) >= 3:
             pygame.draw.polygon(self.surface, self.rgb(ink, fog), points)
 
