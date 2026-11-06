@@ -33,6 +33,7 @@ from kartlab.render.pixelfont import (
     measure,
     text_mask,
     wrap,
+    wrap_clip,
 )
 
 __all__ = [
@@ -59,6 +60,7 @@ __all__ = [
     "text",
     "vline",
     "wrap",
+    "wrap_clip",
 ]
 
 CANVAS_SIZE = (320, 180)  # the logical resolution of the world and of the interface

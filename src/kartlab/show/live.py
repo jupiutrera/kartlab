@@ -463,8 +463,10 @@ class LiveApp:
         ui.hline(canvas, x, y - 2, inner, ui.NIGHT)
         ui.text(canvas, "CIRCUITO", x, y, ui.STONE_LIGHT)
         y += 9
-        ui.text(canvas, ui.ellipsize(self.track.name, inner), x, y, ui.TEXT)
-        y += 11
+        for line in ui.wrap_clip(self.track.name, inner, 3):  # split, not cut off
+            ui.text(canvas, line, x, y, ui.TEXT)
+            y += 9
+        y += 2
 
         def row(label: str, value: str, ink_value: int = ui.TEXT) -> None:
             nonlocal y

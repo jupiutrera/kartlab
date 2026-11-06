@@ -253,3 +253,52 @@ def test_the_live_notice_does_not_cover_the_chart_the_brain_or_the_model_panel(t
         assert not [r for r in hud.reserved if r.colliderect(hud.notice_rect)]
     finally:
         pygame.quit()
+
+
+def _drawn_texts(monkeypatch):
+    """Every string the interface draws from now on (a list that grows)."""
+    from kartlab.render import pixelui as ui
+
+    seen: list[str] = []
+    original = ui.text
+
+    def spy(target, value, *args, **kwargs):
+        seen.append(value)
+        return original(target, value, *args, **kwargs)
+
+    monkeypatch.setattr(ui, "text", spy)
+    return seen
+
+
+def test_a_long_track_name_is_split_in_lines_in_the_live_panel(tiny_run, monkeypatch):
+    track = load_track_file("tracks/ocho_puente.json")
+    assert track.name == "Lazo del Molino - puente"
+    seen = _drawn_texts(monkeypatch)
+    app = LiveApp(
+        tiny_run,
+        track_choice="harbor",
+        ghosts=0,
+        scale=2,
+        realtime=False,
+        view="topdown",
+        track=track,
+    )
+    try:
+        app.preload_ghosts()
+        app.loader.poll_once()
+        app.run(max_frames=5)
+    finally:
+        pygame.quit()
+    assert not any("…" in line and "MOL" in line.upper() for line in seen)
+    assert {"LAZO DEL MOLINO", "- PUENTE"} <= {line.upper() for line in seen}
+
+
+def test_wrap_clip_splits_before_it_cuts():
+    from kartlab.render import pixelui as ui
+
+    name = "Lazo del Molino - puente"
+    assert ui.wrap_clip(name, 88, 3) == ["Lazo del Molino", "- puente"]
+    assert ui.wrap_clip(name, 76, 3) == ["Lazo del", "Molino -", "puente"]
+    clipped = ui.wrap_clip("uno dos tres cuatro cinco seis siete", 40, 2)
+    assert len(clipped) == 2 and clipped[-1].endswith("…")
+    assert ui.wrap_clip("Puerto", 88, 3) == ["Puerto"]
