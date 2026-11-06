@@ -302,3 +302,22 @@ def test_wrap_clip_splits_before_it_cuts():
     clipped = ui.wrap_clip("uno dos tres cuatro cinco seis siete", 40, 2)
     assert len(clipped) == 2 and clipped[-1].endswith("…")
     assert ui.wrap_clip("Puerto", 88, 3) == ["Puerto"]
+
+
+def test_the_ghost_labels_stay_whole_inside_the_map_even_at_its_edges():
+    from kartlab.show.live import place_label
+
+    bounds = pygame.Rect(0, 0, 224, 180)  # the map: the side panel starts at its right edge
+    widths = [72, 78, 66, 84]  # "160K PASOS", "500K PASOS"...
+    spots = [(222, 90), (221, 92), (220, 91), (219, 93)]  # four karts at the right edge
+    spots += [(2, 90), (110, 1), (110, 178), (1, 1), (223, 179)]
+    for kart in spots:
+        placed = []
+        for width in widths:
+            rect = place_label(width, kart, bounds, placed)
+            assert bounds.contains(rect), (kart, width, rect)
+            assert rect.collidelist(placed) == -1, (kart, width, rect, placed)
+            placed.append(rect)
+    # With room all round the label is centred above its kart, as always.
+    rect = place_label(60, (100, 90), bounds, [])
+    assert rect.midbottom == (100, 85)

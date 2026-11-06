@@ -88,6 +88,24 @@ class ModelLoader:
         self._stop.set()
 
 
+def place_label(
+    width: int, kart: tuple[float, float], bounds: pygame.Rect, placed: list[pygame.Rect]
+) -> pygame.Rect:
+    """Where a version label goes: centred above its kart, nudged sideways so that it stays
+    whole inside the map (``bounds``: the side panel cuts what pokes out), and stacked
+    above the labels already ``placed``. Under the kart if there is no room above it."""
+    rect = pygame.Rect(0, 0, width, 9)
+    rect.midbottom = (round(kart[0]), round(kart[1]) - 5)
+    step = -rect.height
+    if rect.top < bounds.top + 1:  # at the top edge: below the kart instead
+        rect.midtop = (round(kart[0]), round(kart[1]) + 5)
+        step = rect.height
+    rect.clamp_ip(bounds.inflate(-6, -2))  # room for the outline of the letters
+    while rect.collidelist(placed) != -1:  # karts side by side: stack the labels
+        rect.move_ip(0, step)
+    return rect
+
+
 class LiveApp:
     def __init__(
         self,
@@ -345,10 +363,7 @@ class LiveApp:
                 continue  # in the tunnel: the view hides the kart, so its label goes too
             label = driver.version.label
             x, y = self.view.to_screen(kart.x, kart.y)
-            rect = pygame.Rect(0, 0, ui.measure(label), 9)
-            rect.midbottom = (round(x), round(y) - 5)
-            while rect.collidelist(placed) != -1:  # karts side by side: stack the labels
-                rect.move_ip(0, -rect.height)
+            rect = place_label(ui.measure(label), (x, y), view_surface.get_rect(), placed)
             placed.append(rect)
             ink = self._ink_of_ramp(driver.ramp)
             ui.text(view_surface, label, rect.x, rect.y + 2, ink, outline=ui.NIGHT)
