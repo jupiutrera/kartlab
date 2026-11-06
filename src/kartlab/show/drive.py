@@ -306,6 +306,9 @@ class DriveApp:
             state = self.session.advance()
             if state == "countdown":
                 self.controls = (0.0, 0.0)
+                # A Shift pressed (or held) now is not buffered: no hop at the "¡YA!".
+                self.drift.hold = drift_pressed(pygame.key.get_pressed())
+                self.drift.reset()
                 return
             frozen = state == "finished"
         if frozen:

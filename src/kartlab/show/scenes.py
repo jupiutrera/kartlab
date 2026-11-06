@@ -846,6 +846,9 @@ class HumanRaceScene(Scene):
             return
         if self.frame_no < self.start_frames:  # the countdown: everybody is frozen
             self.frame_no += 1
+            # A Shift pressed (or held) now is not buffered: no hop at the "¡YA!".
+            self.drift.hold = drift_pressed(pygame.key.get_pressed())
+            self.drift.reset()
             return
         self.frame_no += 1
         self.race_steps += 1
@@ -872,8 +875,7 @@ class HumanRaceScene(Scene):
     def _bump(self, t: float) -> None:
         """Soft contact between the human kart and each AI kart (see ``sim/contact.py``)."""
         racer = self.human
-        height = getattr(self.drift, "height", 0.0)
-        mine = Body(racer.kart, racer.level_z, height, START_GRACE)
+        mine = Body(racer.kart, racer.level_z, self.drift.height, START_GRACE)
         for driver, state in zip(self.drivers, self.pairs, strict=True):
             other = driver.racer
             grace = max(START_GRACE, driver.no_contact_until)
