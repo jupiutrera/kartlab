@@ -43,7 +43,7 @@ def test_frame_draws_world_and_hud(track, view):
     info = HudInfo(laps=1, lap_time=12.3, best_lap=55.0, speed=20.0, label="Modelo 1,2M pasos")
     view.draw(screen, pose, [visual], info, DT)
     assert screen.get_at((5, 5))[:3] == (0, 0, 0)  # letterbox
-    assert set(view.last_timings) >= {"suelo", "sprites", "escalado", "HUD"}
+    assert set(view.last_timings) >= {"suelo", "sprites", "escalado", "interfaz"}
     assert screen.get_at((683, 300))[:3] != (0, 0, 0)
 
 
@@ -90,7 +90,7 @@ def test_fixed_time_makes_the_hud_clock_frame_exact(track):
     view.fixed_time = 5.0
     assert view.now() == 5.0
     view.notify("Aviso")
-    assert view._notice == ("Aviso", 5.0)
+    assert view.hud.notice == ("Aviso", 5.0)
     view.fixed_time = None
     assert view.now() < 5.0  # back to the wall clock
 

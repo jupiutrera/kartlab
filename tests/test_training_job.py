@@ -149,7 +149,7 @@ def test_the_run_folder_comes_from_the_log_and_progress_from_its_metrics(config,
     (run_dir / "metrics.csv").write_text("steps,time_s\n512,1\n120000,9\n", encoding="utf-8")
     assert job.steps() == 120000
     job.clock.now += 192
-    assert job.status_line() == "Entrenando mini · 120k/400k · 3:12"
+    assert job.status_line() == "Entrenando mini, 120k de 400k, 3:12"
     assert job.log_tail(1) == ["1024 pasos"]
 
 
@@ -256,7 +256,7 @@ def test_a_new_session_adopts_a_trainer_that_is_still_alive_and_can_stop_it(tmp_
     assert job is not None and job.running and not job.stopping
     assert job.config.name == "previo" and job.run_paths().root == run_dir
     assert job.steps() == 128000
-    assert job.status_line().startswith("Entrenando previo · 128k/400k")
+    assert job.status_line().startswith("Entrenando previo, 128k de 400k")
     job.request_stop()  # writes the stop file the trainer is watching
     assert job.stop_path.exists() and job.stopping and "Parando" in job.status_line()
     assert path.exists()

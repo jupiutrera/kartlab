@@ -102,15 +102,15 @@ class TrialSession:
         best = min(self.lap_times) if self.lap_times else None
         rows = []
         for i, lap in enumerate(self.lap_times, start=1):
-            mark = "   mejor" if lap == best and len(self.lap_times) > 1 else ""
-            rows.append((f"Vuelta {i}   {format_time(lap)}{mark}", "best" if mark else "lap"))
-        rows.append((f"Total      {format_time(self.total)}", "total"))
+            mark = "  mejor" if lap == best and len(self.lap_times) > 1 else ""
+            rows.append((f"Vuelta {i}  {format_time(lap)}{mark}", "best" if mark else "lap"))
+        rows.append((f"Total  {format_time(self.total)}", "total"))
         if not self.valid:
-            rows.append(("Con piloto automático no hay récord", "dim"))
+            rows.append(("Sin récord con piloto automático", "dim"))
         elif self.new_record:
-            rows.append((f"¡NUEVO RÉCORD DE VUELTA! {format_time(best)}", "record"))
+            rows.append((f"Nuevo récord {format_time(best)}", "record"))
         elif record is not None:
-            rows.append((f"Récord de vuelta {format_time(record)}", "dim"))
+            rows.append((f"Récord {format_time(record)}", "dim"))
         else:
-            rows.append(("Sin récord guardado", "dim"))
+            rows.append(("Sin récord", "dim"))
         return rows

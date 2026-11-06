@@ -6,12 +6,9 @@ from kartlab.render.topdown import (
     GRASS,
     GRASS_GRID,
     KART_COLOR,
-    DebugHud,
-    TextCache,
     TopDownView,
     TrackMap,
     format_time,
-    load_fonts,
 )
 from kartlab.sim.race import Racer
 from kartlab.sim.showcase import showcase_track
@@ -59,28 +56,8 @@ def test_view_draws_the_kart_without_a_window(track, follow):
     assert _color(target, centre) == KART_COLOR
 
 
-def test_text_cache_renders_each_string_once():
-    regular, _ = load_fonts(720)
-    cache = TextCache(regular)
-    first = cache.get("Vuelta 1", (255, 255, 255))
-    assert cache.get("Vuelta 1", (255, 255, 255)) is first
-    assert cache.get("Vuelta 2", (255, 255, 255)) is not first
-
-
-def test_hud_draws_panels_in_every_corner():
-    size = (640, 360)
-    hud = DebugHud(size)
-    target = pygame.Surface(size)
-    target.fill((0, 0, 0))
-    for anchor in ("top-left", "top-right", "bottom-left"):
-        hud.draw_block(target, [("Velocidad 87 km/h", (255, 255, 255))], anchor, title="Puerto")
-    assert target.get_at((hud.pad + 1, hud.pad + 1))[:3] != (0, 0, 0)
-    assert target.get_at((size[0] - hud.pad - 2, hud.pad + 1))[:3] != (0, 0, 0)
-    assert target.get_at((hud.pad + 1, size[1] - hud.pad - 2))[:3] != (0, 0, 0)
-
-
 @pytest.mark.parametrize(
-    "seconds, text", [(None, "-:--.--"), (0.0, "0:00.00"), (65.432, "1:05.43"), (600.0, "10:00.00")]
+    "seconds, text", [(None, "-:--,--"), (0.0, "0:00,00"), (65.432, "1:05,43"), (600.0, "10:00,00")]
 )
 def test_format_time(seconds, text):
     assert format_time(seconds) == text

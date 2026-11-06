@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pygame
 
-from kartlab.common.paths import FONTS_DIR
+from kartlab.render import pixelui as ui
 from kartlab.render.bridge import BridgeRenderer
 from kartlab.render.camera import CameraPose, Lens
 from kartlab.render.floor import FloorRenderer, Projection
@@ -36,7 +36,6 @@ from kartlab.sim.kart import KartState
 from kartlab.sim.track import Track
 
 WORLD_SIZE = (320, 180)
-LABEL_FONT = FONTS_DIR / "silkscreen" / "Silkscreen-Regular.ttf"
 NEAR = 0.8  # nothing is drawn closer than this to the camera (m)
 SUN = (0.55, -0.35)  # direction shadows are cast on the floor (unit-ish, world x/y)
 SKID_SPEED = 1.6  # lateral speed above which tyres leave marks (m/s)
@@ -160,7 +159,6 @@ class WorldRenderer:
         light_mode: bool = False,
         seed: int = 0,
     ) -> None:
-        pygame.font.init()
         self.track = track
         self.palette = game_palette()
         self.size = WORLD_SIZE
@@ -178,7 +176,6 @@ class WorldRenderer:
         self.indexed = pygame.Surface(WORLD_SIZE, depth=8)
         self.indexed.set_palette([tuple(int(c) for c in rgb) for rgb in self.palette.rgb])
         self.world = pygame.Surface(WORLD_SIZE)
-        self.label_font = pygame.font.Font(LABEL_FONT, 8)
         self._labels: dict[tuple[str, int], pygame.Surface] = {}
         self._halos: dict[tuple[int, int], pygame.Surface] = {}
         self._ink_rgb: dict[int, tuple[int, int, int]] = {}
@@ -481,19 +478,9 @@ class WorldRenderer:
     def _label(self, text: str, ramp: int) -> pygame.Surface:
         key = (text, ramp)
         surface = self._labels.get(key)
-        if surface is None:
-            colour = self.palette.rgb[KART_RAMPS[ramp % len(KART_RAMPS)][2]]
-            fg = self.label_font.render(text, False, tuple(int(c) for c in colour))
-            surface = pygame.Surface((fg.get_width() + 2, fg.get_height() + 2))
-            surface.fill((255, 0, 255))
-            outline = self.label_font.render(
-                text, False, tuple(int(c) for c in self.palette.rgb[Ink.BLACK])
-            )
-            for dx, dy in ((0, 1), (2, 1), (1, 0), (1, 2)):
-                surface.blit(outline, (dx, dy))
-            surface.blit(fg, (1, 1))
-            surface.set_colorkey((255, 0, 255))
-            self._labels[key] = surface
+        if surface is None:  # the interface font with an outline, in the kart's light ink
+            ink = KART_RAMPS[ramp % len(KART_RAMPS)][2]
+            surface = self._labels[key] = ui._string_surface(text, ink, 1, Ink.BLACK, None, False)
         return surface
 
     def _halo(self, ramp: int, size: int) -> pygame.Surface:

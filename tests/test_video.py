@@ -76,7 +76,6 @@ def test_checkpoints_follow_a_log_scale_and_end_with_the_final_one(tmp_path):
 
 
 def test_writer_rejects_frames_of_the_wrong_size(tmp_path):
-    pygame.font.init()
     writer = VideoWriter(tmp_path / "a.mp4")
     try:
         with pytest.raises(ValueError):
@@ -99,11 +98,11 @@ def test_writer_produces_exact_1080p60_and_renames_when_done(tmp_path):
 
 
 def test_log_chart_marks_the_current_version():
-    pygame.font.init()
-    chart = RewardChart((300, 180), pygame.font.Font(None, 16), log_x=True)
+    pygame.init()
+    chart = RewardChart((92, 56), log_x=True)
     rows = [{"steps": 4096.0 * 2**k, "reward_mean": float(k)} for k in range(1, 9)]
     surface = chart.draw(rows, 1, marker=30_000)
-    assert surface.get_bounding_rect().height > 100
+    assert surface.get_size() == (92, 56)
     key = chart._key
     chart.draw(rows, 1, marker=0)  # the untrained version sits at the left edge
     assert chart._key != key

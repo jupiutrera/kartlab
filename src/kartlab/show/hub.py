@@ -27,14 +27,15 @@ import numpy as np
 import pygame
 
 from kartlab.common.paths import REPO_ROOT
-from kartlab.render.display import open_window, set_window_mode
+from kartlab.render import pixelui as ui
+from kartlab.render.display import open_window, present, set_window_mode, to_logical
 from kartlab.render.palette import game_palette
 from kartlab.render.scene import KartVisual
 from kartlab.render.sprites import SpriteBank
-from kartlab.render.topdown import ACCENT
 from kartlab.render.view import GameView, HudInfo
 from kartlab.show.cli import NoCheckpoints
 from kartlab.show.menu import (
+    STATUS_H,
     Dialog,
     Entry,
     Flow,
@@ -42,13 +43,13 @@ from kartlab.show.menu import (
     OptionsScreen,
     Screen,
     TrainScreen,
-    Ui,
+    W,
     open_folder,
 )
 from kartlab.show.pickers import KartScreen, TrackCatalog, TrackScreen
 from kartlab.show.raceoptions import RaceOptionsScreen, race_choices
 from kartlab.show.settings import SETTINGS_PATH, Settings
-from kartlab.show.title import build_wordmark
+from kartlab.show.title import build_wordmark, veil
 from kartlab.show.training_job import CONFIGS_DIR, LOGS_DIR, TrainingJob, live_run
 from kartlab.sim.autopilot import Autopilot
 from kartlab.sim.kart import DT
@@ -57,14 +58,13 @@ from kartlab.sim.showcase import showcase_track
 from kartlab.sim.trackfile import TrackFileError, load_spec
 
 TITLE = "KART LAB"
-BACKGROUND = (14, 14, 22)  # until the 3D backdrop is ready
 TRACKS_DIR = REPO_ROOT / "tracks"
 RUNS_DIR = REPO_ROOT / "runs"
 MAX_PENDING = 0.1  # never advance more than this after a stall (s)
 CACHE_SECONDS = 2.0  # how long the list of runs is trusted before looking at the disk again
 ENDED_SECONDS = 30.0  # how long the menu keeps showing that a training has finished
-NO_RUN_REASON = "Entrena antes a la IA"
-STILL_TRAINING = "El entrenamiento sigue en marcha; ábrelo de nuevo y pulsa Parar."
+NO_RUN_REASON = "Entrena una IA primero"
+STILL_TRAINING = "El entrenamiento sigue en marcha. Para pararlo, abre el menú y pulsa Parar."
 
 
 # -- the activities -----------------------------------------------------------------------------
@@ -123,7 +123,7 @@ def launch_viewer(hub: KartLabApp, choices: dict, mode: str) -> None:
             embedded=True,
         )
     except NoCheckpoints as error:
-        hub.message("Sin checkpoints", str(error))
+        hub.message("Sin versiones", str(error))
         return
     hub.run_activity(
         app, lambda: app.run_loop(hub.activity_frames), app.save_screenshot, close=app.close
@@ -154,7 +154,7 @@ def launch_vs_ai(hub: KartLabApp, choices: dict) -> None:
     track = hub.resolve_track(choice)
     if track.flat_crossings:
         raise ActivityError(
-            "Circuito no válido", "La carrera contra la IA no admite circuitos con cruces a nivel."
+            "Circuito no válido", "La carrera no admite circuitos con cruces a nivel."
         )
     race = choices["race"]
     try:
@@ -176,7 +176,7 @@ def launch_vs_ai(hub: KartLabApp, choices: dict) -> None:
             kart_ramp=choices.get("kart", hub.settings.kart_ramp),
         )
     except NoCheckpoints as error:
-        hub.message("Sin checkpoints", str(error))
+        hub.message("Sin versiones", str(error))
         return
     hub.run_activity(
         app, lambda: app.run_loop(hub.activity_frames), app.save_screenshot, close=app.close
@@ -224,7 +224,7 @@ def launch_editor(hub: KartLabApp, choices: dict) -> None:
         try:
             spec = load_spec(path)
         except TrackFileError as error:
-            hub.message("No se puede abrir el circuito", str(error))
+            hub.message("No se pudo abrir el circuito", str(error))
             return
         new = False
     app = EditorApp(spec, path, new=new, tracks_dir=hub.tracks_dir, root=hub.root)
@@ -245,7 +245,7 @@ ENTRIES: list[Entry] = [
     Entry(
         "carrera",
         "Carrera contra la IA",
-        "Tú contra karts de la IA: cuenta atrás, vueltas y choques suaves",
+        "Corre contra karts de la IA",
         "JUGAR",
         ("kart", "track", "race"),
         launch_vs_ai,
@@ -254,8 +254,8 @@ ENTRIES: list[Entry] = [
     ),
     Entry(
         "contrarreloj",
-        "Contrarreloj con fantasma",
-        "Bate tu récord: tu mejor vuelta corre a tu lado como fantasma",
+        "Contrarreloj",
+        "3 vueltas contra tu fantasma",
         "JUGAR",
         ("kart", "track"),
         launch_time_trial,
@@ -263,7 +263,7 @@ ENTRIES: list[Entry] = [
     Entry(
         "conduccion",
         "Conducción libre",
-        "Da vueltas a tu aire, sin reloj. Mayús para el barrido",
+        "Da vueltas sin cuenta atrás",
         "JUGAR",
         ("kart", "track"),
         launch_free_drive,
@@ -271,7 +271,7 @@ ENTRIES: list[Entry] = [
     Entry(
         "ver",
         "Ver a la IA",
-        "Una versión de la IA al volante; cámbiala con ← →",
+        "Mira conducir a una versión de la IA",
         "VER A LA IA",
         ("track",),
         launch_watch,
@@ -280,7 +280,7 @@ ENTRIES: list[Entry] = [
     Entry(
         "carrera-versiones",
         "Carrera de versiones",
-        "Todas las versiones a la vez desde la misma parrilla",
+        "Las versiones corren juntas",
         "VER A LA IA",
         ("track",),
         launch_race,
@@ -289,7 +289,7 @@ ENTRIES: list[Entry] = [
     Entry(
         "progresion",
         "Progresión",
-        "De sin entrenar a la última, paso a paso",
+        "Desde sin entrenar hasta la última",
         "VER A LA IA",
         ("track",),
         launch_progression,
@@ -298,14 +298,14 @@ ENTRIES: list[Entry] = [
     Entry(
         "entrenar",
         "Entrenar a la IA",
-        "Lanza un entrenamiento, míralo en directo y páralo cuando quieras",
+        "Lanza y mira un entrenamiento",
         "CREAR",
         ("train",),
     ),
     Entry(
         "editor",
         "Editor de circuitos",
-        "Dibuja un circuito con el ratón; se valida mientras lo editas",
+        "Dibuja circuitos con el ratón",
         "CREAR",
         ("edit_track",),
         launch_editor,
@@ -313,7 +313,7 @@ ENTRIES: list[Entry] = [
     Entry(
         "opciones",
         "Opciones",
-        "Tamaño de la ventana, luz, cámara y qué IA se muestra",
+        "Ventana, luz, cámara e IA",
         None,
         ("options",),
     ),
@@ -361,7 +361,6 @@ class Backdrop:
         self.error: Exception | None = None
         self._thread: threading.Thread | None = None
         self._result: tuple | None = None
-        self._black: pygame.Surface | None = None
 
     # -- building ------------------------------------------------------------------------
 
@@ -406,7 +405,6 @@ class Backdrop:
     # -- per frame -----------------------------------------------------------------------
 
     def resize(self, size: tuple[int, int]) -> None:
-        self._black = None
         if self.game is not None:
             self.game.resize(size)
 
@@ -427,7 +425,15 @@ class Backdrop:
             self.racer.step(steer, self.throttle)
             self.pending -= DT
 
-    def draw(self, screen: pygame.Surface, dt: float, hide_kart: bool = False) -> bool:
+    def draw(
+        self,
+        screen: pygame.Surface,
+        dt: float,
+        hide_kart: bool = False,
+        overlay: Callable[[pygame.Surface], None] | None = None,
+    ) -> bool:
+        """Draw the 3D view; ``overlay`` paints the menu on the 320x180 world before it is
+        magnified. False if the view is not ready (the caller draws on its own canvas)."""
         if self.game is None:
             return False
         racer = self.racer
@@ -440,13 +446,14 @@ class Backdrop:
         pose = self.game.update([visual], dt)
         self.game.fixed_time = None if self.hub.realtime else self.hub.t
         shown = [] if hide_kart else [visual]  # the camera still follows it
-        self.game.draw(screen, pose, shown, HudInfo(), dt, None, hud=False)
-        if self.fade < 1.0:  # fading in from the plain background
-            if self._black is None or self._black.get_size() != screen.get_size():
-                self._black = pygame.Surface(screen.get_size())
-                self._black.fill(BACKGROUND)
-            self._black.set_alpha(round(255 * (1.0 - self.fade)))
-            screen.blit(self._black, (0, 0))
+
+        def layer(canvas: pygame.Surface) -> None:
+            if self.fade < 1.0:  # fading in from the plain background: a dither that thins out
+                ui.dither(canvas, canvas.get_rect(), round((1.0 - self.fade) * 4))
+            if overlay is not None:
+                overlay(canvas)
+
+        self.game.draw(screen, pose, shown, HudInfo(), dt, None, hud=False, pixel_ui=layer)
         return True
 
 
@@ -494,7 +501,7 @@ class KartLabApp:
         self.running = False
         self.quit_requested = False
         self.t = 0.0
-        self.mouse = (-1, -1)
+        self.mouse = (-1, -1)  # in canvas pixels
         self.dialog: Dialog | None = None
         self.flow: Flow | None = None
         # A trainer launched by an earlier session of the menu and still running is ours again.
@@ -507,6 +514,7 @@ class KartLabApp:
         self._run_cache: tuple[float, list, object | None] | None = None
         self._live_cache: tuple[float, object | None] | None = None
         self._opponent_cache: tuple[float, object | None] | None = None
+        self._latest_cache: tuple[float, object | None] | None = None
 
         self.screen = open_window(TITLE, self.scale, self.fullscreen)
         self.clock = pygame.time.Clock()
@@ -516,7 +524,7 @@ class KartLabApp:
         self.catalog = TrackCatalog(self.tracks_dir, self.root, np.random.default_rng())
         self.backdrop = Backdrop(self)
         self.entries = entries if entries is not None else ENTRIES
-        self.ui = Ui(self.screen.get_size())
+        self.canvas = pygame.Surface(ui.CANVAS_SIZE)  # where every menu screen is drawn
         self.main_screen = MenuScreen(self, self.entries)
         self.current: Screen = self.main_screen
         self.current.enter()
@@ -534,7 +542,6 @@ class KartLabApp:
     def layout(self) -> None:
         """Everything that depends on the window size."""
         self.screen = pygame.display.get_surface() or self.screen
-        self.ui = Ui(self.screen.get_size())
         self.backdrop.resize(self.screen.get_size())
         self.main_screen.layout()
         self.current.layout()
@@ -573,6 +580,7 @@ class KartLabApp:
         self._run_cache = None
         self._live_cache = None
         self._opponent_cache = None
+        self._latest_cache = None
 
     def _scan_runs(self) -> list:
         from kartlab.train.run import RunPaths
@@ -620,9 +628,14 @@ class KartLabApp:
         return self._opponent_cache[1]
 
     def latest_run_with_config(self):
-        from kartlab.train.run import latest_run
+        """The newest run folder with a config; the disk is looked at every ``CACHE_SECONDS``
+        (the training screen asks on every frame)."""
+        now = time.perf_counter()
+        if self._latest_cache is None or now - self._latest_cache[0] > CACHE_SECONDS:
+            from kartlab.train.run import latest_run
 
-        return latest_run(self.runs_dir)
+            self._latest_cache = (now, latest_run(self.runs_dir))
+        return self._latest_cache[1]
 
     def live_training(self):
         """A run being written right now by a training this menu did not start (or did)."""
@@ -641,8 +654,8 @@ class KartLabApp:
             self.running = False
             return
         self.dialog = Dialog(
-            "Hay un entrenamiento en marcha",
-            f"{job.status_line()}\n¿Qué hacemos con él al salir?",
+            "Entrenamiento en marcha",
+            f"{job.status_line()}\n¿Parar o dejar corriendo?",
             choices=[
                 ("Parar y salir", self._stop_and_exit),
                 ("Dejar corriendo", self._leave_running),
@@ -667,7 +680,7 @@ class KartLabApp:
                 return job.status_line()
         live = self.live_training()
         if live is not None:
-            return f"Entrenando {live.root.name} (lanzado desde fuera del menú)"
+            return "Entrenando"
         return ""
 
     def disabled_reason(self, entry: Entry) -> str | None:
@@ -684,7 +697,7 @@ class KartLabApp:
             raise ActivityError("Circuito no válido", str(error)) from None
         except (ValueError, IndexError, KeyError):
             raise ActivityError(
-                "Circuito no válido", f"No conozco el circuito «{choice}»."
+                "Circuito no válido", f"No existe el circuito «{choice}»."
             ) from None
 
     # -- flow ----------------------------------------------------------------------------------
@@ -778,7 +791,7 @@ class KartLabApp:
         except Exception as error:
             traceback.print_exc()
             self.restore_window()  # the activity may have failed with its own window open
-            self.message("Algo ha fallado", f"{type(error).__name__}: {error}")
+            self.message("Error", f"{type(error).__name__}: {error}")
 
     def open_live(self, run) -> None:
         self.defer("Cargando…", lambda: self.guarded(lambda: launch_live(self, run)))
@@ -821,6 +834,10 @@ class KartLabApp:
 
     # -- input ---------------------------------------------------------------------------------
 
+    def _logical(self, pos: tuple[int, int]) -> tuple[int, int]:
+        """The canvas pixel under a window position."""
+        return to_logical(pos, self.screen.get_size())
+
     def handle_event(self, event: pygame.event.Event) -> None:
         if event.type == pygame.QUIT:
             self.request_exit()
@@ -830,19 +847,19 @@ class KartLabApp:
             if event.type == pygame.KEYDOWN:
                 self.dialog.on_key(self, event.key)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                self.dialog.on_click(self, event.pos)
+                self.dialog.on_click(self, self._logical(event.pos))
             elif event.type == pygame.MOUSEMOTION:
-                self.dialog.on_motion(event.pos)
+                self.dialog.on_motion(self._logical(event.pos))
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_F11:
                 self.toggle_fullscreen()
             else:
                 self.current.on_key(event.key)
         elif event.type == pygame.MOUSEMOTION:
-            self.mouse = event.pos
-            self.current.on_motion(event.pos)
+            self.mouse = self._logical(event.pos)
+            self.current.on_motion(self.mouse)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            self.current.on_click(event.pos)
+            self.current.on_click(self._logical(event.pos))
         elif event.type == pygame.MOUSEWHEEL:
             self.current.on_wheel(event.y)
 
@@ -863,43 +880,44 @@ class KartLabApp:
         self.current.update(dt)
 
     def draw(self, dt: float) -> None:
-        screen = self.screen
-        if not self.backdrop.draw(screen, dt, self.current.hide_backdrop_kart):
-            screen.fill(BACKGROUND)
-        self.ui.draw_veil(screen, self.current.dim)
-        self.current.draw(screen)
-        if self.current.show_status:
-            self._draw_status(screen)
-        if self.busy_text:
-            self._draw_loading(screen)
-        if self.dialog is not None:
-            self.dialog.draw(screen, self.ui)
+        if not self.backdrop.draw(
+            self.screen, dt, self.current.hide_backdrop_kart, self._draw_screen
+        ):
+            self.canvas.fill(ui.rgb(ui.NIGHT))  # until the 3D backdrop is ready
+            self._draw_screen(self.canvas)
+            present(self.canvas, self.screen)
 
-    def _draw_status(self, screen: pygame.Surface) -> None:
-        """The training line in the top-right corner, whatever screen the player is on."""
+    def _draw_screen(self, canvas: pygame.Surface) -> None:
+        """The menu over the backdrop, on the 320x180 canvas: veil, the screen, the status
+        strip, the loading notice and the dialog."""
+        veil(canvas, self.current.dim)
+        self.current.draw(canvas)
+        if self.current.show_status:
+            self._draw_status(canvas)
+        if self.busy_text:
+            self._draw_loading(canvas)
+        if self.dialog is not None:
+            self.dialog.draw(canvas)
+
+    def _draw_status(self, canvas: pygame.Surface) -> None:
+        """The training line in a strip along the top edge, whatever screen the player is on."""
         status = self.status_line()
         if self._exit_when_stopped:
-            status = "Saliendo en cuanto termine de guardar…"
+            status = "Guardando antes de salir…"
         if not status:
             return
-        ui = self.ui
-        text = ui.mono.get(status, ACCENT)
-        pad = ui.unit // 2
-        w, h = text.get_width() + 2 * pad, text.get_height() + pad
-        x = screen.get_width() - w - ui.unit
-        screen.blit(ui.panel(w, h, 220), (x, ui.unit))
-        screen.blit(text, (x + pad, ui.unit + pad // 2))
+        canvas.fill(ui.rgb(ui.NAVY), (0, 0, W, STATUS_H - 1))
+        ui.hline(canvas, 0, STATUS_H - 1, W, ui.NIGHT)
+        ui.icon(canvas, "play", 3, 2, ui.YELLOW)
+        ui.text(canvas, ui.ellipsize(status, W - 18), 12, 2, ui.YELLOW)
 
-    def _draw_loading(self, screen: pygame.Surface) -> None:
-        ui = self.ui
+    def _draw_loading(self, canvas: pygame.Surface) -> None:
         dots = "." * (1 + int(self.t * 3) % 3)
-        label = ui.name.get(f"{self.busy_text.removesuffix('…')}{dots}", ACCENT)
-        pad = ui.unit
-        w, h = label.get_width() + 2 * pad, label.get_height() + pad
-        x = (screen.get_width() - w) // 2
-        y = screen.get_height() - ui.unit * 8
-        screen.blit(ui.panel(w, h, 235), (x, y))
-        screen.blit(label, (x + pad, y + pad // 2))
+        label = f"{self.busy_text.removesuffix('…')}{dots}".upper()
+        width = ui.measure(label) + 16
+        rect = pygame.Rect((W - width) // 2, 148, width, 13)
+        ui.plate(canvas, rect, ui.NAVY)
+        ui.text(canvas, label, rect.x + 8, rect.y + 3, ui.YELLOW)
 
     def run(self, max_frames: int | None = None) -> None:
         self.running = True

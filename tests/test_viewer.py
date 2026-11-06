@@ -67,7 +67,7 @@ def test_title_screen_renders_and_the_best_model_drives_behind_it(app):
     viewer.run_loop(150)
     assert viewer.attract.driver is not None and viewer.attract.driver.racer.time > 1.0
     assert viewer.screen.get_size() == (640, 360)
-    assert colours(viewer) > 60  # a wordmark over a lit 3D scene, not a flat fill
+    assert colours(viewer) > 16  # a wordmark over a lit 3D scene, not a flat fill
 
 
 def test_title_menu_picks_a_mode_and_enter_starts_it(app):
@@ -106,7 +106,7 @@ def test_each_mode_renders_frames(app, mode):
     viewer = app(mode=mode)
     viewer.run_loop(240)  # past the race countdown
     assert viewer.state == "scene" and viewer.scene.name == mode
-    assert colours(viewer) > 60
+    assert colours(viewer) > 16
     if mode == "watch":
         driver = viewer.scene.driver  # an untrained net may get stuck and restart: still driving
         assert driver.restarts >= 1 or driver.racer.time > 3.0
@@ -269,7 +269,7 @@ def test_a_run_without_checkpoints_exits_with_a_clear_message(tmp_path, tiny_run
     shutil.copy(tiny_run.config, empty / "config.yaml")
     with pytest.raises(SystemExit) as exit_info:
         main(["--run", str(empty), "--frames", "1"])
-    assert "no tiene checkpoints" in str(exit_info.value)
+    assert "no tiene versiones guardadas" in str(exit_info.value)
 
 
 def test_default_run_is_the_latest_one_that_has_checkpoints(tmp_path, tiny_run):
@@ -302,7 +302,6 @@ def test_title_works_without_best_model_and_with_missing_checkpoint_steps(tmp_pa
 
 
 def test_wordmark_is_built_from_the_pixel_font():
-    pygame.font.init()
     mark, silhouette = build_wordmark()
     assert mark.get_size() == silhouette.get_size()
     assert mark.get_width() > mark.get_height() > 20
@@ -360,7 +359,7 @@ def test_fullscreen_toggle_resizes_everything_and_back(app):
     viewer.run_loop(5)
     desktop = tuple(pygame.display.get_desktop_sizes()[0])
     assert viewer.fullscreen and viewer.screen.get_size() == desktop
-    assert viewer.game.window == desktop and viewer.ov.size == desktop
+    assert viewer.game.window == desktop and viewer.ov.size == (320, 180)
     press(viewer, pygame.K_F11)
     viewer.run_loop(5)
     assert not viewer.fullscreen and viewer.screen.get_size() == windowed
@@ -411,7 +410,7 @@ def test_the_viewer_skips_an_unreadable_version_with_a_notice(tmp_path, tiny_run
         press(viewer, pygame.K_RIGHT)  # towards the broken one
         viewer.run_loop(30)
         assert scene.shown == 0 and scene.steps[scene.index] == 0  # stayed, did not crash
-        assert viewer.game._notice is not None and "256" in viewer.game._notice[0]
+        assert viewer.game.hud.notice is not None and "256" in viewer.game.hud.notice[0]
         press(viewer, pygame.K_RIGHT)
         press(viewer, pygame.K_RIGHT)  # the next ones still load
         viewer.run_loop(60)
@@ -433,7 +432,7 @@ def test_a_missing_normalisation_file_warns_only_if_observations_are_normalised(
     run.config.write_text(text.replace("normalize_obs: false", "normalize_obs: true"), "utf-8")
     library = VersionLibrary(run, synchronous=True)
     assert library.request(256) is not None  # still loads
-    assert library.notices and "vecnormalize_000000256.pkl" in library.notices[0]
+    assert library.notices and "normalización" in library.notices[0]
 
 
 @pytest.mark.parametrize("kind", ["viewer", "live"])
@@ -468,3 +467,25 @@ def test_race_labels_wait_for_the_end_of_the_countdown(app):
     viewer.run_loop(200)
     visuals, _, _ = viewer.scene.frame()
     assert all(v.label for v in visuals)
+
+
+@pytest.mark.parametrize("window", [(1280, 720), (1366, 768)])
+def test_a_click_on_the_version_bar_is_translated_from_the_window_to_the_canvas(tiny_run, window):
+    """The bar is drawn on the 320x180 canvas: the click is read there, with side bars too."""
+    viewer = ViewerApp(tiny_run, scale=4, realtime=False, mode="watch")
+    try:
+        viewer.screen = pygame.display.set_mode(window)
+        viewer.game.resize(window)
+        viewer.run_loop(30)
+        scene = viewer.scene
+        bar = scene._bar
+        assert bar.width and len(scene.steps) > 2
+        left, top = (window[0] - 1280) // 2, (window[1] - 720) // 2
+        for fraction in (0.0, 1 / 3, 1.0):
+            x = bar.x + round(fraction * (bar.width - 1))
+            pos = (left + 4 * x + 2, top + 4 * bar.centery + 2)
+            viewer.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=pos, button=1))
+            assert scene.index == round(fraction * (len(scene.steps) - 1))
+    finally:
+        viewer.close()
+        pygame.quit()

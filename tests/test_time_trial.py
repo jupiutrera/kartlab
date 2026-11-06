@@ -575,7 +575,7 @@ def test_drive_manual_lap_saves_the_record_and_announces_it(
         if app.trial.record is not None:
             break
     assert app.trial.record is not None
-    assert app._message[0].startswith("¡Primer récord!")
+    assert app._message[0].startswith("Primer récord")
     assert RecordStore(tmp_path).load(track).lap_time == app.trial.record.lap_time
     app.run(max_frames=3)  # and the HUD carries it
     assert app.hud_trial.record == app.trial.record.lap_time
@@ -585,10 +585,10 @@ def test_drive_manual_lap_saves_the_record_and_announces_it(
 @pytest.mark.parametrize(
     "event, start",
     [
-        (LapEvent(60.0, True, 61.5), "¡NUEVO RÉCORD! 1:00.00 (−1,50)"),
-        (LapEvent(62.0, False, 61.5), "Vuelta 1:02.00 (+0,50)"),
-        (LapEvent(62.0, False, 61.5, valid=False), "Vuelta 1:02.00 · no cuenta"),
-        (LapEvent(60.0, True, 61.5, saved=False), "¡NUEVO RÉCORD! 1:00.00 (−1,50) · no se pudo"),
+        (LapEvent(60.0, True, 61.5), "Nuevo récord 1:00,00 (−1,50)"),
+        (LapEvent(62.0, False, 61.5), "Vuelta 1:02,00 (+0,50)"),
+        (LapEvent(62.0, False, 61.5, valid=False), "Vuelta 1:02,00 (no cuenta)"),
+        (LapEvent(60.0, True, 61.5, saved=False), "Nuevo récord 1:00,00 (−1,50), sin guardar"),
     ],
 )
 def test_drive_lap_messages(app_factory, event, start):
@@ -623,4 +623,4 @@ def test_ghost_label_is_hidden_when_it_overlaps_the_player(track, lap, tmp_path,
     assert app.ghost_visual is not None and app.ghost_visual.label is None
     app.racer.reset(start_s=100.0)
     app.run(max_frames=2)
-    assert app.ghost_visual.label == "Récord"
+    assert app.ghost_visual.label == "Fantasma"

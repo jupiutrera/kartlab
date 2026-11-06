@@ -24,21 +24,15 @@ from pathlib import Path
 import numpy as np
 import pygame
 
-from kartlab.render.display import open_window, set_window_mode
+from kartlab.render import pixelui as ui
+from kartlab.render.display import open_window, set_window_mode, to_logical
+from kartlab.render.display import present as fit_rect_present
 from kartlab.render.palette import KART_RAMPS
 from kartlab.render.scene import KartVisual
-from kartlab.render.topdown import ACCENT
 from kartlab.render.view import (
     CAMERA_NAMES,
-    DIM,
-    SANS,
-    SANS_REGULAR,
-    VARIANT_NAMES,
-    WHITE,
     GameView,
     HudInfo,
-    scale_for,
-    unit_for,
 )
 from kartlab.show.brain import BrainPanel
 from kartlab.show.charts import MetricsReader, RewardChart
@@ -51,9 +45,9 @@ from kartlab.show.humanrace import (
     DIFFICULTIES,
     MAX_RIVALS,
 )
-from kartlab.show.overlays import Overlays, ease_in_out
+from kartlab.show.overlays import Overlays, build_help, ease_in_out, toggle_text
 from kartlab.show.scenes import SCENES, AttractScene, Scene, WatchScene
-from kartlab.show.title import MenuEntry, TitleScreen
+from kartlab.show.title import MenuEntry, TitleScreen, build_wordmark
 from kartlab.show.versions import (
     VersionLibrary,
     best_generalist_run,
@@ -72,6 +66,8 @@ from kartlab.train.config import TrainConfig
 from kartlab.train.run import RunPaths
 
 TITLE = "KART LAB"
+CAMERA_NAMES_LONG = {"chase": "persecución", "broadcast": "retransmisión", "top": "cenital"}
+VARIANT_LONG = {"day": "día", "sunset": "atardecer", "night": "noche"}
 MAX_PENDING = 0.1  # never simulate (or animate) more than this after a stall (s)
 SPEEDS = (1.0, 0.5, 0.25)  # S cycles through these
 SHOWCASE_KEYS = {pygame.K_1: "harbor", pygame.K_2: "canyon", pygame.K_3: "plateau"}
@@ -81,12 +77,10 @@ TITLE_VARIANTS = ("day", "sunset", "night")
 TITLE_VARIANT_SECONDS = 22.0
 
 MODES: dict[str, MenuEntry] = {
-    "watch": MenuEntry("watch", "Ver conducir", "Una versión al volante; cámbiala con ← →"),
-    "race": MenuEntry("race", "Carrera de versiones", "Todas a la vez desde la misma parrilla"),
-    "progression": MenuEntry(
-        "progression", "Progresión", "De sin entrenar a la última, paso a paso"
-    ),
-    "vsai": MenuEntry("vsai", "Carrera contra la IA", "Tú al volante contra karts de la IA"),
+    "watch": MenuEntry("watch", "Ver a la IA", "Mira conducir a una versión"),
+    "race": MenuEntry("race", "Carrera de versiones", "Las versiones corren juntas"),
+    "progression": MenuEntry("progression", "Progresión", "Desde sin entrenar hasta la última"),
+    "vsai": MenuEntry("vsai", "Carrera contra la IA", "Corre contra karts de la IA"),
 }
 # The title screen and M cycle through these; the race against the AI is launched with
 # ``--mode vsai`` (and, later, from the main menu).
@@ -111,64 +105,35 @@ IGNORED_KEYS = {
     *range(pygame.K_F1, pygame.K_F12 + 1),
 }
 
-HELP_SECTIONS = (
-    (
-        "Modos",
-        (
-            ("M", "cambiar de modo (ver · carrera · progresión)"),
-            ("Esc", "volver al título (al menú, si vienes de él); en el título, salir"),
-        ),
-    ),
-    (
-        "Carrera contra la IA",
-        (
-            ("← → ↑ ↓", "conducir (W A S D también)"),
-            ("Mayús", "barrido; suelta para el impulso"),
-            ("Tab", "piloto automático para ti"),
-            ("Intro", "repetir tras los resultados"),
-            ("Esc", "salir"),
-        ),
-    ),
-    (
-        "Versiones",
-        (
-            ("← →", "versión anterior / siguiente"),
-            ("Re Pág / Av Pág", "10 versiones atrás / adelante"),
-            ("Inicio / Fin", "la primera / la última"),
-            ("Rueda · clic", "en la barra de versiones"),
-            ("", "En la carrera, ← → eligen a quién sigue la cámara."),
-        ),
-    ),
-    (
-        "Circuito",
-        (
-            ("1 2 3", "circuitos escaparate"),
-            ("E", "siguiente circuito de evaluación"),
-            ("N", "circuito aleatorio"),
-            ("R", "reiniciar"),
-        ),
-    ),
-    (
-        "Vista",
-        (
-            ("C", "cámara: persecución, retransmisión, cenital"),
-            ("V", "día, atardecer, noche"),
-            ("G", "mostrar los sensores (rayos) en el mundo"),
-            ("B", "panel cerebro: lo que ve y decide la IA"),
-            ("L", "modo ligero (30 fps)"),
-        ),
-    ),
-    (
-        "Tiempo y pantalla",
-        (
-            ("P · Espacio", "pausa"),
-            ("S", "cámara lenta: 0,5× y 0,25×"),
-            ("F3", "diagnóstico: fps y ms de cada parte"),
-            ("F11", "pantalla completa"),
-            ("H", "esta ayuda"),
-        ),
-    ),
+HELP = (  # two columns of keys and actions: the first HELP_LEFT rows go on the left
+    ("M", "cambiar de modo"),
+    ("Esc", "volver"),
+    ("← →", "versión o kart"),
+    ("Re Pág", "10 atrás"),
+    ("Av Pág", "10 adelante"),
+    ("Inicio", "la primera"),
+    ("Fin", "la última"),
+    ("Rueda", "elegir versión"),
+    ("WASD", "conducir"),
+    ("Mayús", "derrape y turbo"),
+    ("Tab", "piloto automático"),
+    ("Intro", "repetir"),
+    ("1 2 3", "Puerto, Cañón, Meseta"),
+    ("E", "otra evaluación"),
+    ("N", "circuito aleatorio"),
+    ("R", "reiniciar"),
+    ("C", "cambiar de cámara"),
+    ("V", "cambiar la luz"),
+    ("G", "ver los rayos"),
+    ("B", "panel cerebro"),
+    ("L", "modo ligero"),
+    ("P", "pausa"),
+    ("S", "cámara lenta"),
+    ("F3", "diagnóstico"),
+    ("F11", "pantalla completa"),
+    ("H", "ayuda"),
 )
+HELP_LEFT = 13
 
 
 def speed_label(speed: float) -> str:
@@ -200,7 +165,7 @@ class ViewerApp:
         kart_ramp: int = 0,
     ) -> None:
         if not run.list_checkpoints():
-            raise NoCheckpoints(f"{run.root} no tiene checkpoints")
+            raise NoCheckpoints("Esta IA aún no tiene versiones guardadas.")
         self.run = run
         self.embedded = embedded  # run by the main menu: Esc leaves, no title screen
         self.realtime = realtime
@@ -251,11 +216,11 @@ class ViewerApp:
         self.track = track if track is not None else resolve_track(track_choice)
         self.track_key = track_choice if track is None else f"file:{track.name}"
         self.game = self._game_for(self.track_key, self.track)
-        self.ov = Overlays(self.screen, self.game)
+        self.ov = Overlays(self.game)
         self._layout_widgets()
 
         if mode == "vsai" and self.track.flat_crossings:
-            raise SystemExit("La carrera contra la IA no admite circuitos con cruces a nivel.")
+            raise SystemExit("La carrera no admite circuitos con cruces a nivel.")
         self.mode = mode or MODE_ORDER[0]
         self.title.selected = MODE_ORDER.index(self.mode) if self.mode in MODE_ORDER else 0
         self.attract = AttractScene(self)
@@ -271,16 +236,12 @@ class ViewerApp:
 
     def _splash(self, text: str) -> None:
         """First frame while the 3D view is built (about a second and a half)."""
-        screen = self.screen
-        screen.fill((14, 14, 22))
-        size = screen.get_size()
-        self.title.layout(size, scale_for(size), unit_for(size))
-        mark = self.title._scaled
-        screen.blit(mark, ((size[0] - mark.get_width()) // 2, size[1] // 3))
-        label = self.title.sub.get(text, DIM)
-        screen.blit(
-            label, ((size[0] - label.get_width()) // 2, size[1] // 3 + mark.get_height() + 40)
-        )
+        canvas = pygame.Surface(ui.CANVAS_SIZE)
+        canvas.fill(ui.rgb(ui.NIGHT))
+        mark, _ = build_wordmark()
+        canvas.blit(mark, ((320 - mark.get_width()) // 2, 50))
+        ui.text(canvas, text, 160, 50 + mark.get_height() + 14, ui.STONE_LIGHT, align="center")
+        fit_rect_present(canvas, self.screen)
         pygame.display.flip()
 
     def _game_for(self, key: str, track: Track) -> GameView:
@@ -308,17 +269,10 @@ class ViewerApp:
         return game
 
     def _layout_widgets(self) -> None:
-        """Everything that depends on the window size: chart, title, help."""
-        size = self.screen.get_size()
-        u = unit_for(size)
-        self.chart = RewardChart(
-            (round(u * 17.5), round(u * 9.5)),
-            pygame.font.Font(SANS_REGULAR, round(u * 0.75)),
-            log_x=True,
-        )
-        self.title.layout(size, scale_for(size), u)
+        """Everything that is built once for the canvas: the chart and the help."""
+        self.chart = RewardChart((92, 56), log_x=True)
         self._help_surface = None
-        self.brain_panel = None  # rebuilt for the new size on the next frame
+        self.brain_panel = None  # rebuilt on the next frame
 
     def toggle_fullscreen(self) -> None:
         self.fullscreen = not self.fullscreen
@@ -327,7 +281,6 @@ class ViewerApp:
         for key in [k for k, g in self._games.items() if g is not self.game]:
             del self._games[key]  # built for the old size
         self.game.resize(size)
-        self.ov.set_screen(self.screen, self.game)
         self._layout_widgets()
 
     # -- fades and deferred work --------------------------------------------------------------
@@ -388,7 +341,6 @@ class ViewerApp:
         self.scene.enter()
         self._apply_camera()
         self.reset_cameras()
-        self.game.notify(MODES[mode].name)
 
     def reset_cameras(self) -> None:
         for camera in self.game.cameras.values():
@@ -465,7 +417,7 @@ class ViewerApp:
             self.notify(
                 "Velocidad normal"
                 if self.speed == 1.0
-                else f"Cámara lenta {speed_label(self.speed)}"
+                else f"Cámara lenta: {speed_label(self.speed)}"
             )
         elif key == pygame.K_r:
             self.scene.restart()
@@ -475,20 +427,20 @@ class ViewerApp:
             current = self.camera_choice or self.game.camera_name
             self.camera_choice = names[(names.index(current) + 1) % len(names)]
             self._apply_camera()
-            self.notify(f"Cámara {CAMERA_NAMES[self.camera_choice]}")
+            self.notify(f"Cámara: {CAMERA_NAMES_LONG[self.camera_choice]}")
         elif key == pygame.K_v:
             self.variant = self.game.cycle_variant()
-            self.notify(f"Luz de {VARIANT_NAMES[self.variant]}")
+            self.notify(f"Luz: {VARIANT_LONG[self.variant]}")
         elif key == pygame.K_g:
             self.rays = not self.rays
-            self.notify("Sensores " + ("activados" if self.rays else "ocultos"))
+            self.notify(toggle_text("Sensores", self.rays))
         elif key == pygame.K_b:
             self.toggle_brain()
         elif key == pygame.K_l:
             self.allow_auto_light = False
             self.game.auto_light = False
             self.game.world.set_light_mode(not self.game.world.light_mode)
-            self.notify("Modo ligero " + ("activado" if self.game.world.light_mode else "apagado"))
+            self.notify(toggle_text("Modo ligero", self.game.world.light_mode))
         elif key in SHOWCASE_KEYS:
             name = SHOWCASE_KEYS[key]
             self.change_track(name, resolve_track(name))
@@ -507,7 +459,7 @@ class ViewerApp:
         self.brain = not self.brain
         if self.brain and self.brain_panel is not None:
             self.brain_panel.open(self.game.now())
-        self.notify("Cerebro " + ("activado" if self.brain else "oculto"))
+        self.notify(toggle_text("Cerebro", self.brain))
 
     def _sync_brain(self) -> None:
         """V(s) is only computed for the kart the panel shows, and only while it is open."""
@@ -534,7 +486,7 @@ class ViewerApp:
                 if self._fade is None:
                     self.start_mode(self.title.entry.key)
             else:
-                self.scene.on_click(event.pos)
+                self.scene.on_click(to_logical(event.pos, self.screen.get_size()))
 
     # -- main loop -----------------------------------------------------------------------------
 
@@ -587,7 +539,7 @@ class ViewerApp:
         while self.library.notices:
             self.notify(self.library.notices.pop(0))
         if self.library.refresh(dt):
-            self.notify("Hay versiones nuevas en el entrenamiento")
+            self.notify("Hay versiones nuevas")
         if self.realtime:
             self.metrics.refresh()
         self.game.auto_light = self.allow_auto_light and not self.library.busy
@@ -631,27 +583,30 @@ class ViewerApp:
             if self.paused:
                 info.extra = [*info.extra, "PAUSA"]
             if self.speed < 1.0:
-                info.extra = [*info.extra, f"Cámara lenta {speed_label(self.speed)}"]
+                info.extra = [*info.extra, f"Cámara lenta: {speed_label(self.speed)}"]
             info.extra = [*info.extra, "H: ayuda"]
         game.fixed_time = None if self.realtime else self.t
         game.timings["simulación"] = self._sim_ms
         fps = self.clock.get_fps() if self.realtime else None
-        game.draw(screen, pose, visuals, info, ui_dt, fps, hud=in_scene and got is not None)
+        canvas = game.render_canvas(
+            pose, visuals, info, ui_dt, fps, hud=in_scene and got is not None
+        )
         if in_scene:
             scene.draw_overlays()
-            self._draw_brain()
+            self._draw_brain(canvas)
             loading = scene.loading_text()
             if loading:
-                self._draw_loading(loading)
+                self._draw_loading(canvas, loading)
         else:
-            self._draw_title()
+            self._draw_title(canvas)
         if self.busy_text:
-            self._draw_loading(self.busy_text)
+            self._draw_loading(canvas, self.busy_text)
         if self.help_open:
-            self._draw_help()
+            self._draw_help(canvas)
         self.ov.dim(fade)
+        game.present(screen)
 
-    def _draw_brain(self) -> None:
+    def _draw_brain(self, canvas: pygame.Surface) -> None:
         driver = self.scene.brain_driver()
         if not self.brain or driver is None:
             self.game.timings.pop("cerebro", None)
@@ -661,90 +616,47 @@ class ViewerApp:
         if panel is None:
             config = self.env_config
             panel = self.brain_panel = BrainPanel(
-                game.unit, config.ray_count, config.ray_fov_deg, config.ray_range
+                config.ray_count, config.ray_fov_deg, config.ray_range
             )
             panel.open(game.now())
-        top = game.world_rect.y + round(game.unit * 5.8)
-        if self.scene.brain_side == "left":
-            bottom = game.world_rect.bottom - game._minimap[0].get_height() - game.unit
-        else:
-            top += round(game.unit * 3.2)  # under the model label and its extra lines
-            bottom = game.world_rect.bottom - game.unit * 4
-        pos = panel.position(game.world_rect, self.scene.brain_side, top, bottom, game.now())
-        panel.draw(self.screen, pos, driver)
+        panel.reserve = game.hud.reserve
+        # On the left it covers the minimap; on the right it sits under the model panel.
+        top = 47 if self.scene.brain_side == "left" else 54
+        pos = panel.position(canvas.get_rect(), self.scene.brain_side, top, 157, game.now())
+        panel.draw(canvas, pos, driver)
         self._brain_ms = self._brain_ms * 0.9 + (time.perf_counter() - t0) * 1000 * 0.1
         game.timings["cerebro"] = self._brain_ms
 
-    def _draw_title(self) -> None:
-        lib = self.library
-        steps = lib.steps
+    def _draw_title(self, canvas: pygame.Surface) -> None:
+        steps = self.library.steps
         last = format_steps(steps[-1])
         first = "sin entrenar" if steps[0] == 0 else format_steps(steps[0])
-        versions = f"{len(steps)} versiones · de {first} a {last} pasos"
-        self.title.draw(
-            self.screen,
-            self.t,
-            f"Entrenamiento {self.run.root.name}",
-            versions,
-            "↑ ↓ elegir · Intro empezar · H ayuda · F11 pantalla completa · Esc salir",
-        )
+        versions = f"{len(steps)} versiones, de {first} a {last} pasos"
+        self.title.draw(canvas, self.t, "", versions, "↑↓ elegir, Intro empezar, H ayuda")
 
-    def _draw_loading(self, text: str) -> None:
-        """A small pill above the bottom edge with animated dots."""
-        ov, game = self.ov, self.game
-        u = ov.unit
+    def _draw_loading(self, canvas: pygame.Surface, text: str) -> None:
+        """A small plate above the bottom edge with animated dots."""
+        base = text.removesuffix("…")
         dots = "." * (1 + int(self.t * 3) % 3)
-        label = game.text.get(f"{text.removesuffix('…')}{dots}", ACCENT)
-        pad = u // 2
-        w, h = label.get_width() + 2 * pad, label.get_height() + pad
-        x = game.world_rect.centerx - w // 2
-        y = game.world_rect.bottom - u * 7
-        self.screen.blit(ov.panel(w, h), (x, y))
-        self.screen.blit(label, (x + pad, y + pad // 2))
+        w = ui.measure(base + "...") + 14
+        x, y = (320 - w) // 2, 140
+        ui.plate(canvas, (x, y, w, 15), ui.NAVY)
+        ui.text(canvas, base + dots, x + 7, y + 4, ui.YELLOW)
 
     def _build_help(self) -> pygame.Surface:
-        size = self.screen.get_size()
-        u = unit_for(size)
-        head = pygame.font.Font(SANS, round(u * 1.2))
-        key_font = pygame.font.Font(SANS, u)
-        text_font = pygame.font.Font(SANS_REGULAR, u)
-        pad = u
-        columns: list[list[tuple[str, str, bool]]] = [[], []]
-        for i, (title, rows) in enumerate(HELP_SECTIONS):
-            column = columns[0 if i < 3 else 1]
-            if column:
-                column.append(("", "", False))
-            column.append((title, "", True))
-            column.extend((k, v, False) for k, v in rows)
-        key_w = max(key_font.size(k)[0] for col in columns for k, _, h in col if not h) + u
-        col_w = key_w + max(text_font.size(v)[0] for col in columns for _, v, _ in col) + u * 2
-        line = max(text_font.get_height(), head.get_height())
-        height = max(len(c) for c in columns) * line + pad * 3 + head.get_height()
-        width = col_w * 2 + pad * 2
-        surface = pygame.Surface(size, pygame.SRCALPHA)
-        surface.fill((6, 8, 16, 170))
-        panel = pygame.Surface((width, height), pygame.SRCALPHA)
-        panel.fill((14, 14, 22, 240))
-        pygame.draw.rect(panel, ACCENT, (0, 0, width, max(u // 4, 3)))
-        title = head.render("Controles", True, WHITE)
-        panel.blit(title, (pad, pad))
-        for c, column in enumerate(columns):
-            y = pad * 2 + head.get_height()
-            for key, value, is_head in column:
-                x = pad + c * col_w
-                if is_head:
-                    panel.blit(key_font.render(key.upper(), True, ACCENT), (x, y))
-                elif key or value:
-                    panel.blit(key_font.render(key, True, WHITE), (x, y))
-                    panel.blit(text_font.render(value, True, DIM), (x + key_w, y))
-                y += line
-        surface.blit(panel, ((size[0] - width) // 2, (size[1] - height) // 2))
-        return surface
+        """The controls, in two columns of keys and actions, on a plate."""
+        columns = [
+            [(k, v, False) for k, v in HELP[:HELP_LEFT]],
+            [(k, v, False) for k, v in HELP[HELP_LEFT:]],
+        ]
+        return build_help(None, columns)
 
-    def _draw_help(self) -> None:
+    def _draw_help(self, canvas: pygame.Surface) -> None:
         if self._help_surface is None:
             self._help_surface = self._build_help()
-        self.screen.blit(self._help_surface, (0, 0))
+        ui.dither(canvas, canvas.get_rect(), 2)
+        panel = self._help_surface
+        canvas.blit(panel, ((320 - panel.get_width()) // 2, (180 - panel.get_height()) // 2))
 
     def save_screenshot(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -797,7 +709,7 @@ def main(argv: list[str] | None = None) -> None:
         help="dificultad de la IA en el modo vsai",
     )
     parser.add_argument(
-        "--no-collisions", action="store_true", help="en el modo vsai, los karts se atraviesan"
+        "--no-collisions", action="store_true", help="en el modo vsai, sin colisiones entre karts"
     )
     parser.add_argument(
         "--color",
@@ -825,11 +737,9 @@ def main(argv: list[str] | None = None) -> None:
     else:
         run = latest_run_with_checkpoints()
     if run is None:
-        raise SystemExit(
-            "No hay ningún run con checkpoints en runs/. Lanza antes scripts/train.py."
-        )
+        raise SystemExit("No hay ninguna IA entrenada en runs/. Lanza antes scripts/train.py.")
     if not run.list_checkpoints():
-        raise SystemExit(f"{run.root} no tiene checkpoints")
+        raise SystemExit(f"{run.root} no tiene versiones guardadas")
     if args.track_file:
         track = resolve_track_or_exit(str(args.track_file))
     else:

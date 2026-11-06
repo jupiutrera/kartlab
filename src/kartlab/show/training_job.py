@@ -445,7 +445,7 @@ class TrainingJob:
         return self.clock() - self.started_at
 
     def status_line(self) -> str:
-        """«Entrenando demo-live · 120k/400k · 3:12»."""
+        """«Entrenando demo-live, 120k de 400k, 3:12»."""
         from kartlab.show.drivers import format_steps
 
         total = self.config.total_steps
@@ -453,11 +453,12 @@ class TrainingJob:
             return f"Parando {self.config.name}…"
         if not self.running:
             code = self.exit_code
-            ended = "terminado" if code == 0 else f"terminado con error ({code})"
-            return f"Entrenamiento {self.config.name} {ended}"
+            if code != 0:
+                return f"{self.config.name}: error ({code})"
+            return f"Entrenamiento {self.config.name} terminado"
         return (
-            f"Entrenando {self.config.name} · {format_steps(self.steps())}/{format_steps(total)}"
-            f" · {format_clock(self.elapsed())}"
+            f"Entrenando {self.config.name}, {format_steps(self.steps())} de "
+            f"{format_steps(total)}, {format_clock(self.elapsed())}"
         )
 
     def log_tail(self, lines: int = 3) -> list[str]:

@@ -13,7 +13,8 @@ from pathlib import Path
 import numpy as np
 import pygame
 
-from kartlab.render.topdown import FONT_REGULAR, GRASS, TEXT, TopDownView
+from kartlab.render import pixelui as ui
+from kartlab.render.topdown import GRASS, TopDownView
 from kartlab.sim.showcase import SHOWCASE, showcase_track
 from kartlab.sim.track import Track, TrackParams
 from kartlab.sim.tracksets import train_track
@@ -22,8 +23,7 @@ from kartlab.sim.tracksets import train_track
 def render_gallery(
     tracks: Sequence[Track], columns: int = 4, cell: tuple[int, int] = (400, 300)
 ) -> pygame.Surface:
-    pygame.font.init()
-    font = pygame.font.Font(FONT_REGULAR, max(12, cell[1] // 20))
+    scale = max(1, cell[1] // 150)  # the pixel font, at a whole scale
     rows = math.ceil(len(tracks) / columns)
     surface = pygame.Surface((columns * cell[0], rows * cell[1]))
     surface.fill(GRASS)
@@ -31,8 +31,8 @@ def render_gallery(
         rect = pygame.Rect((k % columns) * cell[0], (k // columns) * cell[1], *cell)
         TopDownView(track, cell).draw(surface.subsurface(rect), [], (0.0, 0.0), follow=False)
         tightest = 1.0 / float(np.max(np.abs(track.curvature)))
-        label = f"{track.name} · {track.length:.0f} m · R mín {tightest:.0f} m"
-        surface.blit(font.render(label, True, TEXT), (rect.x + 8, rect.y + 6))
+        label = f"{track.name}, {track.length:.0f} m, R mín {tightest:.0f} m"
+        ui.text(surface, label, rect.x + 8, rect.y + 8, ui.TEXT, scale, outline=ui.NIGHT)
     return surface
 
 

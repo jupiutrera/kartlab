@@ -36,24 +36,16 @@ import numpy as np
 import pygame
 
 from kartlab.common.paths import REPO_ROOT
-from kartlab.render.display import desktop_size, enable_dpi_awareness
-from kartlab.render.topdown import (
-    ACCENT,
-    ASPHALT,
-    CENTER_MARK,
-    CHECKER_DARK,
-    EDGE,
-    FONT_BOLD,
-    FONT_REGULAR,
-    GRASS,
-    GRASS_GRID,
-    KART_OUTLINE,
-    KERB_WHITE,
-    PANEL,
-    TEXT,
-    TEXT_DIM,
-    TextCache,
+from kartlab.render import pixelfont
+from kartlab.render import pixelui as ui
+from kartlab.render.display import (
+    desktop_size,
+    enable_dpi_awareness,
+    pick_scale,
+    present,
+    to_logical,
 )
+from kartlab.render.palette import Ink
 from kartlab.sim.trackfile import (
     MAX_COORDINATE,
     MAX_CORNERS,
@@ -71,7 +63,7 @@ from kartlab.sim.trackfile import (
 )
 from kartlab.sim.trackissues import Analysis, Issue, analyze
 
-TITLE = "KART LAB · editor de circuitos"
+TITLE = "KART LAB: editor de circuitos"
 TRACKS_DIR = REPO_ROOT / "tracks"
 
 # Editing
@@ -96,50 +88,56 @@ NEW_SPEC = TrackSpec(
     ),
 )
 
-# View
-ZOOM_MIN = 0.1  # px per m
-ZOOM_MAX = 14.0
+# View (in canvas pixels: the editor is drawn on the 320x180 grid and magnified like the world)
+ZOOM_MIN = 0.03  # px per m
+ZOOM_MAX = 6.0
 ZOOM_KEY_FACTOR = 1.25
 ZOOM_WHEEL_FACTOR = 1.15
-CORNER_PICK = 12.0  # px
-EDGE_PICK = 8.0  # px
-FIT_MARGIN = 70  # px
+CORNER_PICK = 4.0  # px
+EDGE_PICK = 3.0  # px
+FIT_MARGIN = 14  # px
 GRID_STEPS = (1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0)
-GRID_MIN_PX = 38.0  # smallest on-screen grid spacing
+GRID_MIN_PX = 16.0  # smallest on-screen grid spacing
+SCALE_BAR_PX = 24.0  # the scale bar is at least this long
 
 # Analysis scheduling (see ``EditorApp.update``)
 QUICK_BUDGET = 0.012  # s; a drag rebuilds as often as the frames allow while this holds
 FULL_DEBOUNCE = 0.12  # s without edits before the complete (slow) validation runs
 
-# Colours
-VALID = (96, 214, 126)
-INVALID = (255, 96, 88)
-PENDING = (255, 196, 84)
-HANDLE = (240, 242, 248)
-HANDLE_HOVER = (255, 226, 130)
-PANEL_SOLID = (20, 23, 31)
-PANEL_LINE = (52, 58, 72)
-ROAD_EDGE_BAD = (236, 84, 84)
+# Layout of the 320x180 canvas
+PANEL_W = 100
+ROW = 8  # pitch of the stats and issue rows
+PAD = 3
+
+# Colours: palette inks, as RGB where a test or the scene needs the value
+GRASS = ui.rgb(Ink.GRASS_DARK)
+VALID = ui.rgb(ui.GREEN)
+INVALID = ui.rgb(ui.RED)
+PENDING = ui.rgb(ui.YELLOW)
+TOAST_INKS = {"ok": ui.GREEN, "error": ui.RED, "warn": ui.YELLOW, "info": ui.TEXT}
+TOAST_ICONS = {"ok": "check", "error": "cross", "warn": "warn"}
 
 HELP_ROWS: tuple[tuple[str, str], ...] = (
-    ("Arrastrar una esquina", "moverla (con Ctrl se ajusta a 5 m)"),
-    ("Clic en un borde", "insertar una esquina y arrastrarla"),
-    ("Clic derecho / Supr", "borrar la esquina (mínimo 3)"),
-    ("Rueda sobre una esquina", "radio ±2 m (con Mayús ±10 m)"),
-    ("Rueda en otro sitio, + / -", "acercar y alejar"),
-    ("Botón central, Espacio + arrastrar", "mover la vista (arrastrar en vacío también)"),
+    ("Arrastrar esquina", "moverla (Ctrl: a 5 m)"),
+    ("Clic en un borde", "insertar una esquina"),
+    ("Clic der. / Supr", "borrar esquina (mín. 3)"),
+    ("Rueda sobre esquina", "radio ±2 m (Mayús ±10 m)"),
+    ("Rueda, + / -", "zoom"),
+    ("Botón central / Espacio", "mover la vista"),
     ("F", "encuadrar el circuito"),
-    ("Flechas", "mover la esquina elegida 1 m (Mayús 10 m)"),
+    ("Flechas", "mover esquina 1 m (Mayús 10)"),
     ("Re Pág / Av Pág", "anchura del asfalto ±1 m"),
-    ("D / Mayús + D", "semilla del decorado ±1"),
+    ("D / Mayús + D", "cambiar el decorado"),
     ("F2", "cambiar el nombre"),
     ("Ctrl + Z / Ctrl + Y", "deshacer / rehacer"),
-    ("Ctrl + S", "guardar (solo si es válido)"),
-    ("Ctrl + Mayús + S", "guardar como… (nombre o ruta)"),
-    ("F5 o T", "probar el circuito conduciendo"),
-    ("H", "esta ayuda"),
-    ("Esc", "salir o volver al menú (pide confirmar si hay cambios)"),
+    ("Ctrl + S", "guardar (si es válido)"),
+    ("Ctrl + Mayús + S", "guardar como"),
+    ("F5 / T", "probar conduciendo"),
+    ("H", "ayuda"),
+    ("Esc", "salir"),
 )
+
+HINTS = ("H  AYUDA", "F5  PROBAR", "CTRL+S  GUARDAR")
 
 
 # -- pure helpers ----------------------------------------------------------------------------
@@ -162,12 +160,12 @@ def resolve_save_path(text: str, tracks_dir: Path = TRACKS_DIR, root: Path = REP
     if not ("/" in text or "\\" in text or text.lower().endswith(".json")):
         return tracks_dir / f"{slugify(text)}.json"
     if text.endswith(("/", "\\")) or Path(text).name.lower() == ".json":
-        raise ValueError(f"Escribe un nombre de fichero, no solo una carpeta o «.json»: «{text}»")
+        raise ValueError("Falta el nombre del fichero")
     path = Path(text)
     path = path if path.suffix else path.with_suffix(".json")
     path = path if path.is_absolute() else root / path
     if not path.resolve().is_relative_to(root.resolve()):
-        raise ValueError(f"Solo se guarda dentro del proyecto: «{text}» queda fuera de {root.name}")
+        raise ValueError("Solo se guarda dentro del proyecto")
     return path
 
 
@@ -490,36 +488,11 @@ class TextPrompt:
 @dataclass
 class Toast:
     text: str
-    color: tuple[int, int, int]
+    kind: str
     until: float
 
 
 # -- the application -----------------------------------------------------------------------
-
-
-def _wrap(font: pygame.font.Font, text: str, width: int) -> list[str]:
-    """Greedy word wrap; a word wider than ``width`` (a path has no spaces) is cut."""
-    lines: list[str] = []
-    line = ""
-    for word in text.split(" "):
-        while font.size(word)[0] > width and len(word) > 1:
-            cut = len(word) - 1
-            while cut > 1 and font.size(word[:cut])[0] > width:
-                cut -= 1
-            if line:
-                lines.append(line)
-                line = ""
-            lines.append(word[:cut])
-            word = word[cut:]
-        trial = f"{line} {word}" if line else word
-        if line and font.size(trial)[0] > width:
-            lines.append(line)
-            line = word
-        else:
-            line = trial
-    if line:
-        lines.append(line)
-    return lines
 
 
 class EditorApp:
@@ -536,12 +509,15 @@ class EditorApp:
     ) -> None:
         enable_dpi_awareness()
         pygame.display.init()
-        pygame.font.init()
         pygame.display.set_caption(TITLE)
         self.screen = pygame.display.set_mode(size or self._default_size(), pygame.RESIZABLE)
+        self.surface = pygame.Surface(
+            ui.CANVAS_SIZE
+        )  # what is drawn; the window shows it magnified
         self.clock = pygame.time.Clock()
         self.model = EditorModel(spec, saved=not new)
         self.path: Path | None = Path(path) if path else None
+        self._shown_path: tuple[Path, str] | None = None
         self.tracks_dir = tracks_dir
         self.root = root  # "save as" never writes outside it
         self.spawn = spawn or self._spawn
@@ -578,63 +554,38 @@ class EditorApp:
         self._geometry: tuple[Analysis, np.ndarray, np.ndarray] | None = None
         self._issue_rows: list[tuple[pygame.Rect, int]] = []
         self.banner_rect = pygame.Rect(0, 0, 0, 0)  # the verdict banner, as last drawn
-        self._help_surface: pygame.Surface | None = None
-        self._panel_cache: dict[tuple, pygame.Surface] = {}
-        self._wrap_cache: dict[tuple, list[str]] = {}
-        self._build_fonts()
         self._layout()
         self.fit_view()
         self.settle()
         if path and not new:
             self.say(f"Abierto {self._toast_path(Path(path))}", "info")
         elif new:
-            self.say("Circuito nuevo: clic en un borde para añadir esquinas", "info")
+            self.say("Clic en un borde para añadir esquinas", "info")
 
     # -- window ------------------------------------------------------------------------------
 
     @staticmethod
     def _default_size() -> tuple[int, int]:
-        width, height = desktop_size()
-        return min(1500, max(900, width - 48)), min(900, max(600, height - 96))
-
-    def _build_fonts(self) -> None:
-        self.ui = max(13, round(self.screen.get_height() / 54))
-        self.font = pygame.font.Font(FONT_REGULAR, self.ui)
-        self.bold = pygame.font.Font(FONT_BOLD, self.ui)
-        self.big = pygame.font.Font(FONT_BOLD, round(self.ui * 1.25))
-        self.small = pygame.font.Font(FONT_REGULAR, max(11, self.ui - 2))
-        self.text = TextCache(self.font, 512)
-        self.text_bold = TextCache(self.bold, 128)
-        self.text_big = TextCache(self.big, 64)
-        self.text_small = TextCache(self.small, 256)
-        self._panel_cache.clear()
-        self._wrap_cache.clear()
-        self._help_surface = None
+        k = pick_scale(desktop_size())
+        return 320 * k, 180 * k
 
     def _layout(self) -> None:
-        """Sizes that depend on the window: panel, canvas and the panel's buttons."""
-        width, height = self.screen.get_size()
-        self.scale = max(1.0, height / 800)
-        self.panel_w = round(max(300, min(420, width * 0.28)) * max(1.0, self.ui / 15))
-        self.panel_rect = pygame.Rect(width - self.panel_w, 0, self.panel_w, height)
-        self.canvas = pygame.Rect(0, 0, width - self.panel_w, height)
+        """Panel, canvas and the panel's buttons, in canvas pixels."""
+        width, height = ui.CANVAS_SIZE
+        self.panel_rect = pygame.Rect(width - PANEL_W, 0, PANEL_W, height)
+        self.canvas = pygame.Rect(0, 0, width - PANEL_W, height)
         self.view.size = self.canvas.size
-        self.line = self.font.get_linesize() + 2
-        pad = round(14 * self.scale)
-        self.pad = pad
-        # Rows of the stats block; the buttons sit on the width and seed rows.
-        self.stats_top = round(8 * self.scale) + self.line * 5 + pad
+        self.stats_top = 47
         self._row = {
             name: i
             for i, name in enumerate(("length", "radius", "corners", "width", "seed", "gap"))
         }
-        btn = self.line
-        right = self.panel_rect.right - pad
+        right = self.panel_rect.right - PAD
         self.buttons: dict[str, pygame.Rect] = {}
         for name in ("width", "seed"):
-            y = self.stats_top + self._row[name] * self.line
-            self.buttons[f"{name}-"] = pygame.Rect(right - 2 * btn - 4, y, btn, btn)
-            self.buttons[f"{name}+"] = pygame.Rect(right - btn, y, btn, btn)
+            y = self.stats_top + self._row[name] * ROW - 1
+            self.buttons[f"{name}-"] = pygame.Rect(right - 19, y, 9, ROW + 1)
+            self.buttons[f"{name}+"] = pygame.Rect(right - 9, y, 9, ROW + 1)
 
     def _ensure_size(self) -> None:
         surface = pygame.display.get_surface()
@@ -642,9 +593,17 @@ class EditorApp:
             return
         if surface is not self.screen or surface.get_size() != self.screen.get_size():
             self.screen = surface
-            self._build_fonts()
-            self._layout()
             self._redraw = True
+
+    def _logical(self, pos: tuple[int, int]) -> tuple[int, int]:
+        """The canvas pixel under a window position."""
+        return to_logical(pos, self.screen.get_size())
+
+    def _path_text(self) -> str:
+        """The path shown in the panel; resolving it is slow, so it is done once per path."""
+        if self._shown_path is None or self._shown_path[0] != self.path:
+            self._shown_path = (self.path, self._display_path(self.path))
+        return self._shown_path[1]
 
     @staticmethod
     def _display_path(path: Path) -> str:
@@ -664,8 +623,7 @@ class EditorApp:
     # -- messages ----------------------------------------------------------------------------
 
     def say(self, text: str, kind: str = "info", seconds: float = 4.5) -> None:
-        color = {"ok": VALID, "error": INVALID, "warn": PENDING}.get(kind, TEXT)
-        self.toasts = [Toast(text, color, time.perf_counter() + seconds)]
+        self.toasts = [Toast(text, kind, time.perf_counter() + seconds)]
         self._redraw = True
 
     @property
@@ -788,7 +746,7 @@ class EditorApp:
         return self.view.to_screen(x, y)
 
     def pick_corner(self, pos: tuple[float, float]) -> int | None:
-        best, best_d = None, (CORNER_PICK * self.scale) ** 2
+        best, best_d = None, CORNER_PICK**2
         for i in range(len(self.spec.corners)):
             sx, sy = self.corner_screen(i)
             d = (sx - pos[0]) ** 2 + (sy - pos[1]) ** 2
@@ -800,7 +758,7 @@ class EditorApp:
         """The polygon edge under ``pos`` and the world point on it nearest to ``pos``."""
         corners = self.spec.corners
         n = len(corners)
-        best, best_d = None, (EDGE_PICK * self.scale) ** 2
+        best, best_d = None, EDGE_PICK**2
         for i in range(n):
             a = self.corner_screen(i)
             b = self.corner_screen((i + 1) % n)
@@ -924,7 +882,9 @@ class EditorApp:
                 return
         for rect, index in self._issue_rows:
             if rect.collidepoint(pos):
-                self.focus_issue(self.analysis.issues[index])
+                issue = self.analysis.issues[index]
+                self.focus_issue(issue)
+                self.say(issue.message, "error", 8.0)  # the list cuts long messages: show it all
                 return
 
     def focus_issue(self, issue: Issue) -> None:
@@ -933,7 +893,7 @@ class EditorApp:
             self.selected = issue.corners[0]
         if issue.points:
             sx, sy = self.view.to_screen(*issue.points[0])
-            if not self.canvas.inflate(-120, -120).collidepoint(sx, sy):
+            if not self.canvas.inflate(-30, -30).collidepoint(sx, sy):
                 self.view.cx, self.view.cy = issue.points[0]
         self._redraw = True
 
@@ -1045,13 +1005,13 @@ class EditorApp:
         elif kind == pygame.KEYUP:
             self.on_key_up(event.key)
         elif kind == pygame.MOUSEBUTTONDOWN and event.button in (1, 2, 3):
-            self.on_mouse_down(event.pos, event.button)
+            self.on_mouse_down(self._logical(event.pos), event.button)
         elif kind == pygame.MOUSEBUTTONUP and event.button in (1, 2, 3):
-            self.on_mouse_up(event.pos, event.button)
+            self.on_mouse_up(self._logical(event.pos), event.button)
         elif kind == pygame.MOUSEMOTION:
-            self.on_mouse_motion(event.pos)
+            self.on_mouse_motion(self._logical(event.pos))
         elif kind == pygame.MOUSEWHEEL:
-            self.on_wheel(self.mouse or pygame.mouse.get_pos(), event.y)
+            self.on_wheel(self.mouse or self._logical(pygame.mouse.get_pos()), event.y)
         elif kind == pygame.TEXTINPUT and self.prompt is not None:
             self.prompt.insert(event.text)
             self._redraw = True
@@ -1067,9 +1027,7 @@ class EditorApp:
         if self.model.dirty and now > self.quit_armed_until:
             self.quit_armed_until = now + 4.0
             self._armed_from_window = from_window
-            self.say(
-                "Hay cambios sin guardar: pulsa Esc otra vez para salir sin guardar", "warn", 4.0
-            )
+            self.say("Sin guardar. Esc otra vez para salir", "warn", 4.0)
             return
         armed = self._armed_from_window and self.model.dirty and now <= self.quit_armed_until
         if from_window or armed:
@@ -1084,9 +1042,7 @@ class EditorApp:
 
     def open_save_as(self) -> None:
         suggestion = self._display_path(self.path) if self.path else slugify(self.spec.name)
-        self.prompt = TextPrompt(
-            "Guardar como (nombre o ruta .json)", suggestion, self._accept_save_as, 120
-        )
+        self.prompt = TextPrompt("Guardar como", suggestion, self._accept_save_as, 120)
         pygame.key.start_text_input()
 
     def _prompt_key(self, key: int) -> None:
@@ -1109,7 +1065,7 @@ class EditorApp:
         if not name:
             self.say("El nombre no puede estar vacío", "error")
         elif not name.isprintable():
-            self.say("El nombre tiene caracteres no imprimibles", "error")
+            self.say("Nombre no válido", "error")
         else:
             self.model.set_name(name, time.perf_counter())
             self.changed()
@@ -1139,8 +1095,7 @@ class EditorApp:
         if analysis.issues:
             n = len(analysis.issues)
             self.say(
-                f"No se guarda: el circuito no es válido ({n} problema{'s' if n != 1 else ''}). "
-                "Corrige lo marcado en rojo",
+                f"No se guarda: hay {n} problema{'s' if n != 1 else ''}",
                 "error",
                 6.0,
             )
@@ -1149,8 +1104,7 @@ class EditorApp:
         own = self.path is not None and _same_file(target, self.path)
         if target.exists() and not own:
             self.say(
-                f"{self._toast_path(target)} ya existe: elige otro nombre con Ctrl+Mayús+S "
-                "o ábrelo para editarlo",
+                f"Ya existe {self._toast_path(target)}. Usa otro nombre",
                 "error",
                 6.0,
             )
@@ -1158,11 +1112,12 @@ class EditorApp:
         try:
             save_spec(target, self.spec)
         except OSError as error:
-            self.say(f"No se puede escribir {target}: {error.strerror or error}", "error", 6.0)
+            self.say(f"No se pudo escribir {target}: {error.strerror or error}", "error", 6.0)
             return False
         self.path = target
         self.model.mark_saved()
-        self.say(f"Guardado {self._toast_path(target)} ({analysis.report.length:.0f} m)", "ok")
+        length = ui.fmt_count(round(analysis.report.length))
+        self.say(f"Guardado {self._toast_path(target)} ({length} m)", "ok")
         return True
 
     # -- test drive ---------------------------------------------------------------------------
@@ -1182,10 +1137,10 @@ class EditorApp:
         temporary copy, so trying it never writes to ``tracks/``."""
         analysis = self.settle()
         if analysis.issues:
-            self.say("Para probarlo el circuito tiene que ser válido", "error")
+            self.say("Corrige los problemas para probarlo", "error")
             return False
         if self.process is not None and self.process.poll() is None:
-            self.say("Ya hay una prueba en marcha: ciérrala antes (Esc en el juego)", "warn")
+            self.say("Ya hay una prueba abierta", "warn")
             return False
         if self.path is not None and self.path.exists() and not self.model.dirty:
             target, note = self.path, ""
@@ -1194,13 +1149,13 @@ class EditorApp:
             self.temp_dir = tempfile.TemporaryDirectory(prefix="kartlab-editor-")
             target = Path(self.temp_dir.name) / f"{slugify(self.spec.name)}.json"
             save_spec(target, self.spec)
-            note = " (copia temporal: aún sin guardar)"
+            note = " (copia sin guardar)"
         try:
             self.process = self.spawn(self.drive_command(target))
         except OSError as error:
-            self.say(f"No se puede lanzar el juego: {error.strerror or error}", "error")
+            self.say(f"No se pudo lanzar el juego: {error.strerror or error}", "error")
             return False
-        self.say(f"Probando en el juego{note}", "ok")
+        self.say(f"Probando{note}", "ok")
         return True
 
     def _poll_process(self) -> None:
@@ -1260,61 +1215,61 @@ class EditorApp:
     # -- drawing: canvas -------------------------------------------------------------------------
 
     def draw(self) -> None:
+        """Draw the editor on the 320x180 canvas and show it magnified in the window."""
         start = time.perf_counter()
         self._ensure_size()
-        screen = self.screen
-        screen.set_clip(self.canvas)
-        self._draw_grid(screen)
-        self._draw_road(screen)
-        self._draw_polygon(screen)
-        self._draw_issues(screen)
-        self._draw_handles(screen)
-        self._draw_canvas_hud(screen)
-        screen.set_clip(None)
-        self._draw_panel(screen)
-        self._draw_toast(screen)
+        surface = self.surface
+        surface.set_clip(self.canvas)
+        self._draw_grid(surface)
+        self._draw_road(surface)
+        self._draw_polygon(surface)
+        self._draw_issues(surface)
+        self._draw_handles(surface)
+        self._draw_canvas_hud(surface)
+        surface.set_clip(None)
+        self._draw_panel(surface)
+        self._draw_toast(surface)
         if self.show_help:
-            self._draw_help(screen)
+            self._draw_help(surface)
         if self.prompt is not None:
-            self._draw_prompt(screen)
+            self._draw_prompt(surface)
+        present(surface, self.screen)
         self._update_caption()
         self.draw_cost = time.perf_counter() - start
 
     def _update_caption(self) -> None:
         mark = "*" if self.model.dirty else ""
-        caption = f"{self.spec.name}{mark} · {TITLE}"
+        caption = f"{self.spec.name}{mark}, {TITLE}"
         if caption != self._last_caption:
             pygame.display.set_caption(caption)
             self._last_caption = caption
 
     def _grid_step(self) -> float:
         for step in GRID_STEPS:
-            if step * self.view.zoom >= GRID_MIN_PX * self.scale:
+            if step * self.view.zoom >= GRID_MIN_PX:
                 return step
         return GRID_STEPS[-1]
 
-    def _draw_grid(self, screen: pygame.Surface) -> None:
-        screen.fill(GRASS, self.canvas)
+    def _draw_grid(self, surface: pygame.Surface) -> None:
+        surface.fill(GRASS, self.canvas)
         step = self._grid_step()
         w, h = self.canvas.size
         x0, y1 = self.view.to_world(0, 0)
         x1, y0 = self.view.to_world(w, h)
-        major = GRASS_GRID
         for i in range(math.floor(x0 / step), math.ceil(x1 / step) + 1):
             sx = round(self.view.to_screen(i * step, 0)[0])
-            pygame.draw.line(screen, major, (sx, 0), (sx, h))
+            ui.vline(surface, sx, 0, h, Ink.MOSS_DARK)
         for j in range(math.floor(y0 / step), math.ceil(y1 / step) + 1):
             sy = round(self.view.to_screen(0, j * step)[1])
-            pygame.draw.line(screen, major, (0, sy), (w, sy))
+            ui.hline(surface, 0, sy, w, Ink.MOSS_DARK)
         # axes through the origin
         ox, oy = self.view.to_screen(0, 0)
-        axis = (74, 128, 82)
         if 0 <= ox <= w:
-            pygame.draw.line(screen, axis, (round(ox), 0), (round(ox), h))
+            ui.vline(surface, round(ox), 0, h, Ink.MOSS)
         if 0 <= oy <= h:
-            pygame.draw.line(screen, axis, (0, round(oy)), (w, round(oy)))
+            ui.hline(surface, 0, round(oy), w, Ink.MOSS)
 
-    def _draw_road(self, screen: pygame.Surface) -> None:
+    def _draw_road(self, surface: pygame.Surface) -> None:
         edges = self._road_edges()
         if edges is None:
             # Not buildable (a corner does not fit, a crossing polygon...): hint the width
@@ -1322,7 +1277,7 @@ class EditorApp:
             pts = [self.corner_screen(i) for i in range(len(self.spec.corners))]
             width = max(2, round(self.spec.width * self.view.zoom))
             if len(pts) > 2:
-                pygame.draw.lines(screen, (92, 62, 66), True, pts, width)
+                pygame.draw.lines(surface, ui.rgb(Ink.ASPHALT), True, pts, width)
             return
         left = self.view.to_screen_array(edges[0])
         right = self.view.to_screen_array(edges[1])
@@ -1330,21 +1285,20 @@ class EditorApp:
         # A closed road is a ring: outer boundary, a bridge, the inner boundary backwards.
         # The scanline fill is even-odd, so the bridge cancels and the ring is filled.
         ring = np.concatenate([left, left[:1], right[:1], right[::-1]])
-        pygame.draw.polygon(screen, ASPHALT, ring.tolist())
-        bad = bool(self.analysis.issues)
-        color = ROAD_EDGE_BAD if bad else EDGE
-        edge_px = max(1, round(0.3 * self.view.zoom))
-        pygame.draw.lines(screen, color, True, left.tolist(), edge_px)
-        pygame.draw.lines(screen, color, True, right.tolist(), edge_px)
-        pygame.draw.lines(screen, CENTER_MARK, True, centre[::6].tolist(), 1)
-        self._draw_arrows(screen)
-        self._draw_start_line(screen)
+        pygame.draw.polygon(surface, ui.rgb(Ink.ASPHALT_LIGHT), ring.tolist())
+        edge = ui.rgb(ui.RED if self.analysis.issues else ui.TEXT)
+        pygame.draw.lines(surface, edge, True, left.tolist())
+        pygame.draw.lines(surface, edge, True, right.tolist())
+        pygame.draw.lines(surface, ui.rgb(ui.STONE), True, centre[::6].tolist())
+        self._draw_arrows(surface)
+        self._draw_start_line(surface)
 
-    def _draw_arrows(self, screen: pygame.Surface) -> None:
+    def _draw_arrows(self, surface: pygame.Surface) -> None:
         points = self.analysis.points
         n = len(points)
         step = max(1, round(n / max(4, round(n / 90))))  # ~one arrow every 90 samples
-        size = max(5.0, 2.4 * self.view.zoom)
+        size = max(2.5, 1.2 * self.view.zoom)
+        ink = ui.rgb(ui.STONE_LIGHT)
         for i in range(step // 2, n, step):
             p, q = points[i], points[(i + 2) % n]
             heading = math.atan2(q[1] - p[1], q[0] - p[0])
@@ -1353,9 +1307,9 @@ class EditorApp:
             tip = (x + c * size, y + s * size)
             back_l = (x - c * size - s * size, y - s * size + c * size)
             back_r = (x - c * size + s * size, y - s * size - c * size)
-            pygame.draw.lines(screen, CENTER_MARK, False, [back_l, tip, back_r], 2)
+            pygame.draw.lines(surface, ink, False, [back_l, tip, back_r])
 
-    def _draw_start_line(self, screen: pygame.Surface) -> None:
+    def _draw_start_line(self, surface: pygame.Surface) -> None:
         points = self.analysis.points
         p, q = points[0], points[1]
         heading = math.atan2(q[1] - p[1], q[0] - p[0])
@@ -1366,7 +1320,7 @@ class EditorApp:
         square = width / cols
         for row in range(2):
             for col in range(cols):
-                color = CHECKER_DARK if (row + col) % 2 else KERB_WHITE
+                ink = ui.NIGHT if (row + col) % 2 else ui.WHITE
                 s0, s1 = (row - 1) * square, row * square
                 l0 = -width / 2 + col * square
                 l1 = l0 + square
@@ -1376,295 +1330,269 @@ class EditorApp:
                     )
                     for s, lat in ((s0, l0), (s1, l0), (s1, l1), (s0, l1))
                 ]
-                pygame.draw.polygon(screen, color, quad)
+                pygame.draw.polygon(surface, ui.rgb(ink), quad)
 
-    def _draw_polygon(self, screen: pygame.Surface) -> None:
+    def _draw_polygon(self, surface: pygame.Surface) -> None:
         pts = [self.corner_screen(i) for i in range(len(self.spec.corners))]
         if len(pts) < 2:
             return
-        pygame.draw.lines(screen, KART_OUTLINE, True, pts, 3)
-        pygame.draw.lines(screen, (206, 212, 226), True, pts, 1)
+        pygame.draw.lines(surface, ui.rgb(ui.CYAN), True, pts)
         for x, y in self.analysis_spec.crossings:  # declared level crossings (format 2)
             sx, sy = self.view.to_screen(x, y)
-            r = round(9 * self.scale)
-            pygame.draw.line(screen, ACCENT, (sx - r, sy - r), (sx + r, sy + r), 3)
-            pygame.draw.line(screen, ACCENT, (sx - r, sy + r), (sx + r, sy - r), 3)
+            ui.icon(surface, "cross", round(sx) - 2, round(sy) - 2, ui.YELLOW, outline=ui.NIGHT)
 
-    def _draw_issues(self, screen: pygame.Surface) -> None:
-        pulse = 0.5 + 0.5 * math.sin(time.perf_counter() * 5.0)
+    def _draw_issues(self, surface: pygame.Surface) -> None:
+        red = ui.rgb(ui.RED)
+        pulse = round(0.5 + 0.5 * math.sin(time.perf_counter() * 5.0))  # a step, not a glide
+        n = len(self.spec.corners)
         for issue in self.analysis.issues:
             for a, b in issue.edges:
-                n = len(self.spec.corners)
                 if a < n and b < n:
-                    pygame.draw.line(
-                        screen, INVALID, self.corner_screen(a), self.corner_screen(b), 5
-                    )
+                    pygame.draw.line(surface, red, self.corner_screen(a), self.corner_screen(b), 2)
             if len(issue.points) == 2 and not issue.edges:
-                pygame.draw.line(
-                    screen, INVALID, *(self.view.to_screen(*p) for p in issue.points), 2
-                )
+                pygame.draw.line(surface, red, *(self.view.to_screen(*p) for p in issue.points))
             for p in issue.points:
                 sx, sy = self.view.to_screen(*p)
-                r = round((11 + 3 * pulse) * self.scale)
-                pygame.draw.circle(screen, INVALID, (sx, sy), r, 3)
+                pygame.draw.circle(surface, red, (round(sx), round(sy)), 6 + pulse, 1)
         if self.analysis.issues:
             self._redraw = True  # the rings pulse
 
-    def _draw_handles(self, screen: pygame.Surface) -> None:
+    def _draw_handles(self, surface: pygame.Surface) -> None:
         flagged = {c for issue in self.analysis.issues for c in issue.corners}
-        radius = round(7 * self.scale)
         hover_corner = self.hover[1] if self.hover and self.hover[0] == "corner" else None
-        if self.hover and self.hover[0] == "edge":
-            sx, sy = self.view.to_screen(*self.hover[2])
-            pygame.draw.circle(screen, HANDLE_HOVER, (sx, sy), radius - 1, 2)
-            pygame.draw.line(screen, HANDLE_HOVER, (sx - 3, sy), (sx + 3, sy), 2)
-            pygame.draw.line(screen, HANDLE_HOVER, (sx, sy - 3), (sx, sy + 3), 2)
+        night = ui.rgb(ui.NIGHT)
+        if self.hover and self.hover[0] == "edge":  # a plus where a click inserts a corner
+            sx, sy = (round(v) for v in self.view.to_screen(*self.hover[2]))
+            pygame.draw.circle(surface, night, (sx, sy), 4)
+            pygame.draw.circle(surface, ui.rgb(ui.YELLOW), (sx, sy), 3)
+            ui.hline(surface, sx - 2, sy, 5, ui.NIGHT)
+            ui.vline(surface, sx, sy - 2, 5, ui.NIGHT)
         for i, (x, y, r) in enumerate(self.spec.corners):
-            sx, sy = self.view.to_screen(x, y)
+            sx, sy = (round(v) for v in self.view.to_screen(x, y))
             if i in flagged:
-                fill = INVALID
+                fill = ui.RED
             elif i == self.selected:
-                fill = ACCENT
+                fill = ui.YELLOW
             elif i == hover_corner:
-                fill = HANDLE_HOVER
+                fill = ui.ORANGE
             else:
-                fill = HANDLE
-            rad = radius + 2 if i == self.selected else radius
-            pygame.draw.circle(screen, KART_OUTLINE, (sx, sy), rad + 2)
-            pygame.draw.circle(screen, fill, (sx, sy), rad)
-            label = self.text_small.get(str(i + 1), (255, 255, 255))
-            shadow = self.text_small.get(str(i + 1), KART_OUTLINE)
-            lx, ly = sx + rad + 4, sy - rad - label.get_height()
-            screen.blit(shadow, (lx + 1, ly + 1))
-            screen.blit(label, (lx, ly))
+                fill = ui.WHITE
+            rad = 4 if i == self.selected else 3
+            if i in flagged:  # a diamond: the shape says "problem", not only the colour
+                for grow, ink in ((2, ui.NIGHT), (0, fill)):
+                    k = rad + grow
+                    pts = ((sx, sy - k), (sx + k, sy), (sx, sy + k), (sx - k, sy))
+                    pygame.draw.polygon(surface, ui.rgb(ink), pts)
+            else:
+                pygame.draw.circle(surface, night, (sx, sy), rad + 1)
+                pygame.draw.circle(surface, ui.rgb(fill), (sx, sy), rad)
+            ui.text(surface, str(i + 1), sx + rad + 2, sy - rad - 9, ui.WHITE, outline=ui.NIGHT)
             if i in (self.selected, hover_corner):
-                tag = self.text_small.get(f"radio {r:g} m", (255, 255, 255))
-                box = tag.get_rect(topleft=(sx + rad + 6, sy + rad + 2)).inflate(8, 4)
-                pygame.draw.rect(screen, PANEL_SOLID, box, border_radius=4)
-                screen.blit(tag, (box.x + 4, box.y + 2))
+                label = f"RADIO {ui.comma(f'{r:g}')} M"
+                box = pygame.Rect(sx + rad + 3, sy + rad + 1, pixelfont.measure(label) + 6, 11)
+                if box.right > self.canvas.right - 1:  # no room to the right: it goes to the left
+                    box.right = sx - rad - 3
+                ui.plate(surface, box, ui.NAVY)
+                ui.text(surface, label, box.x + 3, box.y + 2, ui.TEXT)
 
-    def _draw_canvas_hud(self, screen: pygame.Surface) -> None:
+    def _draw_canvas_hud(self, surface: pygame.Surface) -> None:
         # scale bar
-        step = next((s for s in GRID_STEPS if s * self.view.zoom >= 70 * self.scale), 1000.0)
-        length = step * self.view.zoom
-        x, y = 18, self.canvas.height - 22
-        for dx, dy in ((1, 1), (0, 0)):
-            color = KART_OUTLINE if dx else TEXT
-            pygame.draw.line(screen, color, (x + dx, y + dy), (x + length + dx, y + dy), 2)
-            pygame.draw.line(screen, color, (x + dx, y - 5 + dy), (x + dx, y + 5 + dy), 2)
-            pygame.draw.line(
-                screen, color, (x + length + dx, y - 5 + dy), (x + length + dx, y + 5 + dy), 2
-            )
-        label = self.text_small.get(f"{step:g} m", TEXT)
-        screen.blit(label, (x, y - label.get_height() - 4))
+        step = next((s for s in GRID_STEPS if s * self.view.zoom >= SCALE_BAR_PX), 1000.0)
+        length = round(step * self.view.zoom)
+        x, y = 6, self.canvas.height - 7
+        ui.hline(surface, x, y + 1, length + 1, ui.NIGHT)
+        ui.hline(surface, x, y, length + 1, ui.WHITE)
+        for tick in (x, x + length):
+            ui.vline(surface, tick, y - 2, 5, ui.NIGHT)
+            ui.vline(surface, tick, y - 1, 3, ui.WHITE)
+        ui.text(surface, f"{step:g} M", x, y - 12, ui.WHITE, outline=ui.NIGHT)
         if self.mouse is not None and self.canvas.collidepoint(self.mouse):
             wx, wy = self.view.to_world(*self.mouse)
-            coords = self.text_small.get(f"x {wx:7.1f}   y {wy:7.1f} m", TEXT_DIM)
-            screen.blit(
-                coords, (self.canvas.right - coords.get_width() - 14, self.canvas.bottom - 28)
+            coords = f"X {ui.fmt_decimal(wx)}  Y {ui.fmt_decimal(wy)} M"
+            ui.text(
+                surface,
+                coords,
+                self.canvas.right - 5,
+                self.canvas.bottom - 12,
+                ui.TEXT,
+                outline=ui.NIGHT,
+                align="right",
             )
 
     # -- drawing: panel --------------------------------------------------------------------------
 
-    def _wrapped(self, font: pygame.font.Font, text: str, width: int) -> list[str]:
-        key = (id(font), text, width)
-        lines = self._wrap_cache.get(key)
-        if lines is None:
-            if len(self._wrap_cache) > 256:
-                self._wrap_cache.clear()
-            lines = self._wrap_cache[key] = _wrap(font, text, width)
-        return lines
-
-    def _draw_panel(self, screen: pygame.Surface) -> None:
+    def _draw_panel(self, surface: pygame.Surface) -> None:
         rect = self.panel_rect
-        screen.fill(PANEL_SOLID, rect)
-        pygame.draw.line(screen, PANEL_LINE, rect.topleft, rect.bottomleft)
-        pad, x = self.pad, rect.x + self.pad
-        inner = rect.width - 2 * pad
-        y = round(8 * self.scale)
-        screen.blit(self.text_big.get("Editor de circuitos", ACCENT), (x, y))
-        y += self.big.get_linesize()
-        dirty = self.model.dirty
-        name = self.spec.name + (" *" if dirty else "")
-        screen.blit(self.text_bold.get(self._fit(name, self.bold, inner), TEXT), (x, y))
-        y += self.line
-        where = self._display_path(self.path) if self.path else "sin guardar"
-        screen.blit(self.text_small.get(self._fit(where, self.small, inner), TEXT_DIM), (x, y))
-        y += self.line
-        # verdict banner
-        verdict = self.verdict
-        n = len(self.analysis.issues)
-        label, color = {
-            "valid": ("CIRCUITO VÁLIDO", VALID),
-            "invalid": (f"NO VÁLIDO · {n} problema{'s' if n != 1 else ''}", INVALID),
-            "pending": ("COMPROBANDO…", PENDING),
-        }[verdict]
-        banner = self.banner_rect = pygame.Rect(x, y, inner, round(self.line * 1.5))
-        pygame.draw.rect(screen, color, banner, border_radius=6)
-        text = self.text_bold.get(label, (14, 16, 22))
-        screen.blit(text, text.get_rect(center=banner.center))
+        ui.plate(surface, rect, ui.SLATE)
+        x = rect.x + PAD + 1
+        right = rect.right - PAD - 1
+        inner = right - x
+        y = 4
+        ui.text(surface, "EDITOR", x, y, ui.YELLOW)
+        y += 10
+        name = ui.ellipsize(self.spec.name, inner - (7 if self.model.dirty else 0))
+        width = ui.text(surface, name, x, y, ui.TEXT)
+        if self.model.dirty:  # unsaved changes: a star after the name
+            ui.text(surface, "*", x + width + 3, y, ui.YELLOW)
+        y += 9
+        where = self._path_text() if self.path else "sin guardar"
+        ui.text(surface, ui.ellipsize(where, inner, keep="end"), x, y, ui.STONE_LIGHT)
+        y += 10
+        # verdict banner: colour, symbol and word
+        issues = len(self.analysis.issues)
+        label, ink, symbol = {
+            "valid": ("VÁLIDO", ui.GREEN, "check"),
+            "invalid": (f"{issues} PROBLEMA{'S' if issues != 1 else ''}", ui.RED, "cross"),
+            "pending": ("COMPROBANDO…", ui.YELLOW, "ring"),
+        }[self.verdict]
+        banner = self.banner_rect = pygame.Rect(x - 1, y, inner + 2, 13)
+        ui.plate(surface, banner, ink)
+        ui.icon(surface, symbol, banner.x + 4, banner.y + 4, ui.NIGHT)
+        ui.text(surface, label, banner.x + 13, banner.y + 3, ui.NIGHT)
         y = self.stats_top
         report = self.analysis.report
         spec = self.spec
+        radius_bad = bool(report.min_radius and report.min_radius < MIN_RADIUS - 1e-6)
         rows = [
-            ("Longitud", f"{report.length:.0f} m" if report.length else "-", TEXT),
             (
-                "Radio mínimo",
-                f"{report.min_radius:.1f} m" if report.min_radius else "-",
-                INVALID if report.min_radius and report.min_radius < MIN_RADIUS - 1e-6 else TEXT,
+                "LONGITUD",
+                f"{ui.fmt_count(round(report.length))} M" if report.length else "-",
+                ui.TEXT,
             ),
-            ("Esquinas", str(len(spec.corners)), TEXT),
-            ("Anchura", f"{spec.width:g} m", TEXT),
-            ("Semilla decorado", str(spec.decoration_seed), TEXT),
             (
-                "Hierba mínima",
-                f"{report.gap:.1f} m" if report.gap not in (None, math.inf) else "-",
-                TEXT,
+                "RADIO MÍN",
+                ui.comma(f"{report.min_radius:.1f} M") if report.min_radius else "-",
+                ui.RED if radius_bad else ui.TEXT,
+            ),
+            ("ESQUINAS", str(len(spec.corners)), ui.TEXT),
+            ("ANCHURA", ui.comma(f"{spec.width:g} M"), ui.TEXT),
+            ("DECORADO", str(spec.decoration_seed), ui.TEXT),
+            (
+                "HIERBA MÍN",
+                ui.comma(f"{report.gap:.1f} M") if report.gap not in (None, math.inf) else "-",
+                ui.TEXT,
             ),
         ]
-        for i, (key, value, vcolor) in enumerate(rows):
-            ry = y + i * self.line
-            screen.blit(self.text.get(key, TEXT_DIM), (x, ry))
-            has_buttons = key in ("Anchura", "Semilla decorado")
-            right_edge = self.buttons["width-"].x - 8 if has_buttons else rect.right - pad
-            val = self.text.get(value, vcolor)
-            screen.blit(val, (right_edge - val.get_width(), ry))
+        for i, (key, value, vink) in enumerate(rows):
+            ry = y + i * ROW
+            ui.text(surface, key, x, ry, ui.STONE_LIGHT)
+            has_buttons = key in ("ANCHURA", "DECORADO")
+            right_edge = self.buttons["width-"].x - 3 if has_buttons else right
+            ui.text(surface, value, right_edge, ry, vink, align="right")
         for name_, button in self.buttons.items():
             hot = self.mouse is not None and button.collidepoint(self.mouse)
-            pygame.draw.rect(screen, (58, 66, 86) if hot else PANEL_LINE, button, border_radius=4)
-            glyph = self.text_bold.get("+" if name_.endswith("+") else "−", TEXT)
-            screen.blit(glyph, glyph.get_rect(center=button.center))
-        y += len(rows) * self.line
+            ui.plate(surface, button, ui.SLATE_LIGHT if hot else ui.NAVY)
+            ui.text(
+                surface,
+                "+" if name_.endswith("+") else "-",
+                button.centerx,
+                button.y + 2,
+                ui.TEXT,
+                align="center",
+            )
+        y += len(rows) * ROW + 1
         if spec.crossings:
-            note = f"{len(spec.crossings)} cruce(s) a nivel declarados: se conservan al guardar"
-            for line in self._wrapped(self.small, note, inner):
-                screen.blit(self.text_small.get(line, ACCENT), (x, y))
-                y += self.small.get_linesize()
-        y += round(8 * self.scale)
-        pygame.draw.line(screen, PANEL_LINE, (x, y), (rect.right - pad, y))
-        y += round(8 * self.scale)
-        self._draw_issue_list(screen, x, y, inner, rect.bottom - round(self.line * 3.4))
-        hints = ("H ayuda · Ctrl+S guardar · F5 probar", "Ctrl+Z deshacer · Ctrl+Y rehacer")
-        hy = rect.bottom - round(self.line * 2.2)
-        for hint in hints:
-            screen.blit(self.text_small.get(hint, TEXT_DIM), (x, hy))
-            hy += self.small.get_linesize()
+            n_cross = len(spec.crossings)
+            note = "1 CRUCE A NIVEL" if n_cross == 1 else f"{n_cross} CRUCES A NIVEL"
+            y = ui.paragraph(surface, note, x, y, inner, ui.YELLOW, max_lines=2, pitch=ui.LINE)
+        ui.hline(surface, x - 1, y, inner + 2, ui.NIGHT)
+        y += 4
+        hints_top = rect.bottom - len(HINTS) * ROW - 3
+        self._draw_issue_list(surface, x, y, inner, hints_top - 2)
+        for k, hint in enumerate(HINTS):
+            ui.text(surface, hint, x, hints_top + k * ROW, ui.STONE_LIGHT)
 
     def _draw_issue_list(
-        self, screen: pygame.Surface, x: int, y: int, inner: int, limit: int
+        self, surface: pygame.Surface, x: int, y: int, inner: int, limit: int
     ) -> None:
         self._issue_rows = []
         issues = self.analysis.issues
         if not issues:
-            if self.verdict == "valid":
-                text = "Nada que corregir. Guarda con Ctrl+S o pruébalo con F5."
-            else:
-                text = "Comprobando el circuito completo…"
-            for line in self._wrapped(self.font, text, inner):
-                screen.blit(self.text.get(line, TEXT_DIM), (x, y))
-                y += self.line
+            message = "SIN PROBLEMAS" if self.verdict == "valid" else "COMPROBANDO…"
+            ui.paragraph(surface, message, x, y, inner, ui.TEXT, pitch=ui.LINE)
             return
-        screen.blit(self.text_bold.get("Qué falla", INVALID), (x, y))
-        y += self.line
+        ui.icon(surface, "cross", x, y + 1, ui.RED)
+        ui.text(surface, "PROBLEMAS", x + 8, y + 1, ui.RED)
+        y += ui.LINE + 1
         for index, issue in enumerate(issues):
-            lines = self._wrapped(self.small, issue.message, inner - 14)
-            height = len(lines) * self.small.get_linesize() + 6
+            lines = pixelfont.wrap(issue.message, inner - 8)
+            if len(lines) > 3:  # a long message is cut: clicking the row shows all of it
+                lines = [*lines[:2], pixelfont.ellipsize(lines[2] + " …", inner - 8)]
+            height = len(lines) * ui.LINE + 1
             if y + height > limit:
                 rest = len(issues) - index
-                more = self.text_small.get(f"… y {rest} más", TEXT_DIM)
-                screen.blit(more, (x, y))
+                ui.text(surface, f"… Y {rest} MÁS", x, y + 1, ui.STONE_LIGHT)
                 break
-            row = pygame.Rect(x - 4, y - 2, inner + 8, height)
+            row = pygame.Rect(x - 2, y - 1, inner + 4, height)
             located = bool(issue.corners or issue.points)
             if self.mouse is not None and row.collidepoint(self.mouse) and located:
-                pygame.draw.rect(screen, (40, 28, 32), row, border_radius=4)
-            pygame.draw.circle(screen, INVALID, (x + 3, y + self.small.get_linesize() // 2 + 1), 3)
+                surface.fill(ui.rgb(ui.NAVY), row)
+            ui.icon(surface, "cross", x, y + 1, ui.RED)
             ly = y
             for line in lines:
-                screen.blit(self.text_small.get(line, (255, 178, 170)), (x + 14, ly))
-                ly += self.small.get_linesize()
+                ui.text(surface, line, x + 8, ly + 1, ui.TEXT)
+                ly += ui.LINE
             self._issue_rows.append((row, index))
-            y += height + 2
-
-    @staticmethod
-    def _fit(text: str, font: pygame.font.Font, width: int) -> str:
-        if font.size(text)[0] <= width:
-            return text
-        while text and font.size("…" + text)[0] > width:
-            text = text[1:]
-        return "…" + text
+            y += height + 1
 
     # -- drawing: overlays ---------------------------------------------------------------------
 
-    def _draw_toast(self, screen: pygame.Surface) -> None:
+    def _draw_toast(self, surface: pygame.Surface) -> None:
         if not self.toasts:
             return
         toast = self.toasts[0]
-        lines = self._wrapped(self.font, toast.text, self.canvas.width - 80)
-        surfaces = [self.text.get(line, toast.color) for line in lines]
-        width = max(s.get_width() for s in surfaces) + 28
-        height = sum(s.get_height() for s in surfaces) + 16
-        box = pygame.Rect(0, 0, width, height)
-        box.midtop = (self.canvas.centerx, 14)
-        shade = pygame.Surface(box.size, pygame.SRCALPHA)
-        shade.fill(PANEL)
-        screen.blit(shade, box)
-        pygame.draw.rect(screen, toast.color, box, 2, border_radius=6)
-        cy = box.y + 8
-        for surface in surfaces:
-            screen.blit(surface, (box.x + 14, cy))
-            cy += surface.get_height()
+        ink = TOAST_INKS.get(toast.kind, ui.TEXT)
+        symbol = TOAST_ICONS.get(toast.kind)
+        lead = 9 if symbol else 0
+        lines = pixelfont.wrap(toast.text, self.canvas.width - 24 - lead)[:5]
+        width = max(pixelfont.measure(line) for line in lines) + 10 + lead
+        box = pygame.Rect(0, 0, width, len(lines) * ui.LINE + 5)
+        box.midtop = (self.canvas.centerx, 4)
+        ui.plate(surface, box, ui.NAVY)
+        if symbol:
+            ui.icon(surface, symbol, box.x + 4, box.y + 4, ink)
+        for k, line in enumerate(lines):
+            ui.text(surface, line, box.x + 5 + lead, box.y + 3 + k * ui.LINE, ink)
 
-    def _draw_help(self, screen: pygame.Surface) -> None:
-        if self._help_surface is None or self._help_surface.get_size()[0] > screen.get_width():
-            self._help_surface = self._render_help()
-        surface = self._help_surface
-        screen.blit(surface, surface.get_rect(center=self.canvas.center))
-
-    def _render_help(self) -> pygame.Surface:
-        pad = 18
-        key_w = max(self.bold.size(k)[0] for k, _ in HELP_ROWS) + 24
-        desc_w = max(self.font.size(d)[0] for _, d in HELP_ROWS)
-        title = self.big.get_linesize() + 8
-        width = pad * 2 + key_w + desc_w
-        height = pad * 2 + title + len(HELP_ROWS) * self.line + self.line
-        surface = pygame.Surface((width, height), pygame.SRCALPHA)
-        surface.fill((14, 16, 22, 236))
-        pygame.draw.rect(surface, ACCENT, surface.get_rect(), 2, border_radius=8)
-        surface.blit(self.text_big.get("Ayuda del editor", ACCENT), (pad, pad))
-        y = pad + title
+    def _draw_help(self, surface: pygame.Surface) -> None:
+        box = pygame.Rect(4, 3, ui.CANVAS_SIZE[0] - 8, ui.CANVAS_SIZE[1] - 6)
+        ui.plate(surface, box, ui.NAVY)
+        ui.text(surface, "AYUDA", box.x + 6, box.y + 5, ui.YELLOW)
+        ui.text(surface, "H O ESC CIERRAN", box.right - 6, box.y + 5, ui.STONE_LIGHT, align="right")
+        ui.hline(surface, box.x + 1, box.y + 14, box.w - 2, ui.NIGHT)
+        key_w = max(pixelfont.measure(k) for k, _ in HELP_ROWS) + 10
+        y = box.y + 19
         for key, desc in HELP_ROWS:
-            surface.blit(self.text_bold.get(key, TEXT), (pad, y))
-            surface.blit(self.text.get(desc, TEXT_DIM), (pad + key_w, y))
-            y += self.line
-        surface.blit(self.text_small.get("H o Esc para cerrar", TEXT_DIM), (pad, y + 4))
-        return surface
+            ui.text(surface, key, box.x + 6, y, ui.TEXT)
+            ui.text(surface, desc, box.x + 6 + key_w, y, ui.STONE_LIGHT)
+            y += ui.LINE
 
-    def _draw_prompt(self, screen: pygame.Surface) -> None:
+    def _draw_prompt(self, surface: pygame.Surface) -> None:
         prompt = self.prompt
-        width = min(self.canvas.width - 60, 640)
-        height = self.line * 4
-        box = pygame.Rect(0, 0, width, height)
+        box = pygame.Rect(0, 0, min(self.canvas.width - 16, 200), 47)
         box.center = self.canvas.center
-        pygame.draw.rect(screen, (14, 16, 22), box, border_radius=8)
-        pygame.draw.rect(screen, ACCENT, box, 2, border_radius=8)
-        screen.blit(self.text_bold.get(prompt.label, ACCENT), (box.x + 16, box.y + 10))
-        field = pygame.Rect(box.x + 16, box.y + self.line + 12, width - 32, self.line + 4)
-        pygame.draw.rect(screen, PANEL_SOLID, field, border_radius=4)
-        shown = self._fit(prompt.text, self.font, field.width - 16)
-        text = self.font.render(shown, True, TEXT)
-        if prompt.selected:
-            mark = text.get_rect(topleft=(field.x + 8, field.y + 2)).inflate(6, 0)
-            pygame.draw.rect(screen, (70, 92, 140), mark, border_radius=3)
-        screen.blit(text, (field.x + 8, field.y + 2))
+        ui.plate(surface, box, ui.NAVY)
+        ui.text(surface, prompt.label, box.x + 5, box.y + 5, ui.YELLOW)
+        field = pygame.Rect(box.x + 5, box.y + 16, box.w - 10, 13)
+        ui.plate(surface, field, ui.NIGHT, ui.STONE)
+        shown = pixelfont.ellipsize(prompt.text, field.w - 8, keep="end")
+        width = pixelfont.measure(shown)
+        if prompt.selected and shown:
+            surface.fill(ui.rgb(ui.NAVY_LIGHT), (field.x + 2, field.y + 2, width + 3, 9))
+        ui.text(surface, shown, field.x + 4, field.y + 3, ui.TEXT)
         if int(time.perf_counter() * 2) % 2 == 0 and not prompt.selected:
-            cx = field.x + 8 + text.get_width() + 2
-            pygame.draw.line(screen, TEXT, (cx, field.y + 4), (cx, field.bottom - 4), 2)
+            ui.vline(surface, field.x + 5 + width, field.y + 2, 9, ui.WHITE)
         if prompt.full:
-            hint = self.text_small.get(f"Límite de {prompt.max_length} caracteres", PENDING)
+            hint = f"LÍMITE DE {prompt.max_length} CARACTERES"
+            ui.text(surface, hint, box.x + 5, box.bottom - 13, ui.YELLOW)
         else:
-            hint = self.text_small.get("Intro: aceptar · Esc: cancelar", TEXT_DIM)
-        screen.blit(hint, (box.x + 16, box.bottom - hint.get_height() - 6))
+            ui.text(
+                surface,
+                "INTRO ACEPTAR, ESC CANCELAR",
+                box.x + 5,
+                box.bottom - 13,
+                ui.STONE_LIGHT,
+            )
         self._redraw = True  # the caret blinks
 
     def save_screenshot(self, path: Path) -> None:
@@ -1712,7 +1640,7 @@ def main(argv: list[str] | None = None) -> None:
         try:
             spec = load_spec(args.track)
         except TrackFileError as error:
-            raise SystemExit(f"No se puede abrir el circuito:\n{error}") from None
+            raise SystemExit(f"No se pudo abrir el circuito:\n{error}") from None
         new = False
     elif args.track is not None and args.track.exists():
         raise SystemExit(

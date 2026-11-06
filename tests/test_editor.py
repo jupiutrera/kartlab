@@ -8,6 +8,7 @@ from pathlib import Path
 import pygame
 import pytest
 
+from kartlab.render import pixelfont
 from kartlab.show import editor as ed
 from kartlab.show.editor import EditorApp, EditorModel, Viewport, resolve_save_path, slugify
 from kartlab.sim.trackfile import (
@@ -99,7 +100,8 @@ def edge_midpoint_px(app, edge):
 
 def banner_color(app):
     app.draw()
-    return tuple(app.screen.get_at(app.banner_rect.center))[:3]
+    rect = app.banner_rect  # a pixel of the plate, away from its border and its text
+    return tuple(app.surface.get_at((rect.x + 2, rect.y + 2)))[:3]
 
 
 def key(app, k, mods=NO_MODS):
@@ -322,7 +324,7 @@ def test_the_wheel_over_a_corner_changes_its_radius_and_elsewhere_zooms(make_app
     assert app.model.undo_depth == 1  # the three notches are one step
     app.undo()
     assert app.spec == before
-    empty = (60, 700)
+    empty = (110, 95)  # inside the polygon, away from every corner and edge
     assert app.pick_corner(empty) is None
     world = app.view.to_world(*empty)
     app.on_wheel(empty, 2, NO_MODS)
@@ -521,7 +523,7 @@ def test_saving_an_invalid_track_is_refused_and_the_file_is_untouched(make_app, 
     app.model.move_corner(0, 330.0, 250.0)
     app.changed()  # no update(): save must not trust a stale analysis
     assert not app.save()
-    assert "No se guarda" in app.message and "no es válido" in app.message
+    assert "No se guarda" in app.message and "problema" in app.message
     assert copy.read_bytes() == before
     assert app.model.dirty
     key(app, pygame.K_s, CTRL)
@@ -536,7 +538,7 @@ def test_saving_never_overwrites_a_file_that_is_not_the_one_being_edited(make_ap
     target.parent.mkdir()
     target.write_text("{}", encoding="utf-8")
     assert not app.save()
-    assert "ya existe" in app.message
+    assert "Ya existe" in app.message
     assert target.read_text(encoding="utf-8") == "{}"
 
 
@@ -545,7 +547,7 @@ def test_an_unwritable_target_is_reported_not_raised(make_app, tmp_path):
     blocker = tmp_path / "ocupado"
     blocker.write_text("x", encoding="utf-8")
     assert not app.save(blocker / "dentro.json")  # a "folder" that is a file
-    assert "No se puede escribir" in app.message
+    assert "No se pudo escribir" in app.message
 
 
 def test_save_as_asks_for_a_name_in_the_window(make_app, tmp_path):
@@ -592,7 +594,7 @@ def test_leaving_with_unsaved_changes_asks_twice(make_app):
     app.running = True
     key(app, pygame.K_PAGEUP)
     key(app, pygame.K_ESCAPE)
-    assert app.running and "sin guardar" in app.message
+    assert app.running and "Sin guardar" in app.message
     key(app, pygame.K_ESCAPE)
     assert app.running is False
 
@@ -609,7 +611,7 @@ def test_test_drive_launches_the_game_on_a_saved_file(make_app, launched, tmp_pa
     assert command[-2:] == ["--track-file", str(copy)]
     assert "kartlab.show.drive" in command[2]
     key(app, pygame.K_F5)  # one at a time
-    assert len(launched) == 1 and "en marcha" in app.message
+    assert len(launched) == 1 and "prueba abierta" in app.message
     process.running = False
     app.update()
     key(app, pygame.K_t)
@@ -638,7 +640,7 @@ def test_test_drive_needs_a_valid_track(make_app, launched):
     app.model.move_corner(0, 330.0, 250.0)
     app.changed()
     key(app, pygame.K_F5)
-    assert launched == [] and "válido" in app.message
+    assert launched == [] and "problemas" in app.message
 
 
 # -- format 2 -------------------------------------------------------------------------------
@@ -660,7 +662,7 @@ def test_the_crossings_and_start_survive_editing_and_saving(make_app, tmp_path):
     original = load_spec(EIGHT)
     app = make_app(EIGHT)
     start = corner_px(app, 3)
-    drag(app, start, (start[0] + 6, start[1] + 6))
+    drag(app, start, (start[0] + 1, start[1] + 1))
     assert app.spec.corners[3] != original.corners[3]
     target = tmp_path / "tracks" / "ocho-editado.json"
     assert app.save(target)
@@ -744,7 +746,7 @@ def test_main_reports_an_unreadable_file(tmp_path):
     bad.write_text("{ no es json", encoding="utf-8")
     with pytest.raises(SystemExit) as error:
         ed.main([str(bad), "--frames", "1"])
-    assert "No se puede abrir" in str(error.value)
+    assert "No se pudo abrir" in str(error.value)
     with pytest.raises(SystemExit):
         ed.main([str(tmp_path / "no-existe.json"), "--frames", "1"])
     with pytest.raises(TrackFileError):
@@ -805,8 +807,8 @@ def test_a_second_button_or_a_key_during_a_drag_cannot_break_it(make_app):
 def test_the_window_layout_is_not_rebuilt_every_frame(make_app, monkeypatch):
     app = make_app()
     calls = []
-    original = app._build_fonts
-    monkeypatch.setattr(app, "_build_fonts", lambda: (calls.append(1), original()))
+    original = app._layout
+    monkeypatch.setattr(app, "_layout", lambda: (calls.append(1), original()))
     app.run(max_frames=20)
     assert calls == []
 
@@ -819,10 +821,11 @@ def test_toasts_never_overflow_the_canvas_even_with_a_long_path(make_app, tmp_pa
         "Guardado circuito.json"
     )  # only the file name outside the project
     app.say("Guardado " + "x" * 400, "ok")  # a word wider than the canvas is cut, not overflowed
-    for line in ed._wrap(app.font, app.message, app.canvas.width - 80):
-        assert app.font.size(line)[0] <= app.canvas.width - 80
+    limit = app.canvas.width - 24 - 9  # the toast's text column, beside its icon
+    for line in pixelfont.wrap(app.message, limit):
+        assert pixelfont.measure(line) <= limit
     app.draw()
-    assert tuple(app.screen.get_at((app.panel_rect.x + 30, 20)))[:3] != ed.GRASS
+    assert tuple(app.surface.get_at((app.panel_rect.x + 30, 20)))[:3] != ed.GRASS
     app.say("Abierto tracks/ejemplo.json")
     assert app._toast_path(EXAMPLE.resolve()) == "tracks/ejemplo.json"
 
@@ -1052,5 +1055,5 @@ def test_a_pending_verdict_always_resolves_whatever_the_order_of_edits(make_app)
 
 @pytest.mark.parametrize("text", ["tracks/", "tracks\\", ".json", "tracks/.json", "x/"])
 def test_a_folder_or_a_bare_extension_is_not_a_file_name(text):
-    with pytest.raises(ValueError, match="nombre de fichero"):
+    with pytest.raises(ValueError, match="nombre del fichero"):
         resolve_save_path(text, Path("T"), Path("R").resolve())

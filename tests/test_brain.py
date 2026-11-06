@@ -11,7 +11,8 @@ import pygame
 import pytest
 
 from kartlab.env.kart_env import EnvConfig
-from kartlab.render.palette import RAY_RAMP
+from kartlab.render import pixelui as ui
+from kartlab.render.palette import RAY_RAMP, game_palette
 from kartlab.show.brain import BrainPanel, ray_colors
 from kartlab.show.drivers import VALUE_SECONDS, PolicyDriver, Version, load_version
 from kartlab.show.live import LiveApp
@@ -154,75 +155,117 @@ def test_the_value_is_rescaled_to_reward_units_with_the_saved_statistics(tiny_ru
 # -- the panel ---------------------------------------------------------------------------------
 
 
-def test_ray_colours_run_from_warm_when_near_to_cool_when_far():
+def canvas():
+    pygame.init()
+    surface = pygame.Surface(ui.CANVAS_SIZE)
+    surface.fill(ui.rgb(ui.GREEN))
+    return surface
+
+
+def palette_only(surface):
+    palette = {tuple(int(c) for c in row) for row in game_palette().rgb}
+    pixels = pygame.surfarray.array3d(surface).reshape(-1, 3)
+    return {tuple(int(c) for c in p) for p in np.unique(pixels, axis=0)} <= palette
+
+
+def test_ray_colours_run_from_warm_when_near_to_cool_when_far_and_never_red():
     colors = ray_colors()
-    assert len(RAY_RAMP) >= 5
+    assert len(RAY_RAMP) >= 5 and len(colors) == len(RAY_RAMP) - 1
     near, far = colors[0], colors[-1]
     assert near[0] > near[2] and far[2] > far[0]
+    assert ui.rgb(ui.RED) not in colors  # red means error, and a near wall is not one
+    assert all(c in {tuple(int(v) for v in r) for r in game_palette().rgb} for c in colors)
 
 
-def test_the_panel_draws_and_changes_the_pixels():
-    pygame.init()
-    screen = pygame.display.set_mode((1280, 720))
+def test_the_panel_draws_inside_its_rectangle_with_palette_inks_only():
+    screen = canvas()
     driver, _ = counting_driver()
     driver.set_tracking(True)
     for _ in range(80):
         driver.step()
-    panel = BrainPanel(18)
-    screen.fill((40, 90, 40))
+    panel = BrainPanel()
     before = pygame.surfarray.array3d(screen)
     panel.draw(screen, (10, 10), driver)
     after = pygame.surfarray.array3d(screen)
     w, h = panel.size
     changed = (before != after).any(axis=2)
     assert changed[10 : 10 + w, 10 : 10 + h].mean() > 0.5
-    assert not changed[10 + w :, :].any()  # nothing outside the panel
+    assert not changed[10 + w :, :].any() and not changed[:, 10 + h :].any()  # nothing outside
+    assert not changed[:10, :].any() and not changed[:, :10].any()
+    assert palette_only(screen)
+    pygame.quit()
+
+
+def test_the_panel_fits_the_canvas_with_room_for_the_world():
+    pygame.init()
+    panel = BrainPanel()
+    assert panel.size[0] <= ui.CANVAS_SIZE[0] // 3 and panel.size[1] <= ui.CANVAS_SIZE[1] * 2 // 3
+    pygame.quit()
+
+
+def test_the_action_bars_follow_the_action():
+    screen = canvas()
+    driver, _ = counting_driver()
+    for _ in range(40):
+        driver.step()
+    panel = BrainPanel()
+
+    def bar_pixels(steer, throttle, ink):
+        panel.draw(screen, (0, 0), driver)
+        panel._draw_actions(screen, 0, 0, steer, throttle)  # what the driver would hold
+        row = panel.rows["steer"] if ink == ui.BLUE else panel.rows["throttle"]
+        strip = pygame.surfarray.array3d(screen)[:, row + 2]
+        return int((strip == ui.rgb(ink)).all(axis=1).sum())
+
+    assert bar_pixels(0.0, 0.0, ui.BLUE) == 0
+    left, right = bar_pixels(1.0, 0.0, ui.BLUE), bar_pixels(-1.0, 0.0, ui.BLUE)
+    assert left > 0 and right > 0
+    assert bar_pixels(0.0, 1.0, ui.GREEN) > bar_pixels(0.0, 0.5, ui.GREEN) > 0
     pygame.quit()
 
 
 def test_the_panel_draws_before_the_first_decision_and_without_values():
-    pygame.init()
-    screen = pygame.display.set_mode((640, 360))
+    screen = canvas()
     driver = PolicyDriver(Version(0, follow), showcase_track("harbor"), EnvConfig(), (1, 2, 3))
-    panel = BrainPanel(12)
+    panel = BrainPanel()
     panel.draw(screen, (0, 0), driver)  # no observation yet
     driver.step()
     panel.draw(screen, (0, 0), driver)  # no value function
+    assert palette_only(screen)
     pygame.quit()
 
 
 def test_panel_placement_slides_in_from_the_edge_and_stays_in_the_free_space():
     pygame.init()
-    panel = BrainPanel(18)
-    area = pygame.Rect(0, 0, 1280, 720)
+    panel = BrainPanel()
+    area = pygame.Rect(0, 0, 320, 180)
     panel.open(0.0)
-    x0, _ = panel.position(area, "left", 100, 600, 0.0)
-    x1, y1 = panel.position(area, "left", 100, 600, 1.0)
-    assert x0 < 0 <= x1 and 100 <= y1 <= 600 - panel.size[1] + 100
-    xr, _ = panel.position(area, "right", 100, 600, 1.0)
+    x0, _ = panel.position(area, "left", 20, 170, 0.0)
+    x1, y1 = panel.position(area, "left", 20, 170, 1.0)
+    assert x0 < 0 <= x1 and 20 <= y1 <= 170 - panel.size[1] + 20
+    xr, _ = panel.position(area, "right", 20, 170, 1.0)
     assert xr + panel.size[0] <= area.right and xr > area.centerx
+    assert isinstance(x1, int) and isinstance(y1, int)  # whole pixels
     pygame.quit()
 
 
-@pytest.mark.parametrize("unit", [12, 18, 27])
-def test_drawing_the_panel_costs_well_under_a_millisecond_or_so(unit):
+def test_drawing_the_panel_costs_well_under_a_millisecond_or_so():
     """Measured (median of many frames); the bound is generous so a busy CI machine passes.
     The target in the spec is 1 ms; a normal machine takes a fraction of it."""
-    pygame.init()
-    screen = pygame.display.set_mode((1920, 1080))
+    screen = canvas()
     driver, _ = counting_driver()
     driver.set_tracking(True)
     for _ in range(200):
         driver.step()
-    panel = BrainPanel(unit)
+    panel = BrainPanel()
     for _ in range(10):
-        panel.draw(screen, (20, 100), driver)
+        panel.draw(screen, (20, 30), driver)
     samples = []
     for _ in range(200):
         t0 = time.perf_counter()
-        panel.draw(screen, (20, 100), driver)
+        panel.draw(screen, (20, 30), driver)
         samples.append((time.perf_counter() - t0) * 1000)
-    assert statistics.median(samples) < 3.0
+    assert statistics.median(samples) < 1.0
     pygame.quit()
 
 

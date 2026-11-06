@@ -10,6 +10,7 @@ import pygame
 import pytest
 
 from kartlab.common.paths import REPO_ROOT
+from kartlab.render.display import fit_rect
 from kartlab.show.hub import ENTRIES, KartLabApp, main
 from kartlab.show.settings import Settings
 from kartlab.train.config import PPOParams, TrainConfig
@@ -74,6 +75,13 @@ def make_hub(tmp_path):
     pygame.quit()
 
 
+def window_pos(app, pos):
+    """Where the window sees a canvas pixel: the menu is drawn on 320x180 and magnified."""
+    rect = fit_rect(app.screen.get_size())
+    k = rect.w // 320
+    return rect.x + pos[0] * k + k // 2, rect.y + pos[1] * k + k // 2
+
+
 def key(app, k):
     app.handle_event(pygame.event.Event(pygame.KEYDOWN, key=k, mod=0, unicode=""))
 
@@ -107,10 +115,10 @@ def test_the_entry_is_the_first_of_play_and_needs_a_run():
 def test_the_entry_is_off_without_a_run_and_says_to_train_first(make_hub):
     app = make_hub(with_run=False)
     entry = next(e for e in app.entries if e.key == "carrera")
-    assert app.disabled_reason(entry) == "Entrena antes a la IA"
+    assert app.disabled_reason(entry) == "Entrena una IA primero"
     select(app, "carrera")
     key(app, pygame.K_RETURN)
-    assert app.dialog is not None and "Entrena antes a la IA" in app.dialog.text
+    assert app.dialog is not None and "Entrena una IA primero" in app.dialog.text
     assert app.flow is None
     app.run(2)  # and the menu draws it dimmed without a traceback
 
@@ -205,11 +213,15 @@ def test_the_options_screen_works_with_the_mouse_and_the_wheel(make_hub, tiny_ru
     screen = app.current
     row = screen.rects[2]  # Vueltas
     app.handle_event(
-        pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(row.right - 5, row.centery), button=1)
+        pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, pos=window_pos(app, (row.right - 5, row.centery)), button=1
+        )
     )
     assert app.settings.race_laps == 5  # a click on the right goes forward
     app.handle_event(
-        pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(row.x + 5, row.centery), button=1)
+        pygame.event.Event(
+            pygame.MOUSEBUTTONDOWN, pos=window_pos(app, (row.x + 5, row.centery)), button=1
+        )
     )
     assert app.settings.race_laps == 3  # and on the left, back
     app.handle_event(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=1))

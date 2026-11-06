@@ -16,6 +16,8 @@ import pygame
 import pytest
 
 from kartlab.common.paths import REPO_ROOT
+from kartlab.render.display import fit_rect
+from kartlab.render.palette import game_palette
 from kartlab.show import hub as hub_module
 from kartlab.show.cli import KART_COLOR_NAMES, kart_color_rgb, parse_kart_color
 from kartlab.show.hub import ENTRIES, STEPS, KartLabApp, Step, main
@@ -92,11 +94,21 @@ def key(app, k):
     app.handle_event(pygame.event.Event(pygame.KEYDOWN, key=k, mod=0, unicode=""))
 
 
+def window_pos(app, pos):
+    """Where the window sees a canvas pixel: the menu is drawn on 320x180 and magnified."""
+    rect = fit_rect(app.screen.get_size())
+    k = rect.w // 320
+    return rect.x + pos[0] * k + k // 2, rect.y + pos[1] * k + k // 2
+
+
 def motion(app, pos):
+    """A mouse move to a canvas pixel (the rectangles of the screens are in canvas pixels)."""
+    pos = window_pos(app, pos)
     app.handle_event(pygame.event.Event(pygame.MOUSEMOTION, pos=pos, rel=(0, 0), buttons=(0, 0, 0)))
 
 
 def click(app, pos):
+    pos = window_pos(app, pos)
     app.handle_event(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=pos, button=1))
 
 
@@ -160,7 +172,9 @@ def test_the_menu_opens_on_the_first_frame_and_draws_something(make_hub):
     assert app.time_to_menu is not None and app.time_to_menu < 2.0
     assert app.current is app.main_screen
     pixels = pygame.surfarray.array3d(app.screen).reshape(-1, 3)
-    assert len(np.unique(pixels, axis=0)) > 20
+    colours = {tuple(int(c) for c in p) for p in np.unique(pixels, axis=0)}
+    assert len(colours) > 8  # the wordmark, the list, the plates...
+    assert colours <= {tuple(int(c) for c in row) for row in game_palette().rgb}
 
 
 def test_screenshot_option_of_the_command(tmp_path, monkeypatch):
@@ -393,7 +407,7 @@ def test_entries_without_a_run_explain_why_instead_of_opening(make_hub):
     app = make_hub()
     select(app, "ver")
     key(app, pygame.K_RETURN)
-    assert app.dialog is not None and "Entrena antes a la IA" in app.dialog.text
+    assert app.dialog is not None and "Entrena una IA primero" in app.dialog.text
     assert app.current is app.main_screen
     key(app, pygame.K_RETURN)  # any key closes the message
     assert app.dialog is None
@@ -455,7 +469,7 @@ def test_the_accept_button_confirms_and_clicking_the_kart_does_not(make_hub):
     key(app, pygame.K_RETURN)
     screen = app.current
     click(app, screen.swatches[5].center)
-    click(app, (screen.ground[0], screen.ground[1] - 40))  # on the big kart
+    click(app, (screen.ground[0], screen.ground[1] - 20))  # on the big kart
     assert type(app.current).__name__ == "KartScreen"
     click(app, screen.accept.center)
     assert type(app.current).__name__ == "TrackScreen" and app.settings.kart_ramp == 5
@@ -555,7 +569,6 @@ def test_playing_runs_the_game_and_comes_back_with_a_valid_window(make_hub):
     assert pygame.display.get_caption()[0] == "KART LAB"
     assert app.screen.get_size() == (640, 360)
     assert app.settings.last_track == "harbor" and track_screen.options[0].key == "harbor"
-    app.ui.name.get("¿Sigue vivo?", (255, 255, 255))  # the fonts are still valid
     app.run(2)
     assert pygame.surfarray.array3d(app.screen).any()
 
@@ -688,7 +701,7 @@ def test_options_change_apply_and_are_saved(make_hub):
     assert app.settings.camera == "top"
     saved = json.loads(app.settings_path.read_text(encoding="utf-8"))
     assert saved["scale"] == 2 and saved["light"] == "sunset" and saved["camera"] == "top"
-    assert screen.rects and app.ui.size == (640, 360)
+    assert screen.rects and app.screen.get_size() == (640, 360)
     assert Settings.load(app.settings_path).camera == "top"
 
 
@@ -754,7 +767,7 @@ def test_a_run_without_checkpoints_raises_the_dedicated_exception(tiny_run, tmp_
     empty = RunPaths(tmp_path / "vacio")
     empty.root.mkdir()
     shutil.copy(tiny_run.config, empty.config)
-    with pytest.raises(NoCheckpoints, match="no tiene checkpoints"):
+    with pytest.raises(NoCheckpoints, match="no tiene versiones guardadas"):
         ViewerApp(empty, scale=2, realtime=False)
 
 
@@ -843,7 +856,7 @@ def test_a_long_training_asks_twice_and_escape_cancels(make_hub, tmp_path):
     screen = open_training(app)
     assert screen.configs[0].is_long and screen.configs[0].estimate == "unos 32 min"
     key(app, pygame.K_RETURN)
-    assert app.dialog is not None and "más de 30 min" in app.dialog.text
+    assert app.dialog is not None and "tarda" in app.dialog.text
     key(app, pygame.K_ESCAPE)
     assert app.dialog is None and spawn.calls == []
     key(app, pygame.K_RETURN)
@@ -974,7 +987,7 @@ def test_an_activity_that_fails_shows_a_message_and_the_menu_keeps_working(make_
     key(app, pygame.K_RETURN)
     key(app, pygame.K_RETURN)
     app.run(2)
-    assert app.dialog is not None and app.dialog.title == "Algo ha fallado"
+    assert app.dialog is not None and app.dialog.title == "Error"
     assert "se ha roto" in app.dialog.text
     assert app.current is app.main_screen and app.screen.get_size() == (640, 360)
     capsys.readouterr()  # the traceback went to stderr, not to the player
@@ -1025,7 +1038,7 @@ def test_many_configs_scroll_instead_of_covering_the_buttons(make_hub, tmp_path)
     screen = open_training(app)
     assert screen.visible < 9
     assert max(r.bottom for r in screen.rects.values()) < screen.panel_rect.top
-    assert screen.buttons["launch"].bottom < app.ui.size[1] - app.ui.unit  # above the hint line
+    assert screen.buttons["launch"].bottom < 180 - 9  # above the hint line
     for _ in range(8):
         key(app, pygame.K_DOWN)
     assert screen.selected == 8 and 8 in screen.rects  # the selection is always in view

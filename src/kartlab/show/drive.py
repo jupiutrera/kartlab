@@ -10,26 +10,19 @@ import math
 import time
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pygame
 
-from kartlab.render.display import open_window, set_window_mode
+from kartlab.render import pixelui as ui
+from kartlab.render.display import open_window, present, set_window_mode
 from kartlab.render.palette import KART_RAMPS
 from kartlab.render.scene import KartVisual
-from kartlab.render.topdown import (
-    ACCENT,
-    TEXT,
-    TEXT_DIM,
-    WARNING,
-    DebugHud,
-    TopDownView,
-    format_time,
-    load_fonts,
-)
-from kartlab.render.view import DIM, WHITE, GameView, HudInfo, TrialHud, format_delta
+from kartlab.render.topdown import TopDownView, format_time
+from kartlab.render.view import GameView, HudInfo, TrialHud, format_delta
 from kartlab.show.cli import kart_color_rgb, parse_kart_color
-from kartlab.show.overlays import Overlays
+from kartlab.show.overlays import Overlays, build_help, toggle_text
 from kartlab.show.racehud import AMBER, GOLD, RaceHud
 from kartlab.show.trialrace import (
     BANNER_SECONDS,
@@ -53,26 +46,39 @@ from kartlab.sim.tracksets import (
     train_track,
 )
 
-TITLE = "KART LAB · conducción manual"
+TITLE = "KART LAB: conducción libre"
 TRAIL_SECONDS = 4.0
 TRAIL_EVERY = 3  # physics steps between trail points
 CAMERA_RESPONSE = 4.0  # top-down follow camera smoothing (1/s)
 CAMERA_LEAD = 0.6  # the top-down follow camera aims this many seconds ahead (s)
 GHOST_RAMP = 1  # the record's ghost is blue (orange if the player picked blue)
 LABEL_MIN_GAP = 5.0  # no "Récord" tag on a ghost closer than this to the player (m)
-GHOST_COLOR = (112, 164, 255)  # the ghost in the top-down view
+GHOST_INK = 47  # the ghost in the top-down view
 MESSAGE_SECONDS = 4.0  # how long a time-trial message stays in the top-down HUD
 MAX_PENDING = 0.1  # never simulate more than this after a stall (s)
 SHOWCASE_KEYS = {pygame.K_1: "harbor", pygame.K_2: "canyon", pygame.K_3: "plateau"}
-HELP = (
-    "Flechas o WASD: conducir · R: reiniciar · 1-3: escaparate · E: evaluación · N: aleatorio",
-    "C: cámara · V: día/atardecer/noche · G: sensores · T: vista cenital · Tab: piloto",
-    "Mayús: derrape; mantén con el volante girado y suelta para el turbo",
-    "Cuanto más largo el derrape, más turbo",
-    "K: contrarreloj: 3 vueltas con cuenta atrás, récord y fantasma · F: fantasma",
-    "P: pausa · F3: diagnóstico · L: modo ligero · F11: pantalla completa · H: ayuda",
-    "Esc: salir (si vienes del menú principal, vuelve a él)",
+HELP = (  # the first HELP_LEFT rows go in the left column
+    ("Flechas/WASD", "conducir"),
+    ("R", "reiniciar"),
+    ("K", "contrarreloj"),
+    ("F", "fantasma"),
+    ("C", "cámara"),
+    ("V", "luz"),
+    ("T", "vista cenital"),
+    ("G", "rayos"),
+    ("P", "pausa"),
+    ("Mayús", "derrape y turbo"),
+    ("Tab", "piloto automático"),
+    ("1 2 3", "Puerto, Cañón, Meseta"),
+    ("E", "otra evaluación"),
+    ("N", "circuito aleatorio"),
+    ("L", "modo ligero"),
+    ("F3", "diagnóstico"),
+    ("F11", "pantalla completa"),
+    ("H", "ayuda"),
+    ("Esc", "volver"),
 )
+HELP_LEFT = 9
 
 
 def keyboard_controls(pressed) -> tuple[float, float]:
@@ -123,7 +129,7 @@ class DriveApp:
         self.follow = camera != "track"
         self.variant = variant
         self.paused = False
-        self.show_help = view == "topdown"  # in 3D it would cover the HUD
+        self.show_help = False  # it covers the view: H opens it
         self.show_rays = False
         self.diagnostics = False
         self.running = False
@@ -142,7 +148,8 @@ class DriveApp:
         self.hud_trial: TrialHud | None = None
         self._message: tuple[str, float] | None = None
         self.clock = pygame.time.Clock()
-        self.hud = DebugHud(self.screen.get_size())
+        self.canvas = pygame.Surface(ui.CANVAS_SIZE)  # the top-down view and its panels
+        self._help_surface: pygame.Surface | None = None
         self.view: TopDownView | None = None
         self.game: GameView | None = None
         self.load_track(track)
@@ -173,13 +180,12 @@ class DriveApp:
             )
             self.game.diagnostics = self.diagnostics
         elif self.view_mode == "topdown" and self.view is None:
-            self.view = TopDownView(self.track, size)
+            self.view = TopDownView(self.track, ui.CANVAS_SIZE, pixel=True)
 
     def _loading(self) -> None:
-        font, _ = load_fonts(self.screen.get_height())
-        self.screen.fill((14, 14, 22))
-        text = font.render(f"Cargando {self.track.name}…", True, TEXT)
-        self.screen.blit(text, text.get_rect(center=self.screen.get_rect().center))
+        self.canvas.fill(ui.rgb(ui.NIGHT))
+        ui.text(self.canvas, f"Cargando {self.track.name}…", 160, 86, ui.TEXT, align="center")
+        present(self.canvas, self.screen)
         pygame.display.flip()
 
     def reset(self) -> None:
@@ -212,16 +218,16 @@ class DriveApp:
             self.reset()
             self._announce_trial()
         else:
-            self.notify("Contrarreloj desactivada")
+            self.notify(toggle_text("Contrarreloj", False))
 
     def _announce_trial(self) -> None:
         trial = self.trial
         if trial.problem:
             self.notify(trial.problem)
         elif trial.record is None:
-            self.notify("Contrarreloj: sin récord en este circuito, ¡marca uno!")
+            self.notify("Sin récord en este circuito")
         else:
-            self.notify(f"Contrarreloj: récord {format_time(trial.record.lap_time)}")
+            self.notify(f"Récord {format_time(trial.record.lap_time)}")
 
     def _on_lap(self, event: LapEvent) -> None:
         lap = format_time(event.lap_time)
@@ -229,13 +235,11 @@ class DriveApp:
             "" if event.previous is None else f" ({format_delta(event.lap_time - event.previous)})"
         )
         if event.record:
-            text = (
-                f"¡Primer récord! {lap}" if event.previous is None else f"¡NUEVO RÉCORD! {lap}{gap}"
-            )
+            text = f"Primer récord {lap}" if event.previous is None else f"Nuevo récord {lap}{gap}"
             if not event.saved:
-                text += " · no se pudo guardar"
+                text += ", sin guardar"
         elif not event.valid:
-            text = f"Vuelta {lap} · no cuenta (piloto automático o salida no limpia)"
+            text = f"Vuelta {lap} (no cuenta)"
         else:
             text = f"Vuelta {lap}{gap}"
         self.notify(text)
@@ -246,13 +250,8 @@ class DriveApp:
         self.fullscreen = not self.fullscreen
         self.screen = set_window_mode(self.scale, self.fullscreen)
         size = self.screen.get_size()
-        self.hud.resize(size)
-        if self.view is not None:
-            self.view.resize(size)
         if self.game is not None:
             self.game.resize(size)
-        if self.overlays is not None:
-            self.overlays.set_screen(self.screen, self.game)
 
     def handle_key(self, key: int) -> None:
         if key == pygame.K_ESCAPE:
@@ -285,7 +284,7 @@ class DriveApp:
         elif key == pygame.K_f:
             self.show_ghost = not self.show_ghost
             if self.trial is not None:
-                self.notify("Fantasma " + ("activado" if self.show_ghost else "desactivado"))
+                self.notify(toggle_text("Fantasma", self.show_ghost))
         elif key == pygame.K_g:
             self.show_rays = not self.show_rays
         elif key == pygame.K_F3:
@@ -402,7 +401,7 @@ class DriveApp:
             ghost = self.ghost_state()
             if ghost is not None:
                 near = math.hypot(ghost.x - racer.kart.x, ghost.y - racer.kart.y) < LABEL_MIN_GAP
-                label = None if near else "Récord"  # on top of you, the tag only gets in the way
+                label = None if near else "Fantasma"  # on top of you, the tag only gets in the way
                 self.ghost_visual = KartVisual(
                     ghost, self.ghost_ramp, label, ghost=True, ground=self.ghost_ground(ghost)
                 )
@@ -412,7 +411,7 @@ class DriveApp:
         self.game.set_rays(visual if self.show_rays else None)
         extra = [self.track.name]
         if self.trial is not None:
-            extra.append("Contrarreloj" + (" · fantasma" if self.show_ghost else ""))
+            extra.append("Fantasma: Sí" if self.show_ghost else "Fantasma: No")
         if self.paused:
             extra.append("PAUSA")
         if not self.show_help:
@@ -422,7 +421,7 @@ class DriveApp:
             lap_time=racer.lap_time,
             best_lap=racer.best_lap,
             speed=racer.speed,
-            label="Piloto automático" if self.autopilot_on else "Conducción manual",
+            label=self.mode_label(),
             extra=extra,
             trial=self.hud_trial,
         )
@@ -430,20 +429,21 @@ class DriveApp:
             info.lap_panel = False
             info.label_panel = self.session.counting or self.show_help or self.paused
         fps = self.clock.get_fps() if self.realtime else None
-        self.game.draw(self.screen, pose, visuals, info, dt, fps)
+        canvas = self.game.render_canvas(pose, visuals, info, dt, fps)
+        if self.overlays is None:
+            self.overlays = Overlays(self.game)
+            self.race_hud = RaceHud(self.overlays)
+        self._draw_session(canvas, self.race_hud)
         if self.show_help:
-            self.hud.draw_block(self.screen, [(t, TEXT_DIM) for t in HELP], "bottom-left")
-        self._draw_session()
+            self._draw_help(canvas)
+        self.game.present(self.screen)
 
-    def _draw_session(self) -> None:
+    def _draw_session(self, canvas: pygame.Surface, hud: RaceHud) -> None:
         """The race format of the time trial: lap counter, countdown, banners and results."""
         session = self.session
         if session is None:
             return
-        if self.race_hud is None:
-            self.overlays = Overlays(self.screen, self.game)
-            self.race_hud = RaceHud(self.overlays)
-        hud, racer = self.race_hud, self.racer
+        racer = self.racer
         total = session.total if session.finished else racer.time
         hud.lap_counter(
             session.lap_number,
@@ -459,13 +459,22 @@ class DriveApp:
             hud.banner(text, age, BANNER_SECONDS, GOLD if text == FINISH else AMBER)
         if session.finished:
             record = self.trial.record.lap_time if self.trial and self.trial.record else None
-            colours = {"best": GOLD[0], "record": GOLD[0], "dim": DIM}
-            lines = [
-                (text, colours.get(kind, WHITE)) for text, kind in session.result_lines(record)
-            ]
+            inks = {"best": ui.YELLOW, "record": ui.YELLOW, "dim": ui.STONE_LIGHT}
+            lines = [(text, inks.get(kind, ui.TEXT)) for text, kind in session.result_lines(record)]
             hud.results(
-                "Contrarreloj", None, lines, "Intro: repetir  ·  Esc: salir", session.results_age()
+                "Resultados", None, lines, "Intro repetir, Esc salir", session.results_age()
             )
+
+    def _draw_help(self, canvas: pygame.Surface) -> None:
+        if self._help_surface is None:
+            columns = [
+                [(k, v, False) for k, v in HELP[:HELP_LEFT]],
+                [(k, v, False) for k, v in HELP[HELP_LEFT:]],
+            ]
+            self._help_surface = build_help(None, columns)
+        ui.dither(canvas, canvas.get_rect(), 2)
+        panel = self._help_surface
+        canvas.blit(panel, ((320 - panel.get_width()) // 2, (180 - panel.get_height()) // 2))
 
     def ghost_state(self) -> KartState | None:
         """The record's kart at the current lap time (``None``: off, no record or finished)."""
@@ -498,8 +507,15 @@ class DriveApp:
         cx, cy = self.camera
         self.camera = (cx + (tx - cx) * k, cy + (ty - cy) * k)
 
+    def mode_label(self) -> str:
+        """What the mode panel calls the current mode."""
+        if self.autopilot_on:
+            return "Piloto automático"
+        return "Contrarreloj" if self.trial is not None else "Conducción libre"
+
     def draw_topdown(self) -> None:
         racer = self.racer
+        canvas = self.canvas
         karts = [
             (
                 racer.kart,
@@ -514,48 +530,80 @@ class DriveApp:
             ghost = self.ghost_state()
             if ghost is not None:
                 self.ghost_visual = KartVisual(ghost, self.ghost_ramp, ghost=True)
-                karts.append((ghost, GHOST_COLOR, 0.0, None, self.ghost_ground(ghost)))
+                karts.append((ghost, ui.rgb(GHOST_INK), 0.0, None, self.ghost_ground(ghost)))
             self.hud_trial = self.trial_hud()
-        self.view.draw(self.screen, karts, self.camera, self.follow, self.trail)
-        lines = [
-            (f"Vuelta     {racer.laps + 1}", TEXT),
-            (f"Tiempo     {format_time(racer.lap_time)}", TEXT),
-            (f"Última     {format_time(racer.last_lap)}", TEXT_DIM),
-            (f"Mejor      {format_time(racer.best_lap)}", ACCENT if racer.best_lap else TEXT_DIM),
-            (f"Velocidad  {abs(racer.speed) * 3.6:3.0f} km/h", TEXT),
+        self.view.draw(canvas, karts, self.camera, self.follow, self.trail)
+        top = 27 if self.session is not None else 3  # below the lap bar of the race format
+        self._draw_blocks(canvas, top)
+        if self.session is not None:
+            if self.race_hud is None:
+                self.overlays = SimpleNamespace(canvas=canvas, game=None)
+                self.race_hud = RaceHud(self.overlays, sign_y=105)
+            self._draw_session(canvas, self.race_hud)
+        self._message_toast(canvas)
+        if self.show_help:
+            self._draw_help(canvas)
+        present(canvas, self.screen)
+
+    def _draw_blocks(self, canvas: pygame.Surface, top: int) -> None:
+        """The data of the top-down view: the lap on the left, the state on the right."""
+        racer = self.racer
+        rows: list[tuple[str, str, int]] = []
+        if self.session is None:
+            rows += [
+                ("VUELTA", str(racer.laps + 1), ui.TEXT),
+                ("TIEMPO", ui.fmt_clock(racer.lap_time), ui.TEXT),
+                ("ÚLTIMA", ui.fmt_clock(racer.last_lap), ui.STONE_LIGHT),
+                ("MEJOR", ui.fmt_clock(racer.best_lap), ui.YELLOW if racer.best_lap else ui.STONE),
+            ]
+        rows.append(("KM/H", f"{abs(racer.speed) * 3.6:.0f}", ui.TEXT))
+        rows.append(
             (
-                f"Superficie {'hierba' if racer.on_grass else 'asfalto'}",
-                WARNING if racer.on_grass else TEXT_DIM,
-            ),
-        ]
+                "SUELO",
+                "hierba" if racer.on_grass else "asfalto",
+                ui.ORANGE if racer.on_grass else ui.STONE_LIGHT,
+            )
+        )
         if self.hud_trial is not None:
             trial = self.hud_trial
-            gap = "—" if trial.delta is None else format_delta(trial.delta)
-            lines += [
-                (f"Récord     {format_time(trial.record)}", ACCENT if trial.record else TEXT_DIM),
-                (f"Diferencia {gap}", TEXT),
+            gap = "-:--,--" if trial.delta is None else format_delta(trial.delta)
+            rows += [
+                ("RÉCORD", ui.fmt_clock(trial.record), ui.YELLOW if trial.record else ui.STONE),
+                ("DIF.", gap, ui.TEXT),
             ]
-        self.hud.draw_block(self.screen, lines, "top-left", title=self.track.name)
-        status = [
-            ("Piloto automático" if self.autopilot_on else "Manual", ACCENT),
-            (f"Cámara: {'seguimiento' if self.follow else 'circuito'}", TEXT_DIM),
-            (f"{self.clock.get_fps():3.0f} fps", TEXT_DIM),
+        w = 84
+        h = 5 + 9 * (len(rows) + 1)
+        ui.plate(canvas, (3, top, w, h), ui.SLATE)
+        ui.text(canvas, ui.ellipsize(self.track.name, w - 8), 7, top + 4, ui.WHITE)
+        for i, (label, value, ink) in enumerate(rows, start=1):
+            ui.text(canvas, label, 7, top + 4 + 9 * i, ui.STONE_LIGHT)
+            ui.text(canvas, value, 3 + w - 4, top + 4 + 9 * i, ink, align="right", tabular=True)
+        state = [
+            (self.mode_label(), ui.YELLOW),
+            (f"Cámara: {'seguimiento' if self.follow else 'circuito'}", ui.STONE_LIGHT),
         ]
-        if self.session is not None:
-            session = self.session
-            if session.counting:
-                status.append((f"Salida en {(COUNTDOWN_FRAMES - session.frame) // 60 + 1}", ACCENT))
-            else:
-                status.append((f"Vuelta {session.lap_number}/{session.laps}", ACCENT))
-            if session.finished:
-                status.append(("Meta: Intro repite · Esc sale", ACCENT))
+        if self.clock.get_fps():
+            state.append((f"{self.clock.get_fps():.0f} fps", ui.STONE_LIGHT))
         if self.paused:
-            status.append(("PAUSA", WARNING))
-        if self._message and time.perf_counter() - self._message[1] < MESSAGE_SECONDS:
-            status.append((self._message[0], ACCENT))
-        self.hud.draw_block(self.screen, status, "top-right")
-        if self.show_help:
-            self.hud.draw_block(self.screen, [(text, TEXT_DIM) for text in HELP], "bottom-left")
+            state.append(("PAUSA", ui.ORANGE))
+        if not self.show_help:
+            state.append(("H: ayuda", ui.STONE_LIGHT))
+        width = max(ui.measure(text) for text, _ in state) + 10
+        height = 5 + 9 * len(state)
+        x = 320 - 3 - width
+        ui.plate(canvas, (x, top, width, height), ui.SLATE)
+        for i, (text, ink) in enumerate(state):
+            ui.text(canvas, text, x + 5, top + 4 + 9 * i, ink)
+
+    def _message_toast(self, canvas: pygame.Surface) -> None:
+        """The last time-trial message, as a plate near the bottom."""
+        if not self._message or time.perf_counter() - self._message[1] >= MESSAGE_SECONDS:
+            return
+        text = ui.ellipsize(self._message[0], 230)
+        w = ui.measure(text) + 10
+        x = (320 - w) // 2
+        ui.plate(canvas, (x, 158, w, 13), ui.NAVY)
+        ui.text(canvas, text, 160, 161, ui.YELLOW, align="center")
 
     def save_screenshot(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

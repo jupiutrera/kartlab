@@ -103,7 +103,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--frames", type=int, default=600)
     parser.add_argument("--light", action="store_true", help="modo ligero")
     parser.add_argument(
-        "--drift", action="store_true", help="el kart principal barre y da impulso en bucle"
+        "--drift", action="store_true", help="el kart principal hace derrape y turbo en bucle"
     )
     args = parser.parse_args(argv)
     pygame.display.init()

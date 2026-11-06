@@ -10,6 +10,7 @@ from kartlab.show.charts import MetricsReader, RewardChart
 from kartlab.show.drivers import PolicyDriver, Version, format_steps
 from kartlab.show.live import LiveApp
 from kartlab.sim.showcase import showcase_track
+from kartlab.sim.trackfile import load_track_file
 from kartlab.train.config import PPOParams, TrainConfig
 
 
@@ -62,8 +63,8 @@ def test_metrics_reader_skips_a_half_written_line(tmp_path):
 
 
 def test_reward_chart_is_cached_until_data_changes():
-    pygame.font.init()
-    chart = RewardChart((300, 160), pygame.font.Font(None, 16))
+    pygame.init()
+    chart = RewardChart((90, 54))
     rows = [{"steps": 4096.0 * k, "reward_mean": float(k)} for k in range(1, 5)]
     first = chart.draw(rows, 1, marker=8192)
     key = chart._key
@@ -151,3 +152,104 @@ def test_live_viewer_rejects_an_invalid_track_file(tiny_run, tmp_path):
     with pytest.raises(SystemExit) as exit_info:
         main(["--run", str(tiny_run.root), "--track-file", str(bad), "--frames", "1"])
     assert "Circuito no válido" in str(exit_info.value)
+
+
+def _palette_only(surface):
+    from kartlab.render.palette import game_palette
+
+    palette = {tuple(int(c) for c in row) for row in game_palette().rgb}
+    pixels = pygame.surfarray.array3d(surface).reshape(-1, 3)
+    return {tuple(int(c) for c in p) for p in np.unique(pixels, axis=0)} <= palette
+
+
+def test_the_live_top_down_view_is_a_320_by_180_canvas_of_palette_inks(tiny_run):
+    app = LiveApp(
+        tiny_run, track_choice="harbor", ghosts=2, scale=2, realtime=False, view="topdown"
+    )
+    try:
+        app.preload_ghosts()
+        app.loader.poll_once()
+        app.run(max_frames=60)
+        assert app.canvas.get_size() == (320, 180)
+        assert app.view_rect.width + app.panel_rect.width == 320
+        assert _palette_only(app.canvas)
+        app.handle_key(pygame.K_b)  # with the brain panel too
+        app.run(max_frames=30)
+        assert _palette_only(app.canvas)
+        assert app.screen.get_size() == (640, 360)
+    finally:
+        pygame.quit()
+
+
+def test_the_live_3d_view_puts_the_chart_on_the_world_grid(tiny_run):
+    from kartlab.render import pixelui as ui
+
+    app = LiveApp(tiny_run, track_choice="harbor", ghosts=0, scale=2, realtime=False)
+    try:
+        app.loader.poll_once()
+        app.run(max_frames=30)
+        assert "interfaz" in app.game.timings
+        world = app.game.world.world
+        assert _palette_only(world)  # no ghosts: no additive halos
+        w, h = app.chart3d.size
+        x, y = 320 - w - 4, (180 - h) // 2
+        assert world.get_at((x, y))[:3] == ui.rgb(ui.NIGHT)  # the plate's border
+        assert world.get_at((x + 1, y + 1))[:3] == ui.rgb(ui.SLATE)
+    finally:
+        pygame.quit()
+
+
+def test_the_live_viewer_waits_for_the_first_checkpoint_on_the_canvas(tiny_run, tmp_path):
+    from kartlab.train.run import RunPaths
+
+    paths = RunPaths(tmp_path / "run")  # a run that has no checkpoint yet
+    paths.root.mkdir()
+    shutil.copy(tiny_run.config, paths.config)
+    app = LiveApp(paths, track_choice="harbor", ghosts=0, scale=2, realtime=False)
+    try:
+        app.run(max_frames=3)
+        assert app.current is None and _palette_only(app.canvas)
+        app.handle_key(pygame.K_t)
+        app.run(max_frames=3)
+        assert _palette_only(app.canvas)
+    finally:
+        pygame.quit()
+
+
+def test_the_live_top_down_view_passes_the_road_height_so_a_tunnel_hides_its_karts(tiny_run):
+    app = LiveApp(
+        tiny_run,
+        track_choice="harbor",
+        ghosts=1,
+        scale=2,
+        realtime=False,
+        view="topdown",
+        track=load_track_file("tracks/ocho_puente.json"),
+    )
+    try:
+        app.preload_ghosts()
+        app.loader.poll_once()
+        app.run(max_frames=5)
+        seen = []
+        original = app.view.draw
+        app.view.draw = lambda target, karts, *a, **k: (
+            seen.append(list(karts)),
+            original(target, karts, *a, **k),
+        )
+        app.run(max_frames=2)
+        assert seen and all(len(kart) == 5 for karts in seen for kart in karts)
+        assert all(kart[4] == 0.0 for kart in seen[-1])  # on the ground here, not on the deck
+    finally:
+        pygame.quit()
+
+
+def test_the_live_notice_does_not_cover_the_chart_the_brain_or_the_model_panel(tiny_run):
+    app = LiveApp(tiny_run, track_choice="harbor", ghosts=0, scale=2, realtime=False, brain=True)
+    try:
+        app.loader.poll_once()
+        app.run(max_frames=40)  # "Nueva versión" is up
+        hud = app.game.hud
+        assert hud.notice_rect is not None and len(hud.reserved) >= 5
+        assert not [r for r in hud.reserved if r.colliderect(hud.notice_rect)]
+    finally:
+        pygame.quit()

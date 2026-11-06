@@ -65,3 +65,34 @@ def set_window_mode(scale: int | None = None, fullscreen: bool = False) -> pygam
         return pygame.display.set_mode(desktop_size(), pygame.FULLSCREEN)
     k = scale or pick_scale(desktop_size())
     return pygame.display.set_mode((WORLD_SIZE[0] * k, WORLD_SIZE[1] * k))
+
+
+def fit_rect(window: tuple[int, int], base: tuple[int, int] = WORLD_SIZE) -> pygame.Rect:
+    """Where the 320x180 canvas goes in a window: the largest integer scale that fits,
+    centred (black bars around it)."""
+    k = max(1, min(window[0] // base[0], window[1] // base[1]))
+    w, h = base[0] * k, base[1] * k
+    return pygame.Rect((window[0] - w) // 2, (window[1] - h) // 2, w, h)
+
+
+def present(canvas: pygame.Surface, screen: pygame.Surface) -> pygame.Rect:
+    """Magnify a 320x180 canvas into the window by an integer factor, without smoothing.
+    Returns the rectangle it covers."""
+    rect = fit_rect(screen.get_size(), canvas.get_size())
+    if rect.size != screen.get_size():
+        screen.fill((0, 0, 0))
+    target = screen.subsurface(rect)
+    if rect.size == canvas.get_size():
+        target.blit(canvas, (0, 0))
+    else:
+        pygame.transform.scale(canvas, rect.size, target)
+    return rect
+
+
+def to_logical(
+    pos: tuple[int, int], window: tuple[int, int], base: tuple[int, int] = WORLD_SIZE
+) -> tuple[int, int]:
+    """The canvas pixel under a window position (it may lie outside the canvas)."""
+    rect = fit_rect(window, base)
+    k = max(1, rect.w // base[0])
+    return (pos[0] - rect.x) // k, (pos[1] - rect.y) // k

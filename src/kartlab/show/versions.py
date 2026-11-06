@@ -32,7 +32,7 @@ def pick_checkpoints(
     """The checkpoints closest (on a log scale) to each target, plus the final one."""
     available = run.list_checkpoints()
     if not available:
-        raise SystemExit(f"{run.root} no tiene checkpoints")
+        raise SystemExit(f"{run.root} no tiene versiones guardadas")
     picks: dict[int, Checkpoint] = {}
     final = available[-1]
     for target in targets:
@@ -166,7 +166,7 @@ class VersionLibrary:
             steps = self.checkpoints[-1].steps  # no best model: the latest version
         checkpoint = self.checkpoint(steps)
         if checkpoint is None:
-            raise FileNotFoundError(f"no existe el checkpoint de {steps} pasos")
+            raise FileNotFoundError(f"no existe la versión de {steps} pasos")
         self._check_stats(checkpoint.vecnormalize, version_name(checkpoint.steps))
         return load_version(checkpoint)
 
@@ -175,9 +175,7 @@ class VersionLibrary:
         default: they are already in [-1, 1] and only rewards are normalised); if the run did
         normalise them, the policy would see wrong inputs, so say so."""
         if self.normalize_obs and not path.exists():
-            self.notices.append(
-                f"Falta {path.name}: {name} se verá con observaciones sin normalizar"
-            )
+            self.notices.append(f"{name} no tiene sus datos de normalización")
 
     def cached(self, steps: int) -> Version | None:
         return self._cache.get(steps)
