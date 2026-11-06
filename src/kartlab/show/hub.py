@@ -619,6 +619,7 @@ class KartLabApp:
             self.message(error.title, error.text)
         except Exception as error:
             traceback.print_exc()
+            self.restore_window()  # the activity may have failed with its own window open
             self.message("Algo ha fallado", f"{type(error).__name__}: {error}")
 
     def open_live(self, run) -> None:

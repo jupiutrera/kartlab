@@ -760,3 +760,19 @@ def test_drive_uses_the_chosen_colour_in_both_views(tmp_path):
     assert out.stat().st_size > 0
     with pytest.raises(SystemExit, match="Color de kart"):
         drive_main(["--color", "verde", "--frames", "1"])
+
+
+def test_an_activity_that_fails_shows_a_message_and_the_menu_keeps_working(make_hub, capsys):
+    def broken(hub, choices):
+        raise RuntimeError("se ha roto")
+
+    entry = Entry("rota", "Rota", "Falla al abrirse", "JUGAR", ("track",), broken)
+    app = make_hub(entries=[entry, *ENTRIES])
+    select(app, "rota")
+    key(app, pygame.K_RETURN)
+    key(app, pygame.K_RETURN)
+    app.run(2)
+    assert app.dialog is not None and app.dialog.title == "Algo ha fallado"
+    assert "se ha roto" in app.dialog.text
+    assert app.current is app.main_screen and app.screen.get_size() == (640, 360)
+    capsys.readouterr()  # the traceback went to stderr, not to the player

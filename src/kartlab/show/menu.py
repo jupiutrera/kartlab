@@ -350,7 +350,7 @@ class MenuScreen(Screen):
             self.rects[index] = rect
             y += self.row_h
         self.list_bottom = y
-        self.desc_y = h - round(u * 5.4)
+        self.desc_y = h - round(u * 6.0)
         self._chip = ui.panel(self.width, self.row_h - max(u // 8, 2), 175)
         sel = pygame.Surface(self._chip.get_size(), pygame.SRCALPHA)
         sel.fill((*ACCENT, 255))
@@ -458,7 +458,7 @@ class MenuScreen(Screen):
         if not status:
             return
         surface = ui.mono.get(status, ACCENT)
-        y = self.desc_y + surface.get_height() * 2 + ui.unit
+        y = self.desc_y + round(ui.unit * 2.5)  # under the description box
         screen.blit(surface, ((ui.size[0] - surface.get_width()) // 2, y))
 
 
