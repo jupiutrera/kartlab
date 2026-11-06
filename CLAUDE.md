@@ -14,16 +14,17 @@ uv run ruff check --fix              # lint
 uv run ruff format                   # formato
 uv run pre-commit run --all-files    # todos los hooks
 uv add <paquete>                     # dependencia (uv add --dev para desarrollo)
-uv run python scripts/drive.py       # conducir a mano (vista cenital)
+uv run python scripts/drive.py       # conducir a mano (3D; --view topdown para la cenital; Mayús = barrido)
 uv run python scripts/drive.py --time-trial   # contrarreloj: récord y fantasma (K y F en el juego)
 uv run python scripts/track_gallery.py --showcase --out galeria.png
 uv run python scripts/benchmark_env.py   # pasos/s: 1 entorno y DummyVecEnv/SubprocVecEnv
 uv run python scripts/benchmark_train.py # pasos/s entrenando con PPO
 uv run python scripts/train.py configs/fixed_track.yaml   # entrenar (runs/<fecha>_<nombre>/)
-uv run python scripts/live.py            # visor en directo del último run
-uv run python scripts/viewer.py          # visor de exhibición: título y modos ver, carrera y progresión
+uv run python scripts/live.py            # visor en directo del último run (--brain, --rays, --track-file)
+uv run python scripts/viewer.py          # visor de exhibición: título y modos ver, carrera y progresión (--brain, B)
 uv run python scripts/make_video.py progression|race|demo --run runs/<run> --out videos/x.mp4   # vídeos 1080p60
 uv run python scripts/evaluate.py --tracks 20   # 3 vueltas en los circuitos reservados
+uv run python scripts/benchmark_render.py   # ms de cada parte del render (--drift, --light)
 uv run python scripts/evaluate.py --track-file tracks/ejemplo.json   # un circuito propio (se valida antes)
 uv run python scripts/track_file.py validate tracks/ejemplo.json     # validar / exportar (export --seed N)
 uv run python scripts/editor.py tracks/ejemplo.json   # editor de circuitos con ratón (--new para uno nuevo)
@@ -34,11 +35,12 @@ Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames
 ## Estructura
 
 - `src/kartlab/common/`: utilidades sin dependencias de otras capas (config YAML, semillas, ficheros UTF-8, escritura atómica).
-- `src/kartlab/sim/`: simulación 2D cenital, circuitos y física. Solo numpy.
+- `src/kartlab/sim/`: simulación 2D cenital, circuitos y física. Solo numpy. Además: barrido (`drift.py`), contrarreloj (`timetrial.py`), `PHYSICS_VERSION` (`version.py`), circuitos en JSON (`trackfile.py`, `trackissues.py`, `trackcli.py`).
 - `src/kartlab/env/`: entorno Gymnasium sobre `sim`.
 - `src/kartlab/train/`: PPO, entornos vectorizados, checkpoints, evaluación y métricas.
 - `src/kartlab/render/`: render pseudo-3D que lee el estado de `sim`. numpy + pygame-ce.
-- `src/kartlab/show/`: visor de exhibición (`viewer.py`, `scenes.py`, `title.py`), visor en directo (`live.py`), conductores de políticas (`drivers.py`), versiones cargadas en segundo plano (`versions.py`), paneles compartidos (`overlays.py`), curvas (`charts.py`) y vídeos (`video.py`).
+- `src/kartlab/show/`: conducción a mano (`drive.py`), visor de exhibición (`viewer.py`, `scenes.py`, `title.py`), vista cerebro (`brain.py`), visor en directo (`live.py`), editor de circuitos (`editor.py`), conductores de políticas (`drivers.py`), versiones cargadas en segundo plano (`versions.py`), paneles compartidos (`overlays.py`), curvas (`charts.py`), argumentos de línea de comandos (`cli.py`) y vídeos (`video.py`).
+- `tracks/`: circuitos en JSON (`ejemplo.json`, `ocho.json`). `records/` (ignorado por git): récords de la contrarreloj.
 - `scripts/`: lanzadores finos con `if __name__ == "__main__"`; la lógica va en el paquete.
 - `configs/`: YAML de entrenamiento. `assets/`: fuentes OFL y paleta.
 - `docs/assets.md`: procedencia y licencia de cada recurso. `docs/experimentos.md`: registro de entrenamientos.
