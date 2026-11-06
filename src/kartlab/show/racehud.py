@@ -70,6 +70,16 @@ class RaceHud:
     def game(self) -> GameView:
         return self.ov.game
 
+    def _clear_of_panels(self, x: int, y: int, w: int, h: int) -> int:
+        """``x`` nudged sideways, away from the panel it would touch (the time-trial panel
+        sits at the left of the top bar); it stays where it was if nothing is there."""
+        for _ in range(2):
+            for panel in sorted(self.avoid, key=lambda r: r.x):
+                box = pygame.Rect(x, y, w, h)
+                if box.colliderect(panel):
+                    x = panel.right + 3 if panel.centerx < box.centerx else panel.left - 3 - w
+        return min(max(x, 3), CANVAS_W - 3 - w)
+
     # -- always on ---------------------------------------------------------------------------
 
     def position(self, place: int, total: int, age: float) -> None:
@@ -105,7 +115,8 @@ class RaceHud:
             ui.measure(left[0]) + ui.measure(right[0]), ui.measure(left[1]) + ui.measure(right[1])
         )
         w = width + 20
-        x, y = (CANVAS_W - w) // 2, 3
+        y = 3
+        x = self._clear_of_panels((CANVAS_W - w) // 2, y, w, 21)
         ui.plate(canvas, self._reserve((x, y, w, 21)), ui.SLATE)
         ui.text(canvas, left[0], x + 5, y + 4, ui.YELLOW, tabular=True)
         ui.text(canvas, right[0], x + w - 5, y + 4, ui.WHITE, align="right", tabular=True)

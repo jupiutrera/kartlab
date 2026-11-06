@@ -189,14 +189,17 @@ class Hud:
             if abs(trial.delta) < 0.005:
                 gap_ink = ui.WHITE
             scale = 2
-        w = max(width, ui.measure(gap, scale) + 8, *(ui.measure(t) + 8 for t, _ in lines))
+        # A fixed width: the digits are tabular and the widest time is the template, so the
+        # panel never grows with "0:46,22" (and never reaches the lap bar of the race HUD).
+        template = max(ui.measure(f"{name} 0:00,00", tabular=True) for name in ("RÉCORD", "ÚLTIMA"))
+        w = max(width, ui.measure(gap, scale, True) + 8, template + 8)
         gap_h = 7 * scale
         h = 4 + gap_h + 3 + 2 * 9 + 1
         ui.plate(canvas, self.reserve((x, y, w, h)), ui.SLATE)
         ui.text(canvas, gap, x + 4, y + 4, gap_ink, scale, tabular=scale > 1)
         ty = y + 4 + gap_h + 3
         for text, ink in lines:
-            ui.text(canvas, text, x + 4, ty, ink)
+            ui.text(canvas, text, x + 4, ty, ink, tabular=True)
             ty += 9
 
     def _label_panel(self, canvas, info: HudInfo, right: int, top: int) -> None:

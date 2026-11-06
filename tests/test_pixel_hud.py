@@ -585,3 +585,29 @@ def test_a_long_track_name_is_split_in_lines_in_the_top_down_panel(tmp_path, mon
         pygame.quit()
     assert not any("…" in line for line in seen)
     assert {"LAZO DEL", "MOLINO -", "PUENTE"} <= {line.upper() for line in seen}
+
+
+def test_the_time_trial_panel_has_a_fixed_width_and_never_reaches_the_lap_bar(view):
+    hud = RaceHud(Overlays(view))
+    widths = set()
+    for record, last, delta in (
+        (None, None, None),
+        (46.22, 46.22, -0.42),
+        (71.11, 111.11, 12.34),
+        (60.0, 59.99, 0.0),
+    ):
+        info = HudInfo(
+            lap_panel=False,
+            trial=TrialHud(record=record, last=last, delta=delta),
+        )
+        frame(view, info)
+        trial = view.hud.reserved[0]  # the first panel of the frame is the time-trial one
+        for laps in (1, 3):
+            frame(view, info)
+            hud.lap_counter(laps, 3, "2:19,78", "0:46,22", "0:46,22")
+            panels = view.hud.reserved
+            for i, a in enumerate(panels):
+                for b in panels[i + 1 :]:
+                    assert not a.colliderect(b), (record, last, laps, a, b)
+        widths.add(trial.w)
+    assert len(widths) == 1  # whatever the times, the panel is as wide as always
