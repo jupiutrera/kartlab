@@ -15,6 +15,7 @@ import pygame
 from kartlab.render import bigtext
 from kartlab.render import pixelui as ui
 from kartlab.render.bigtext import AMBER, COOL, GOLD, place_look, pop_extra
+from kartlab.render.hud import free_rect
 from kartlab.render.view import GameView
 
 __all__ = ["AMBER", "GOLD", "RaceHud", "ordinal"]
@@ -34,11 +35,32 @@ class RaceHud:
     def __init__(self, ov, sign_y: int | None = None) -> None:
         self.ov = ov
         self.sign_y = sign_y  # where the countdown and the banners are centred (None: default)
+        self.panels: list[pygame.Rect] = []  # the panels of this frame, if the view has no HUD
+        self._slot: tuple | None = None  # the last placement of the results card
+        self.card: pygame.Rect | None = None  # where the results card was last drawn
+
+    def begin_frame(self) -> None:
+        """Forget the panels of the last frame (only needed without a view HUD, which does it)."""
+        self.panels.clear()
+        self.card = None
 
     def _reserve(self, rect):
-        """Tell the view's HUD that a panel is here (the top-down view has no HUD to tell)."""
+        """Tell the view's HUD that a panel is here; without one (the top-down view), the race
+        HUD keeps the list itself, as do the host's own panels through ``reserve``."""
         hud = getattr(self.ov.game, "hud", None)
-        return hud.reserve(rect) if hud is not None else pygame.Rect(rect)
+        if hud is not None:
+            return hud.reserve(rect)
+        rect = pygame.Rect(rect)
+        self.panels.append(rect)
+        return rect
+
+    reserve = _reserve
+
+    @property
+    def avoid(self) -> list[pygame.Rect]:
+        """The panels that the big lettering and the results card must keep clear of."""
+        hud = getattr(self.ov.game, "hud", None)
+        return hud.reserved if hud is not None else self.panels
 
     @property
     def canvas(self):
@@ -92,15 +114,32 @@ class RaceHud:
 
     # -- events ------------------------------------------------------------------------------
 
-    def countdown(self, frame: int, start_frames: int, fps: int) -> None:
-        """3, 2, 1 in big digits at the centre, then "¡YA!" for a moment."""
-        bigtext.countdown(self.canvas, frame, start_frames, fps, self.sign_y)
+    def countdown(self, frame: int, start_frames: int, fps: int) -> pygame.Rect | None:
+        """3, 2, 1 in big digits at the centre, then "¡YA!" for a moment, clear of the panels."""
+        return bigtext.countdown(self.canvas, frame, start_frames, fps, self.sign_y, self.avoid)
 
-    def banner(self, text: str, age: float, life: float = 2.5, look=AMBER) -> None:
-        """A word across the upper half ("ÚLTIMA VUELTA", "¡META!"): pops in, holds, leaves."""
-        bigtext.banner(self.canvas, text, age, life, look, self.sign_y)
+    def banner(self, text: str, age: float, life: float = 2.5, look=AMBER) -> pygame.Rect | None:
+        """A word across the upper half ("ÚLTIMA VUELTA", "¡META!"): pops in, holds, leaves,
+        clear of the panels."""
+        return bigtext.banner(self.canvas, text, age, life, look, self.sign_y, self.avoid)
 
     # -- results -----------------------------------------------------------------------------
+
+    def _results_spot(self, w: int, h: int) -> tuple[int, int]:
+        """Top-left corner of the results card: centred if no panel is there, else the nearest
+        spot (sideways or up and down) that touches none. It stays put while the card is up."""
+        avoid = [tuple(r) for r in self.avoid]
+        key = (w, h, tuple(avoid))
+        if self._slot is not None and self._slot[0] == key:
+            return self._slot[1]
+        x0, y0 = (CANVAS_W - w) // 2, (CANVAS_H - h) // 2
+        offsets = sorted(
+            ((dx, dy) for dx in range(-96, 97, 8) for dy in range(-72, 97, 4)),
+            key=lambda d: d[0] ** 2 + d[1] ** 2,
+        )
+        rect = free_rect(w, h, [(x0 + dx, y0 + dy) for dx, dy in offsets], self.avoid)
+        self._slot = (key, (rect.x, rect.y))
+        return rect.x, rect.y
 
     def results(
         self,
@@ -136,8 +175,9 @@ class RaceHud:
             if len(cells) == 1 and k and len(rows[k - 1][0]) > 1
         )  # a sentence after the table gets a little air
         h = 8 + top_h + 8 + 9 * len(rows) + 3 * sentences + 6 + 9 + 6
-        x = (CANVAS_W - w) // 2
-        y = (CANVAS_H - h) // 2 + round((1.0 - alpha) * 12)
+        x, y = self._results_spot(w, h)
+        self.card = pygame.Rect(x, y, w, h)
+        y += round((1.0 - alpha) * 12)
         ui.plate(canvas, self._reserve((x, y, w, h)), ui.NAVY)
         canvas.fill(ui.rgb(ui.YELLOW), (x + 1, y + 1, 3, h - 2))
         cx = x + 12

@@ -541,3 +541,26 @@ def test_the_big_lettering_only_shrinks_when_no_room_is_left():
     assert cell < 6 and center[1] - height // 2 >= 120  # it dropped below the panel and shrank
     cell, center = bigtext.place_sign("¡YA!", 6, 0, 0.7, (160, 68), ())
     assert cell == 6 and center == (160, 68)  # with room it stays where it was
+
+
+def test_the_results_card_of_the_top_down_trial_covers_no_panel(trial_app, monkeypatch):
+    app = trial_app()
+    app.run(max_frames=5)
+    pilot = Autopilot(showcase_track("harbor"))
+    monkeypatch.setattr(
+        "kartlab.show.drive.keyboard_controls", lambda pressed: pilot.act(app.racer)
+    )
+    for _ in range(60 * 400):
+        app.physics_step()
+        if app.session.finished:
+            break
+    assert app.session.finished
+    for autopilot in (False, True):  # the right panel is longer with the autopilot label
+        app.autopilot_on = autopilot
+        app.run(max_frames=60 * 4)
+        hud = app.race_hud
+        card = hud.card
+        assert card is not None and pygame.Rect(0, 0, 320, 180).contains(card)
+        others = [p for p in hud.panels if p != card]
+        assert len(others) >= 3  # the two data blocks and the lap bar
+        assert not any(card.colliderect(p) for p in others), (card, others)

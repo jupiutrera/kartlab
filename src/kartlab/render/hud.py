@@ -52,6 +52,21 @@ class Smoothed:
         return self.value
 
 
+def free_rect(w: int, h: int, candidates, reserved) -> pygame.Rect:
+    """The first of the candidate top-left corners where a ``w`` x ``h`` plate fits on the canvas
+    without touching a ``reserved`` rectangle, or the one that covers the least."""
+    screen = pygame.Rect(0, 0, CANVAS_W, CANVAS_H)
+    best, best_area = None, None
+    for x, y in candidates:
+        rect = pygame.Rect(x, y, w, h).clamp(screen)
+        area = sum(r.w * r.h for r in (rect.clip(o) for o in reserved))
+        if area == 0:
+            return rect
+        if best_area is None or area < best_area:
+            best, best_area = rect, area
+    return best if best is not None else pygame.Rect(0, 0, w, h)
+
+
 def format_delta(delta: float) -> str:
     """Gap to the record as ``−0,42`` (ahead) or ``+1,03`` (behind), two decimals."""
     rounded = round(delta, 2)
@@ -89,16 +104,7 @@ class Hud:
     def free_rect(self, w: int, h: int, candidates) -> pygame.Rect:
         """The first of the candidate top-left corners where a ``w`` x ``h`` plate fits
         without touching a reserved panel, or the one that covers the least."""
-        screen = pygame.Rect(0, 0, CANVAS_W, CANVAS_H)
-        best, best_area = None, None
-        for x, y in candidates:
-            rect = pygame.Rect(x, y, w, h).clamp(screen)
-            area = sum(r.w * r.h for r in (rect.clip(o) for o in self.reserved))
-            if area == 0:
-                return rect
-            if best_area is None or area < best_area:
-                best, best_area = rect, area
-        return best if best is not None else pygame.Rect(0, 0, w, h)
+        return free_rect(w, h, candidates, self.reserved)
 
     def notify(self, text: str, now: float) -> None:
         self.notice = (text, now)

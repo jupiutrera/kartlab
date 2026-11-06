@@ -534,19 +534,27 @@ class DriveApp:
             self.hud_trial = self.trial_hud()
         self.view.draw(canvas, karts, self.camera, self.follow, self.trail)
         top = 27 if self.session is not None else 3  # below the lap bar of the race format
-        self._draw_blocks(canvas, top)
-        if self.session is not None:
-            if self.race_hud is None:
-                self.overlays = SimpleNamespace(canvas=canvas, game=None)
-                self.race_hud = RaceHud(self.overlays, sign_y=105)
-            self._draw_session(canvas, self.race_hud)
-        self._message_toast(canvas)
+        if self.session is not None and self.race_hud is None:
+            self.overlays = SimpleNamespace(canvas=canvas, game=None)
+            self.race_hud = RaceHud(self.overlays, sign_y=105)
+        hud = self.race_hud if self.session is not None else None
+        if hud is not None:
+            hud.begin_frame()  # this view has no HUD: the race HUD keeps the panels
+        self._draw_blocks(canvas, top, hud)
+        results_up = False
+        if hud is not None:
+            self._draw_session(canvas, hud)
+            results_up = hud.card is not None
+        if not results_up:  # the results table already says it
+            self._message_toast(canvas)
         if self.show_help:
             self._draw_help(canvas)
         present(canvas, self.screen)
 
-    def _draw_blocks(self, canvas: pygame.Surface, top: int) -> None:
-        """The data of the top-down view: the lap on the left, the state on the right."""
+    def _draw_blocks(self, canvas: pygame.Surface, top: int, hud: RaceHud | None = None) -> None:
+        """The data of the top-down view: the lap on the left, the state on the right. With a
+        race HUD, the panels are reserved on it so that the card and the signs keep clear."""
+        reserve = hud.reserve if hud is not None else pygame.Rect
         racer = self.racer
         rows: list[tuple[str, str, int]] = []
         if self.session is None:
@@ -573,7 +581,7 @@ class DriveApp:
             ]
         w = 84
         h = 5 + 9 * (len(rows) + 1)
-        ui.plate(canvas, (3, top, w, h), ui.SLATE)
+        ui.plate(canvas, reserve((3, top, w, h)), ui.SLATE)
         ui.text(canvas, ui.ellipsize(self.track.name, w - 8), 7, top + 4, ui.WHITE)
         for i, (label, value, ink) in enumerate(rows, start=1):
             ui.text(canvas, label, 7, top + 4 + 9 * i, ui.STONE_LIGHT)
@@ -591,7 +599,7 @@ class DriveApp:
         width = max(ui.measure(text) for text, _ in state) + 10
         height = 5 + 9 * len(state)
         x = 320 - 3 - width
-        ui.plate(canvas, (x, top, width, height), ui.SLATE)
+        ui.plate(canvas, reserve((x, top, width, height)), ui.SLATE)
         for i, (text, ink) in enumerate(state):
             ui.text(canvas, text, x + 5, top + 4 + 9 * i, ink)
 
