@@ -105,3 +105,96 @@ def test_skidding_leaves_marks_on_the_asphalt(track):
 
 def test_fog_colour_is_the_sky_at_the_horizon(world):
     assert FOG_COLOR["day"] == Ink.SKY_LOW
+
+
+# -- the hop ("brinco"): lift, shadow and dust ------------------------------------------------
+
+
+def _kart_rows(world, pose, kart, lift):
+    """Rows (top, bottom) where the orange of the kart body shows in a frame."""
+    world.render(pose, [KartVisual(kart, 0, lift=lift)], 0.0)
+    pixels = world.world_array()
+    orange = (pixels == tuple(game_palette().rgb[Ink.ORANGE])).all(axis=-1)
+    rows = np.flatnonzero(orange.any(axis=1))
+    assert rows.size, "the kart is not in the frame"
+    return rows.min(), rows.max()
+
+
+def test_lift_raises_the_sprite_and_the_shadow_stays_on_the_floor(track):
+    world = WorldRenderer(track, CHASE)
+    kart = KartState(*track.pose_at(100.0))
+    camera = ChaseCamera()
+    for _ in range(60):
+        pose = camera.update(kart, DT)
+    ground_top, ground_bottom = _kart_rows(world, pose, kart, 0.0)
+    air_top, air_bottom = _kart_rows(world, pose, kart, 0.5)
+    assert air_top < ground_top - 2 and air_bottom < ground_bottom - 2  # it rises
+    # The shadow is blitted at the same place in both frames, but smaller and fainter up there.
+    calls = []
+    real = world.sprites.shadow
+
+    def spy(width, faint=False):
+        calls.append((width, faint))
+        return real(width, faint)
+
+    world.sprites.shadow = spy
+    world.render(pose, [KartVisual(kart, 0)], 0.0)
+    world.render(pose, [KartVisual(kart, 0, lift=0.5)], 0.0)
+    (ground_width, ground_faint), (air_width, air_faint) = calls
+    assert not ground_faint and air_faint and air_width < ground_width
+    _, sy, _ = world.projection.project(pose, kart.x, kart.y)
+    black = tuple(game_palette().rgb[Ink.BLACK])
+    band = world.world_array()[int(sy) - 1 : int(sy) + 2]
+    empty = WorldRenderer(track, CHASE)
+    empty.render(pose, [], 0.0)
+    bare = empty.world_array()[int(sy) - 1 : int(sy) + 2]
+    assert (band == black).all(axis=-1).sum() > (bare == black).all(axis=-1).sum()  # shadow there
+
+
+def test_lift_zero_is_the_frame_of_always(track):
+    kart = KartState(*track.pose_at(100.0))
+    pose = CameraPose(kart.x - 6.0, kart.y, 0.0)
+    world = WorldRenderer(track, CHASE)
+    plain = b""
+    for _ in range(20):  # the sprite cache fills within a time budget: wait for a stable frame
+        world.render(pose, [KartVisual(kart, 0)], 0.0)
+        frame = pygame.image.tobytes(world.world, "RGB")
+        if frame == plain:
+            break
+        plain = frame
+    else:
+        raise AssertionError("the frame never settled")
+    world.render(pose, [KartVisual(kart, 0, lift=0.0)], 0.0)
+    assert pygame.image.tobytes(world.world, "RGB") == plain
+
+
+@pytest.mark.parametrize("grass", [False, True])
+def test_landing_puffs_dust_once(track, grass):
+    from kartlab.sim.drift import DriftState
+
+    world = WorldRenderer(track, CHASE)
+    kart = KartState(*track.pose_at(100.0))
+    drift = DriftState()
+    visual = KartVisual(kart, 0, on_grass=grass, drift=drift)
+    ink = Ink.BROWN if grass else Ink.MIST
+    world.update_effects([visual], DT)
+    assert not [p for p in world.particles.items if p[7] == ink]  # nothing without a landing
+    drift.land_id += 1
+    world.update_effects([visual], DT)
+    assert len([p for p in world.particles.items if p[7] == ink]) == 6
+    world.update_effects([visual], DT)  # the same landing does not puff again
+    assert len([p for p in world.particles.items if p[7] == ink]) == 6
+
+
+def test_a_kart_in_the_air_leaves_no_marks(track):
+    world = WorldRenderer(track, CHASE)
+    x, y, heading = track.pose_at(400.0)
+    kart = KartState(x, y, heading, vx=-math.sin(heading) * 5, vy=math.cos(heading) * 5)
+    world.update_effects([KartVisual(kart, lift=0.3)], DT)
+    rear_x, rear_y = x - math.cos(heading) * 0.7, y - math.sin(heading) * 0.7
+    marks = [
+        world.texture.sample(rear_x + dx, rear_y + dy)
+        for dx in (-0.6, 0, 0.6)
+        for dy in (-0.6, 0, 0.6)
+    ]
+    assert Ink.ASPHALT_DARK not in marks

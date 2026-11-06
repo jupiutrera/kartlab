@@ -33,10 +33,10 @@ from kartlab.sim.tracksets import eval_track
 from kartlab.sim.version import PHYSICS_VERSION
 
 # Pinned state of the physics fingerprint below (see sim/version.py).
-PINNED_PHYSICS_VERSION = 1
+PINNED_PHYSICS_VERSION = 2
 PINNED_FINGERPRINT = {
     "plain": (46.65317995, 80.2135172412, 1.5081925968, 0.4222852541, 9.677378705),
-    "drift": (18.5753618667, 71.8692185505, 1.8487398, -2.8331828527, 9.2591821099),
+    "drift": (8.9888343022, 65.9326555364, 1.9647678947, -3.8852253556, 8.867036808),
 }
 
 

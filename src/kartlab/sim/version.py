@@ -11,4 +11,4 @@ else. ``tests/test_time_trial.py::test_physics_fingerprint`` fails when the phys
 changes without a bump: update the version and its pinned numbers together.
 """
 
-PHYSICS_VERSION = 1
+PHYSICS_VERSION = 2

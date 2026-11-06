@@ -58,7 +58,8 @@ SHOWCASE_KEYS = {pygame.K_1: "harbor", pygame.K_2: "canyon", pygame.K_3: "platea
 HELP = (
     "Flechas o WASD: conducir · R: reiniciar · 1-3: escaparate · E: evaluación · N: aleatorio",
     "C: cámara · V: día/atardecer/noche · G: sensores · T: vista cenital · Tab: piloto",
-    "Mayús: barrido (deslizamiento): mantén con el volante girado y suelta para el impulso",
+    "Mayús: brinco; aterriza con el volante girado y Mayús pulsado para barrer",
+    "Suelta Mayús para el impulso: cuanto más largo el barrido, más impulso",
     "K: contrarreloj (récord y fantasma) · F: fantasma",
     "P: pausa · F3: diagnóstico · L: modo ligero · F11: pantalla completa · H: ayuda · Esc: salir",
 )
@@ -340,6 +341,7 @@ class DriveApp:
             on_grass=racer.on_grass,
             throttle=self.controls[1],
             drift=None if self.autopilot_on else self.drift,
+            lift=0.0 if self.autopilot_on else self.drift.lift,
         )
         visuals = [visual]
         self.ghost_visual = self.hud_trial = None
@@ -398,7 +400,7 @@ class DriveApp:
 
     def draw_topdown(self) -> None:
         racer = self.racer
-        karts = [(racer.kart, KART_COLOR)]
+        karts = [(racer.kart, KART_COLOR, 0.0 if self.autopilot_on else self.drift.lift)]
         self.ghost_visual = self.hud_trial = None
         if self.trial is not None:
             ghost = self.ghost_state()

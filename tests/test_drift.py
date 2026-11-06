@@ -1,4 +1,5 @@
-"""The manual sweep ("barrido"): the plain physics must stay bit-for-bit the same."""
+"""The manual sweep ("barrido") and hop ("brinco"): the plain physics must stay bit-for-bit
+the same."""
 
 from __future__ import annotations
 
@@ -9,9 +10,12 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from kartlab.sim.autopilot import Autopilot
 from kartlab.sim.drift import (
     DEFAULT_DRIFT,
+    DriftParams,
     DriftState,
+    _sweep_params,
     charge_for,
     kart_params,
     push_for,
@@ -150,6 +154,37 @@ def hold_state() -> DriftState:
     return DriftState(hold=True)
 
 
+NO_HOP = replace(DEFAULT_DRIFT, hop_time=0.0)  # the sweep as it was before the hop existed
+BEFORE_THE_HOP = DriftParams(  # the turbo as it was: charges at once, fills in 1.5 s
+    charge_delay=0.0, full_time=1.5, boost_time=1.3, hop_time=0.0
+)
+
+
+def hop_and_land(
+    drift: DriftState,
+    state: KartState,
+    steer: float = 1.0,
+    throttle: float = 1.0,
+    grass: bool = False,
+) -> int:
+    """Step until the hop that the first step starts is over (the landing step included)."""
+    steps = 0
+    while True:
+        step_kart(state, steer, throttle, grass, P, drift=drift)
+        steps += 1
+        if not drift.airborne:
+            return steps
+        assert steps < 100
+
+
+def sweeping(speed: float = 20.0, steer: float = 1.0) -> tuple[DriftState, KartState]:
+    """A kart that pressed the button, hopped, landed with the wheel turned and is sweeping."""
+    drift, state = hold_state(), moving(speed)
+    hop_and_land(drift, state, steer)
+    step_kart(state, steer, 1.0, False, P, drift=drift)
+    return drift, state
+
+
 @pytest.mark.parametrize(
     "speed, steer, grass",
     [
@@ -163,13 +198,17 @@ def hold_state() -> DriftState:
 )
 def test_no_entry_without_speed_steering_or_asphalt(speed, steer, grass):
     drift, state = hold_state(), moving(speed)
-    step_kart(state, steer, 1.0, grass, P, drift=drift)
-    assert not drift.active and drift.time == 0.0 and drift.direction == 0.0
+    hop_and_land(drift, state, steer, throttle=0.0, grass=grass)  # no throttle: speed stays low
+    for _ in range(30):  # the whole landing window and beyond
+        step_kart(state, steer, 0.0, grass, P, drift=drift)
+        assert not drift.active and drift.time == 0.0 and drift.direction == 0.0
 
 
 def test_entry_fixes_the_direction_and_starts_charging():
     for steer, direction in ((1.0, 1.0), (-0.6, -1.0)):
         drift, state = hold_state(), moving(15.0)
+        hop_and_land(drift, state, steer)
+        assert not drift.active  # the landing step itself is still the hop
         step_kart(state, steer, 1.0, False, P, drift=drift)
         assert drift.active and drift.direction == direction
         assert drift.time == pytest.approx(DT)
@@ -184,21 +223,30 @@ def test_without_the_button_nothing_happens():
     assert not drift.active and drift.time == 0.0
 
 
-def test_holding_the_button_from_the_start_works_but_ends_arm_until_release():
+def test_a_press_without_the_wheel_gives_no_sweep_until_the_button_is_released():
     drift, state = hold_state(), moving(20.0)
-    step_kart(state, 0.0, 1.0, False, P, drift=drift)  # straight: no entry yet
-    assert not drift.active
-    step_kart(state, 1.0, 1.0, False, P, drift=drift)  # steering with the button down
-    assert drift.active
-    step_kart(state, 1.0, 1.0, True, P, drift=drift)  # grass ends it
-    assert not drift.active
-    step_kart(state, 1.0, 1.0, False, P, drift=drift)  # still held: no instant re-entry
+    hop_and_land(drift, state, 0.0)  # straight hop
+    for _ in range(round(DEFAULT_DRIFT.land_grace / DT) + 5):  # the landing window passes
+        step_kart(state, 0.0, 1.0, False, P, drift=drift)
+    assert not drift.active and not drift.armed
+    step_kart(state, 1.0, 1.0, False, P, drift=drift)  # steering late, button still down
     assert not drift.active
     drift.hold = False
-    step_kart(state, 1.0, 1.0, False, P, drift=drift)
+    step_kart(state, 1.0, 1.0, False, P, drift=drift)  # released: armed again
+    assert drift.armed
     drift.hold = True
+    hop_and_land(drift, state, 1.0)  # a new press hops again and, with the wheel, sweeps
     step_kart(state, 1.0, 1.0, False, P, drift=drift)
     assert drift.active
+
+
+def test_the_sweep_ended_on_grass_waits_for_a_new_press():
+    drift, state = sweeping()
+    step_kart(state, 1.0, 1.0, True, P, drift=drift)  # grass ends it
+    assert not drift.active and not drift.armed
+    for _ in range(40):  # still held: no instant re-entry, no new hop
+        step_kart(state, 1.0, 1.0, False, P, drift=drift)
+        assert not drift.active and not drift.airborne
 
 
 def test_the_sweep_ends_on_grass_or_when_too_slow_and_gives_no_push():
@@ -236,9 +284,11 @@ def test_remapped_steering_tightens_into_the_sweep_and_widens_against_it():
 
 
 def release_after(seconds: float, speed: float = 22.0) -> tuple[DriftState, KartState]:
-    drift, state = hold_state(), moving(speed)
-    for _ in range(round(seconds / DT)):
+    """Hop, sweep for ``seconds`` (the time swept, the hop not included) and release."""
+    drift, state = sweeping(speed)
+    for _ in range(round(seconds / DT) - 1):
         step_kart(state, 1.0, 1.0, False, P, drift=drift)
+    assert drift.time == pytest.approx(seconds)
     drift.hold = False
     step_kart(state, 0.0, 1.0, False, P, drift=drift)
     return drift, state
@@ -253,13 +303,24 @@ def test_push_is_monotonic_in_the_time_swept_and_capped():
     assert speeds[0] == lengths[0] == 0.0
     assert max(speeds) == DEFAULT_DRIFT.boost_speed and max(lengths) == DEFAULT_DRIFT.boost_time
     assert speeds[-1] == speeds[-5]  # saturated
-    assert charge_for(DEFAULT_DRIFT.full_time / 2) == pytest.approx(0.5)  # proportional
-    assert charge_for(0.3) == pytest.approx(2 * charge_for(0.15))
+    delay, full = DEFAULT_DRIFT.charge_delay, DEFAULT_DRIFT.full_time
+    assert charge_for(delay + (full - delay) / 2) == pytest.approx(0.5)  # linear after the delay
+    assert charge_for(delay + 0.5) * 2 == pytest.approx(charge_for(delay + 1.0))
+
+
+def test_the_charge_has_a_short_dead_zone_and_a_continuous_ramp():
+    # (time swept, charge): the table of the design, with the new slower turbo.
+    for seconds, charge in ((0.0, 0.0), (0.2, 0.0), (1.0, 0.36), (1.5, 0.59), (2.0, 0.82)):
+        assert charge_for(seconds) == pytest.approx(charge, abs=0.01)
+    assert charge_for(2.4) == 1.0 and charge_for(5.0) == 1.0
+    steps = [charge_for(t / 60) for t in range(0, 200)]
+    assert all(b - a < 0.01 for a, b in zip(steps, steps[1:], strict=False))  # no jumps
+    assert push_for(0.15) == (0.0, 0.0)  # a touch gives no push at all
 
 
 def test_released_sweeps_gain_more_speed_the_longer_they_lasted():
     peaks = []
-    for seconds in (0.3, 0.6, 0.9, 1.2, 1.5, 2.5):
+    for seconds in (0.6, 1.0, 1.5, 2.0, 2.4, 3.5):
         drift, state = release_after(seconds)
         assert drift.pushing
         peak = state.forward_speed
@@ -268,7 +329,7 @@ def test_released_sweeps_gain_more_speed_the_longer_they_lasted():
             peak = max(peak, state.forward_speed)
         peaks.append(peak)
     assert all(a < b for a, b in zip(peaks[:5], peaks[1:5], strict=False))
-    assert peaks[5] == pytest.approx(peaks[4], abs=0.5)  # capped
+    assert peaks[5] == pytest.approx(peaks[4], abs=0.5)  # capped from 2.4 s on
     assert peaks[5] <= P.max_speed + DEFAULT_DRIFT.boost_speed + 1.0
 
 
@@ -343,6 +404,241 @@ def test_a_racer_drives_a_corner_with_the_sweep():
     assert math.isfinite(racer.kart.x) and racer.progress.distance > 100.0
 
 
+# -- the hop ("brinco") ---------------------------------------------------------------------
+
+
+def hop_trace(speed: float = 22.0, steer: float = 0.0, throttle: float = 1.0, grass: bool = False):
+    """Press the button on the ground and record (height, horizontal speed) until landing."""
+    drift, state = hold_state(), moving(speed)
+    heights, speeds = [], []
+    while True:
+        step_kart(state, steer, throttle, grass, P, drift=drift)
+        heights.append(drift.height)
+        speeds.append(math.hypot(state.vx, state.vy))
+        if not drift.airborne:
+            return drift, state, heights, speeds
+        assert len(heights) < 100
+
+
+def test_the_hop_lasts_hop_time_and_peaks_at_hop_height():
+    _, _, heights, _ = hop_trace()
+    cfg = DEFAULT_DRIFT
+    in_the_air = sum(1 for h in heights if h > 0.0)
+    assert abs(in_the_air * DT - cfg.hop_time) <= DT + 1e-9  # hop_time ± one step
+    assert max(heights) == pytest.approx(cfg.hop_height, rel=0.02)
+    peak = int(np.argmax(heights))
+    assert abs(peak - len(heights) / 2) <= 1  # the top is halfway
+    assert heights[-1] == 0.0 and all(h >= 0.0 for h in heights)
+
+
+def test_in_the_air_the_speed_is_kept_and_the_throttle_does_nothing():
+    _, full, _, speeds = hop_trace(22.0, 0.0, 1.0)
+    _, none, _, coasting = hop_trace(22.0, 0.0, 0.0)
+    _, braked, _, braking = hop_trace(22.0, 0.0, -1.0)
+    assert min(speeds) >= 22.0 * 0.99  # kept to within 1 %
+    assert speeds == coasting == braking  # neither throttle nor brake reaches the road
+    assert full.vx == none.vx == braked.vx
+
+
+def test_the_nose_turns_a_little_in_the_air_but_the_path_does_not():
+    drift, state, _, _ = hop_trace(22.0, 1.0)
+    assert 0.0 < state.heading <= DEFAULT_DRIFT.hop_yaw_max + 1e-9  # capped at 0.35 rad
+    assert drift.hop_turned == pytest.approx(DEFAULT_DRIFT.hop_yaw_max)
+    assert state.vy == 0.0 and state.vx > 0.0  # the velocity points where it did
+    _, half, _, _ = hop_trace(22.0, 0.25)
+    assert 0.0 < half.heading < state.heading  # less wheel, less turn
+    _, right, _, _ = hop_trace(22.0, -1.0)
+    assert right.heading == pytest.approx(-state.heading)
+
+
+def test_the_hop_starts_only_on_a_press_on_the_ground_without_a_sweep():
+    drift, state = DriftState(hold=True, was_hold=True), moving(22.0)  # held since before
+    step_kart(state, 0.0, 1.0, False, P, drift=drift)
+    assert not drift.airborne
+    drift.hold = False
+    step_kart(state, 0.0, 1.0, False, P, drift=drift)
+    drift.hold = True
+    step_kart(state, 0.0, 1.0, False, P, drift=drift)  # a press: up it goes
+    assert drift.airborne and drift.height > 0.0
+    drift.hold = False
+    step_kart(state, 0.0, 1.0, False, P, drift=drift)
+    drift.hold = True
+    land_id = drift.land_id
+    step_kart(state, 0.0, 1.0, False, P, drift=drift)  # pressing in the air does not re-hop
+    left = drift.hop_left
+    assert drift.airborne and left < DEFAULT_DRIFT.hop_time
+    while drift.airborne:
+        step_kart(state, 0.0, 1.0, False, P, drift=drift)
+    assert drift.land_id == land_id + 1 and drift.height == 0.0
+    sweep, moving_kart = sweeping()  # no hop while sweeping, even with a new "press"
+    sweep.was_hold = False
+    step_kart(moving_kart, 1.0, 1.0, False, P, drift=sweep)
+    assert sweep.active and not sweep.airborne
+
+
+def test_there_is_no_speed_threshold_for_the_hop():
+    drift, state = hold_state(), moving(0.0)
+    step_kart(state, 0.0, 0.0, False, P, drift=drift)
+    assert drift.airborne
+    while drift.airborne:
+        step_kart(state, 0.0, 0.0, False, P, drift=drift)
+    for _ in range(30):  # but at a standstill there is nothing to sweep with
+        step_kart(state, 1.0, 0.0, False, P, drift=drift)
+        assert not drift.active
+
+
+def test_landing_with_the_wheel_turned_starts_a_sweep_that_slides():
+    drift, state = hold_state(), moving(22.0)
+    hop_and_land(drift, state, 1.0)
+    assert abs(state.lateral_speed) > 1.0  # the nose turned, the path did not: it slides
+    step_kart(state, 1.0, 1.0, False, P, drift=drift)
+    assert drift.active and drift.direction == 1.0
+    right, kart_right = hold_state(), moving(22.0)
+    hop_and_land(right, kart_right, -1.0)
+    step_kart(kart_right, -1.0, 1.0, False, P, drift=right)
+    assert right.active and right.direction == -1.0
+
+
+def test_landing_without_the_wheel_gives_no_sweep_until_released():
+    drift, state = hold_state(), moving(22.0)
+    hop_and_land(drift, state, 0.0)
+    assert not drift.active
+    for _ in range(round(DEFAULT_DRIFT.land_grace / DT) + 3):
+        step_kart(state, 0.0, 1.0, False, P, drift=drift)
+    assert not drift.armed
+    for _ in range(30):
+        step_kart(state, 1.0, 1.0, False, P, drift=drift)
+        assert not drift.active
+    drift.hold = False
+    step_kart(state, 1.0, 1.0, False, P, drift=drift)
+    assert drift.armed
+
+
+def test_the_wheel_counts_only_inside_the_landing_grace():
+    grace_steps = round(DEFAULT_DRIFT.land_grace / DT)
+    for wait, expected in ((2, True), (grace_steps - 3, True), (grace_steps + 3, False)):
+        drift, state = hold_state(), moving(22.0)
+        hop_and_land(drift, state, 0.0)
+        for _ in range(wait):
+            step_kart(state, 0.0, 1.0, False, P, drift=drift)
+        step_kart(state, 1.0, 1.0, False, P, drift=drift)
+        assert drift.active is expected, wait
+
+
+def test_the_wheel_during_the_hop_helps_when_it_lands_and_a_late_release_does_not_sweep():
+    drift, state = hold_state(), moving(22.0)
+    hop_and_land(drift, state, 1.0)
+    drift.hold = False  # released in the very landing step: no sweep, nothing pending
+    step_kart(state, 1.0, 1.0, False, P, drift=drift)
+    assert not drift.active and drift.armed and not drift.pushing
+
+
+def test_a_hop_over_grass_brakes_as_much_as_staying_on_it():
+    # Over the grass limit the kart slows by 20 m/s²; the hop must not save any of it.
+    hopping, plain = hold_state(), moving(20.0)
+    still_on_the_ground = DriftState()
+    held, staying = moving(20.0), moving(20.0)
+    for _ in range(40):
+        step_kart(held, 0.0, 1.0, True, P, drift=hopping)
+        step_kart(staying, 0.0, 1.0, True, P, drift=still_on_the_ground)
+        step_kart(plain, 0.0, 1.0, True, P)
+    assert hopping.land_id == 1  # it did hop and land inside those steps
+    assert held.forward_speed == pytest.approx(staying.forward_speed, rel=0.05)
+    assert staying.forward_speed == plain.forward_speed
+    assert held.forward_speed < P.grass_max_speed * 1.2  # and it did brake hard
+
+
+def test_a_hop_does_not_keep_the_push_over_grass():
+    drift, state = release_after(1.5)
+    assert drift.pushing
+    drift.hold = True
+    drift.was_hold = False
+    step_kart(state, 0.0, 1.0, False, P, drift=drift)  # hop while the push still runs
+    assert drift.airborne
+    step_kart(state, 0.0, 1.0, True, P, drift=drift)  # over the grass in the air
+    assert not drift.pushing
+
+
+def test_reset_puts_the_kart_back_on_the_ground():
+    drift, state = hold_state(), moving(22.0)
+    step_kart(state, 1.0, 1.0, False, P, drift=drift)
+    assert drift.airborne
+    drift.reset()
+    assert drift.height == 0.0 and drift.vz == 0.0 and not drift.airborne and drift.lift == 0.0
+    assert drift.hold and drift.was_hold  # a button already down is not a new press
+
+
+def test_reset_with_the_button_held_gives_no_sweep_without_a_hop():
+    # R, Tab or a new track with Shift down: the sweep still needs a hop, so a new press.
+    drift, state = hold_state(), moving(22.0)
+    drift.reset()
+    assert drift.hold and not drift.armed
+    for _ in range(30):
+        step_kart(state, 1.0, 1.0, False, P, drift=drift)
+        assert not drift.active and not drift.airborne
+    drift.hold = False
+    step_kart(state, 1.0, 1.0, False, P, drift=drift)
+    assert drift.armed
+    drift.hold = True
+    hop_and_land(drift, state, 1.0)  # released and pressed again: hop, then sweep
+    step_kart(state, 1.0, 1.0, False, P, drift=drift)
+    assert drift.active
+
+
+def test_hop_time_zero_is_the_sweep_as_it_was():
+    """Without the hop the sweep starts on the very step the button and the wheel say so, and
+    the kart moves exactly as ``step_kart`` does with the sweep parameters."""
+    cfg = replace(NO_HOP, charge_delay=0.0, full_time=1.5)
+    drift, state = DriftState(hold=True, params=cfg), moving(20.0)
+    reference = moving(20.0)
+    sweep = _sweep_params(P, cfg)
+    for i in range(90):
+        steer = 1.0 if i < 60 else -0.5
+        step_kart(state, steer, 1.0, False, P, drift=drift)
+        step_kart(reference, remap_steer(steer, 1.0, cfg), 1.0, False, sweep, DT)
+        assert state == reference
+        assert drift.height == 0.0 and not drift.airborne and drift.land_id == 0
+    assert drift.active and drift.time == pytest.approx(90 * DT)
+
+
+def fraction_under_push(cfg: DriftParams, sweep: float, pause: float, seconds: float = 120.0):
+    """A simulated player that chains sweeps of ``sweep`` seconds (after the hop) with a pause."""
+    state, drift = moving(22.0), DriftState(params=cfg)
+    hold = sweep + cfg.hop_time
+    steps = round(seconds / DT)
+    pushing = 0
+    for i in range(steps):
+        drift.hold = (i * DT) % (hold + pause) < hold
+        step_kart(state, 1.0, 1.0, False, P, drift=drift)
+        pushing += drift.pushing
+    return pushing / steps
+
+
+def test_chained_sweeps_spend_far_less_time_under_the_push():
+    before = fraction_under_push(BEFORE_THE_HOP, 1.5, 0.3)
+    now = fraction_under_push(DEFAULT_DRIFT, 1.5, 0.3)
+    assert before > 0.6  # the complaint: the turbo was on most of the time
+    assert now <= 0.35 and now <= before / 2
+
+
+@pytest.mark.parametrize("name", ["harbor", "canyon", "plateau"])
+def test_the_hop_is_no_shortcut_for_the_autopilot(name):
+    track = showcase_track(name)
+
+    def lap_time(hop_every: int | None) -> float:
+        racer, pilot, drift = Racer(track), Autopilot(track), DriftState()
+        for i in range(60 * 300):
+            steer, throttle = pilot.act(racer)
+            # One press per second and nothing else: no sweep, only the hop.
+            drift.hold = hop_every is not None and i % hop_every == 0
+            racer.step(steer, throttle, drift=drift if hop_every else None)
+            if racer.laps >= 1:
+                return racer.time
+        raise AssertionError("no lap in 300 s")
+
+    assert lap_time(60) >= lap_time(None) * 0.99
+
+
 # -- the manual drive mode, headless ------------------------------------------------------
 
 
@@ -369,12 +665,18 @@ def test_drive_mode_draws_a_sweep_through_a_corner(monkeypatch, view):
         assert app.racer.speed > 12.0 and not app.drift.active
         _hold(monkeypatch, pygame.K_UP, pygame.K_LEFT, pygame.K_LSHIFT)
         assert drift_pressed(pygame.key.get_pressed())
-        sparks = 0
-        for _ in range(40):
+        sparks = dust = 0
+        peak = 0.0
+        for _ in range(60):  # the hop takes 21 frames, then the sweep builds up its charge
             app.run(max_frames=1)
+            peak = max(peak, app.drift.height)
             if app.game is not None:
                 sparks += sum(1 for p in app.game.world.particles.items if p[7] == Ink.YELLOW)
-        assert app.drift.active and app.drift.charge > 0.3
+                dust += sum(1 for p in app.game.world.particles.items if p[7] == Ink.MIST)
+        assert peak == pytest.approx(DEFAULT_DRIFT.hop_height, rel=0.02)
+        assert app.drift.land_id == 1 and app.drift.active and app.drift.charge > 0.15
+        if app.game is not None:
+            assert dust > 0
         if app.game is not None:
             assert sparks > 0
         before = pygame.surfarray.array3d(app.screen).copy()

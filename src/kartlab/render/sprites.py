@@ -189,7 +189,7 @@ class SpriteBank:
         self.remap = self.palette.remap(variant)
         self._karts: dict[tuple, tuple[pygame.Surface, tuple[float, float]]] = {}
         self._props: dict[tuple, tuple[pygame.Surface, tuple[float, float]]] = {}
-        self._shadows: dict[int, pygame.Surface] = {}
+        self._shadows: dict[tuple[int, bool], pygame.Surface] = {}
 
     def begin_frame(self) -> None:
         self._spent = 0.0
@@ -259,19 +259,21 @@ class SpriteBank:
             self._spent += (time.perf_counter() - start) * 1000
         return cached
 
-    def shadow(self, width_px: int) -> pygame.Surface:
-        """Dithered dark ellipse, for under karts."""
+    def shadow(self, width_px: int, faint: bool = False) -> pygame.Surface:
+        """Dithered dark ellipse, for under karts (``faint``: half as dense, for the air)."""
         w = int(min(max(width_px, 2), 120))
-        surface = self._shadows.get(w)
+        surface = self._shadows.get((w, faint))
         if surface is None:
             h = max(w // 3, 1)
             yy, xx = np.mgrid[0:h, 0:w]
             inside = ((xx + 0.5 - w / 2) / (w / 2)) ** 2 + ((yy + 0.5 - h / 2) / (h / 2)) ** 2 <= 1
             checker = (xx + yy) % 2 == 0
+            if faint:
+                checker &= xx % 2 == 0
             image = np.full((h, w), TRANSPARENT, dtype=np.uint8)
             image[inside & checker] = self.remap[Ink.BLACK]
             surface = to_surface(image, self.palette.rgb)
-            self._shadows[w] = surface
+            self._shadows[(w, faint)] = surface
         return surface
 
 

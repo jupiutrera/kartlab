@@ -1,9 +1,15 @@
-"""Manual sweep ("barrido"): a controlled slide with a push on the way out.
+"""Manual sweep ("barrido") and hop ("brinco"): a controlled slide with a push on the way out.
 
-Hold the drift button while steering to start a sweep. The tyres give much less side
-grip, so the kart slides and its nose turns faster than its path. The longer the
-sweep, the bigger the push when the button is released: a continuous amount
-proportional to the time swept, up to a cap. There are no levels, no countdown.
+Pressing the drift button makes the kart hop. Landing with the button still down and the
+wheel turned starts a sweep: the tyres give much less side grip, so the kart slides and its
+nose turns faster than its path. The longer the sweep, the bigger the push when the button
+is released: a continuous amount of the time swept (after a short dead zone), up to a cap.
+There are no levels, no countdown.
+
+In the air the kart has no throttle and no grip: its velocity is kept (only the nose
+turns a little), grass still brakes it, and it lands where it was going. The hop is not a
+way to skip anything. With ``hop_time = 0`` there is no hop and the sweep starts the moment
+the button is held with the wheel turned.
 
 This is a manual-drive feature only. The RL environment never passes a ``DriftState``,
 so training, the autopilot and every recorded lap keep the plain physics in
@@ -34,14 +40,24 @@ class DriftParams:
     # in the sweep direction: steering into it tightens, counter-steering widens.
     steer_neutral: float = 0.65
     steer_span: float = 0.35
-    # Push on release: proportional to the time swept, saturating at ``full_time``.
-    full_time: float = 1.5  # time swept that gives the biggest push (s)
+    # Push on release: grows linearly from ``charge_delay`` to ``full_time`` of sweeping.
+    charge_delay: float = 0.2  # a short touch gives nothing (s)
+    full_time: float = 2.4  # time swept that gives the biggest push (s)
     boost_speed: float = 6.0  # extra top speed at the biggest push (m/s)
-    boost_time: float = 1.3  # length of the biggest push (s)
+    boost_time: float = 1.2  # length of the biggest push (s)
     boost_push: float = 24.0  # extra forward acceleration at the start of the biggest push (m/s²)
+    # The hop (0 = no hop: the sweep starts as soon as the button and the wheel say so).
+    hop_time: float = 0.35  # time in the air (s)
+    hop_height: float = 0.5  # height at the top of the arc (m)
+    hop_yaw: float = 1.8  # nose turn in the air per unit of wheel (rad/s)
+    hop_yaw_max: float = 0.35  # most the nose turns in one hop (rad)
+    land_grace: float = 0.25  # after landing, the time to turn the wheel and start a sweep (s)
 
 
 DEFAULT_DRIFT = DriftParams()
+
+
+NEVER = 1.0e9  # "a long time ago", for ``DriftState.landed_at``
 
 
 @dataclass(slots=True)
@@ -58,6 +74,14 @@ class DriftState:
     push_total: float = 0.0  # length the current push started with (s)
     push_speed: float = 0.0  # extra top speed the current push started with (m/s)
     push_id: int = 0  # counts the pushes awarded (lets the renderer flash once per push)
+    # The hop.
+    height: float = 0.0  # height of the kart over the ground (m); 0 on the ground
+    vz: float = 0.0  # vertical speed (m/s)
+    hop_left: float = 0.0  # time left in the air (s)
+    hop_turned: float = 0.0  # nose turn accumulated in this hop (rad)
+    landed_at: float = NEVER  # time since the last landing (s)
+    land_id: int = 0  # counts the landings (lets the renderer puff dust once per landing)
+    was_hold: bool = False  # the button in the previous step (the hop starts on the press)
 
     @property
     def charge(self) -> float:
@@ -73,12 +97,27 @@ class DriftState:
     def pushing(self) -> bool:
         return self.push_left > 0.0
 
+    @property
+    def airborne(self) -> bool:
+        return self.hop_left > 0.0
+
+    @property
+    def lift(self) -> float:
+        """Height of the kart over the ground (m), for the renderers."""
+        return self.height
+
     def reset(self) -> None:
         """Back to the initial state (``hold`` is an input and is kept)."""
+        self.height = 0.0
+        self.vz = 0.0
+        self.hop_left = 0.0
+        self.hop_turned = 0.0
+        self.landed_at = NEVER
+        self.was_hold = self.hold  # a button already down is not a new press
         self.active = False
         self.direction = 0.0
         self.time = 0.0
-        self.armed = True
+        self.armed = not self.hold  # a sweep is born from a hop: a held button waits for release
         self.push_left = 0.0
         self.push_total = 0.0
         self.push_speed = 0.0
@@ -86,7 +125,8 @@ class DriftState:
 
 def charge_for(time_swept: float, params: DriftParams = DEFAULT_DRIFT) -> float:
     """Fraction of the maximum push earned by sweeping for ``time_swept`` seconds."""
-    return min(max(time_swept, 0.0) / params.full_time, 1.0)
+    span = max(params.full_time - params.charge_delay, 1e-9)
+    return min(max((time_swept - params.charge_delay) / span, 0.0), 1.0)
 
 
 def push_for(time_swept: float, params: DriftParams = DEFAULT_DRIFT) -> tuple[float, float]:
@@ -142,12 +182,83 @@ def _update_mode(
             drift.armed = False
             drift.time = 0.0
             drift.direction = 0.0
-    elif drift.armed and speed > cfg.entry_speed and abs(steer) > cfg.entry_steer and not on_grass:
+    elif (
+        (drift.armed or drift.landed_at < cfg.land_grace)  # or just landed from a hop
+        and speed > cfg.entry_speed
+        and abs(steer) > cfg.entry_steer
+        and not on_grass
+    ):
         drift.active = True
         drift.direction = math.copysign(1.0, steer)
         drift.time = 0.0
+        drift.landed_at = NEVER
     if on_grass:
         drift.push_left = 0.0  # the push only works on asphalt
+
+
+def _steer_wheel(state: KartState, steer: float, params: KartParams, dt: float) -> None:
+    """The steering wheel follows the command at its limited rate (as in ``step_kart``)."""
+    towards_centre = abs(steer) < abs(state.steer) or steer * state.steer < 0.0
+    rate = params.steer_return_rate if towards_centre else params.steer_rate
+    state.steer += min(max(steer - state.steer, -rate * dt), rate * dt)
+
+
+def _start_hop(drift: DriftState) -> None:
+    drift.hop_left = drift.params.hop_time
+    drift.hop_turned = 0.0
+    drift.armed = False  # a new press is needed after this hop, unless it lands in a sweep
+
+
+def _air_step(
+    state: KartState,
+    steer: float,
+    on_grass: bool,
+    params: KartParams,
+    dt: float,
+    drift: DriftState,
+) -> None:
+    """One step in the air: no throttle, no grip, the velocity is kept and only the nose
+    turns. Only the constant part of the rolling resistance (``rolling_drag``, not the term
+    proportional to speed) acts, which is what keeps ~99 % of the speed; grass brakes exactly
+    as on the ground."""
+    cfg = drift.params
+    _steer_wheel(state, steer, params, dt)
+    turned = min(
+        max(drift.hop_turned + cfg.hop_yaw * steer * dt, -cfg.hop_yaw_max), cfg.hop_yaw_max
+    )
+    state.heading = math.remainder(state.heading + turned - drift.hop_turned, math.tau)
+    drift.hop_turned = turned
+
+    if on_grass:
+        drift.push_left = 0.0  # the push only works on asphalt
+    top = params.grass_max_speed if on_grass else kart_params(params, drift).max_speed
+    speed = math.hypot(state.vx, state.vy)
+    if speed > 0.0:
+        drag = params.grass_drag if on_grass else params.rolling_drag
+        if speed > top:
+            drag += params.overspeed_drag
+        keep = max(speed - drag * dt, 0.0) / speed
+        state.vx *= keep
+        state.vy *= keep
+    state.x += state.vx * dt
+    state.y += state.vy * dt
+
+    # Parabola with its top at half the time: g = 8h/T², launch speed g·T/2.
+    gravity = 8.0 * cfg.hop_height / cfg.hop_time**2
+    drift.hop_left = max(drift.hop_left - dt, 0.0)
+    t = cfg.hop_time - drift.hop_left
+    drift.height = max(gravity * t * (cfg.hop_time - t) / 2.0, 0.0)
+    drift.vz = gravity * (cfg.hop_time / 2.0 - t)
+    if drift.push_left > 0.0:
+        drift.push_left = max(drift.push_left - dt, 0.0)
+    if drift.hop_left < 1e-9:  # landing
+        drift.hop_left = 0.0
+        drift.height = 0.0
+        drift.vz = 0.0
+        drift.landed_at = 0.0
+        drift.land_id += 1
+        if not drift.hold:
+            drift.armed = True
 
 
 def step_drift(
@@ -159,9 +270,23 @@ def step_drift(
     dt: float,
     drift: DriftState,
 ) -> None:
-    """One physics step with the sweep logic: ``step_kart`` with ``drift`` attached."""
+    """One physics step with the sweep and hop logic: ``step_kart`` with ``drift`` attached."""
     steer = min(max(steer, -1.0), 1.0)
+    pressed = drift.hold and not drift.was_hold
+    drift.was_hold = drift.hold
+    if (
+        pressed
+        and drift.armed
+        and not drift.active
+        and drift.hop_left <= 0.0
+        and drift.params.hop_time > 0.0
+    ):
+        _start_hop(drift)
+    if drift.hop_left > 0.0:
+        _air_step(state, steer, on_grass, params, dt, drift)
+        return
     _update_mode(state, steer, on_grass, params, drift)
+    drift.landed_at += dt
     if not drift.active and drift.push_left <= 0.0:
         step_kart(state, steer, throttle, on_grass, params, dt)  # plain physics
         return
@@ -184,6 +309,7 @@ __all__ = [
     "DEFAULT_DRIFT",
     "DriftParams",
     "DriftState",
+    "NEVER",
     "charge_for",
     "kart_params",
     "push_for",
