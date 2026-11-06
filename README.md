@@ -293,6 +293,53 @@ uv run python scripts/evaluate.py --track-file tracks/ejemplo.json     # 3 vuelt
 `evaluate.py` se niega a evaluar un fichero que no pasa la validación (código de salida distinto de cero) y no pisa el resultado oficial del run.
 `tracks/ejemplo.json` es un diseño original; el detalle del formato está en `src/kartlab/sim/trackfile.py`.
 
+### Editor de circuitos con ratón
+
+![El editor con «Bahía del Faro»: la carretera suavizada, las esquinas arrastrables y el veredicto del validador](docs/img/editor.png)
+
+```sh
+uv run python scripts/editor.py tracks/ejemplo.json     # editar un circuito existente
+uv run python scripts/editor.py --new                   # empezar uno nuevo (sin argumentos, también)
+uv run python scripts/editor.py tracks/mio.json --new   # nuevo, y se guardará en tracks/mio.json
+```
+
+Lo que se ve es lo que se carga: el asfalto y la línea central salen de las mismas funciones que `load_track_file` y la IA (`sim/trackfile.py`). El panel de la derecha dice si el circuito es válido (verde) o no (rojo), con los mensajes del validador tal cual; las esquinas y los tramos que fallan se marcan en rojo en el mapa (pulsa un mensaje para centrarlo). También muestra la longitud, el radio mínimo, la hierba mínima entre tramos, el número de esquinas, la anchura y la semilla del decorado.
+
+| Gesto o tecla | Qué hace |
+| --- | --- |
+| Arrastrar una esquina | La mueve (con `Ctrl` se ajusta a 5 m; las posiciones se guardan con 0,1 m) |
+| Clic en un borde del polígono | Inserta una esquina ahí y la arrastra; un clic sin mover la deja en el borde |
+| Clic derecho o `Supr` | Borra la esquina (siempre quedan al menos 3) |
+| Rueda sobre una esquina | Cambia su radio: ±2 m (con `Mayús`, ±10 m) |
+| Rueda en otro sitio, `+` y `-` | Acerca y aleja (sobre el cursor con la rueda) |
+| Botón central, `Espacio` + arrastrar, o arrastrar en vacío | Mueve la vista; `F` encuadra el circuito |
+| Flechas | Mueven 1 m la esquina elegida (con `Mayús`, 10 m) |
+| `Re Pág` y `Av Pág` | Anchura del asfalto ±1 m (límites del validador: 8-20 m) |
+| `D` y `Mayús`+`D`, o los botones `+`/`-` | Semilla del decorado ±1 |
+| `F2` | Cambia el nombre del circuito |
+| `Ctrl`+`Z`, `Ctrl`+`Y` | Deshacer y rehacer (200 pasos; un arrastre es un paso) |
+| `Ctrl`+`S` | Guarda en el fichero abierto, o en `tracks/<nombre>.json` si es nuevo |
+| `Ctrl`+`Mayús`+`S` | Guardar como: pide un nombre (`tracks/<nombre>.json`) o una ruta dentro del proyecto (relativa a su raíz; `../x` se rechaza) |
+| `F5` o `T` | Prueba el circuito conduciendo (abre `drive.py` en otro proceso) |
+| `H`, `Esc` | Ayuda; salir (si hay cambios sin guardar, hay que pulsarlo dos veces) |
+
+Flujo de trabajo: editar, guardar y probar.
+
+```sh
+uv run python scripts/editor.py tracks/mio.json --new       # 1. dibujar y guardar con Ctrl+S (F5 lo prueba al instante)
+uv run python scripts/drive.py --track-file tracks/mio.json         # 2. conducirlo a mano
+uv run python scripts/evaluate.py --track-file tracks/mio.json      # 3. 3 vueltas con el último modelo
+```
+
+Reglas del editor:
+- **Guardar** (`Ctrl`+`S`) escribe sobre el fichero abierto: para conservar el original, guarda una copia con `Ctrl`+`Mayús`+`S`. Solo escribe un circuito válido (la validación completa se ejecuta justo antes) y lo hace de forma atómica, en UTF-8 y con LF. Un circuito inválido se rechaza con un mensaje y el fichero no se toca. «Guardar como» solo escribe dentro del proyecto (salvo sobre el propio fichero abierto). Un circuito nuevo no sobrescribe un fichero que ya exista: se avisa y se elige otro nombre con `Ctrl`+`Mayús`+`S`.
+- **Probar** (`F5`) necesita un circuito válido. Si está guardado y sin cambios, se conduce el propio fichero; si no, una copia temporal, así que probar no escribe nada en `tracks/`. Solo hay una prueba a la vez.
+- **Abrir un fichero inválido** (pero bien formado) está permitido, para poder arreglarlo; un fichero que no se puede leer se rechaza con el motivo.
+- **Formato 2 (cruces a nivel).** `tracks/ocho.json` se abre y se edita como cualquier otro, y `crossings` y `start` se conservan sin tocar al guardar. El editor no sabe declarar ni mover cruces: si al arrastrar una esquina un cruce declarado deja de existir, el validador lo dice en rojo, como cualquier otro error. Declarar cruces desde el editor queda para cuando se decida.
+- **Coste.** La carretera se reconstruye a cada movimiento con una validación rápida (parámetros, polígono, redondeo, longitud y curva más cerrada; 2-30 ms) y, si tarda más de 12 ms, como mucho cada tres veces su coste mientras arrastras. La validación completa (comparar cada tramo con los demás, 70-250 ms en circuitos normales y más en uno de 40 esquinas) corre en un hilo aparte, 0,12 s después del último cambio y nunca a mitad de un arrastre; si editas mientras tanto, su respuesta se descarta y se pide la del diseño nuevo. Hasta que llega, el panel dice «Comprobando…» salvo que ya haya un error seguro; con la completa en marcha el fotograma más lento medido es de unos 20-35 ms (frente a 100-185 ms si corriera en el hilo principal). Guardar y probar (`F5`) esperan siempre a una validación completa y reciente.
+
+Sin ventana (capturas y pruebas): `SDL_VIDEODRIVER=dummy uv run python scripts/editor.py tracks/ejemplo.json --frames 3 --size 1280x800 --screenshot docs/img/editor.png`.
+
 ### El circuito en 8 (cruce a nivel)
 
 ![Cruce a nivel de «Lazo del Molino» en la vista de persecución](docs/img/circuito-ocho.png)
