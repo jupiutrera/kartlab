@@ -148,3 +148,11 @@ def test_forgetting_fps_samples_keeps_the_light_mode_off(track):
         view.draw(screen, pose, [visual], HudInfo(), DT, fps=22.0)
         view.forget_fps()  # e.g. while a checkpoint loads in the background
     assert not view.world.light_mode
+
+
+def test_the_hud_draws_no_charge_bar():
+    """The sweep charge is seen in the sparks, not in a bar: the HUD knows nothing of it."""
+    import dataclasses
+
+    assert "drift" not in {f.name for f in dataclasses.fields(HudInfo)}
+    assert not hasattr(GameView, "_draw_drift")

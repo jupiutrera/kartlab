@@ -655,6 +655,7 @@ def test_drive_mode_draws_a_sweep_through_a_corner(monkeypatch, view):
     import pygame
 
     from kartlab.render.palette import Ink
+    from kartlab.render.sparks import EMISSIVE
     from kartlab.show.drive import DriveApp, drift_pressed
 
     app = DriveApp(showcase_track("harbor"), scale=1, view=view, realtime=False)
@@ -671,7 +672,7 @@ def test_drive_mode_draws_a_sweep_through_a_corner(monkeypatch, view):
             app.run(max_frames=1)
             peak = max(peak, app.drift.height)
             if app.game is not None:
-                sparks += sum(1 for p in app.game.world.particles.items if p[7] == Ink.YELLOW)
+                sparks += sum(1 for p in app.game.world.particles.items if p[7] >= EMISSIVE)
                 dust += sum(1 for p in app.game.world.particles.items if p[7] == Ink.MIST)
         assert peak == pytest.approx(DEFAULT_DRIFT.hop_height, rel=0.02)
         assert app.drift.land_id == 1 and app.drift.active and app.drift.charge > 0.15
@@ -685,7 +686,7 @@ def test_drive_mode_draws_a_sweep_through_a_corner(monkeypatch, view):
         for _ in range(30):
             app.run(max_frames=1)
             if app.game is not None:
-                flashes += sum(1 for p in app.game.world.particles.items if p[7] == Ink.ORANGE)
+                flashes += sum(1 for p in app.game.world.particles.items if p[7] >= EMISSIVE)
         assert not app.drift.active and app.drift.push_id == 1
         if app.game is not None:
             assert flashes > 0

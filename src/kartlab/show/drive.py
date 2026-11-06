@@ -415,7 +415,6 @@ class DriveApp:
             speed=racer.speed,
             label="Piloto automático" if self.autopilot_on else "Conducción manual",
             extra=extra,
-            drift=None if self.autopilot_on else self.drift,
             trial=self.hud_trial,
         )
         if self.session is not None:  # the race HUD shows the laps; the mode panel only at first
@@ -483,7 +482,14 @@ class DriveApp:
     def draw_topdown(self) -> None:
         racer = self.racer
         lift = 0.0 if self.autopilot_on else self.drift.lift
-        karts = [(racer.kart, kart_color_rgb(self.kart_ramp), lift)]
+        karts = [
+            (
+                racer.kart,
+                kart_color_rgb(self.kart_ramp),
+                lift,
+                None if self.autopilot_on else self.drift,
+            )
+        ]
         self.ghost_visual = self.hud_trial = None
         if self.trial is not None:
             ghost = self.ghost_state()
@@ -516,10 +522,6 @@ class DriveApp:
             (f"Cámara: {'seguimiento' if self.follow else 'circuito'}", TEXT_DIM),
             (f"{self.clock.get_fps():3.0f} fps", TEXT_DIM),
         ]
-        if not self.autopilot_on and self.drift.active:
-            status.append((f"Barrido {self.drift.charge * 100:3.0f} %", ACCENT))
-        elif not self.autopilot_on and self.drift.pushing:
-            status.append((f"Impulso {self.drift.push_level * 100:3.0f} %", ACCENT))
         if self.session is not None:
             session = self.session
             if session.counting:

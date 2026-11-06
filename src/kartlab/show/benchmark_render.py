@@ -80,7 +80,6 @@ def bench(
         start = time.perf_counter()
         pose = view.update(visuals, DT)
         info = HudInfo(racers[0].laps, racers[0].lap_time, racers[0].best_lap, racers[0].speed)
-        info.drift = drift
         view.draw(screen, pose, visuals, info, DT)
         elapsed = (time.perf_counter() - start) * 1000
         if frame >= 120:

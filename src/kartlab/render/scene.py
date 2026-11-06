@@ -19,6 +19,15 @@ from kartlab.render.camera import CameraPose, Lens
 from kartlab.render.floor import FloorRenderer, Projection
 from kartlab.render.palette import FOG_COLOR, KART_RAMPS, RAY_RAMP, Ink, game_palette
 from kartlab.render.sky import Sky
+from kartlab.render.sparks import (
+    EMISSIVE,
+    blink_ink,
+    emissive,
+    flame_spec,
+    heat_ink,
+    spark_spec,
+    stochastic_count,
+)
 from kartlab.render.sprites import PROP_HEIGHTS, VOXEL, SpriteBank, to_surface
 from kartlab.render.texture import build_floor_texture
 from kartlab.sim.drift import DriftState
@@ -31,7 +40,6 @@ NEAR = 0.8  # nothing is drawn closer than this to the camera (m)
 SUN = (0.55, -0.35)  # direction shadows are cast on the floor (unit-ish, world x/y)
 SKID_SPEED = 1.6  # lateral speed above which tyres leave marks (m/s)
 MAX_PARTICLES = 220
-SPARK_SIZE = 0.07  # sparks are smaller than dust puffs (m)
 SPARK_GRAVITY = 9.0  # (m/s²)
 LIFT_FAINT = 0.15  # above this height the shadow turns faint (m)
 LIFT_SHRINK = 0.5  # the shadow has shrunk by a third at this height (m)
@@ -232,12 +240,15 @@ class WorldRenderer:
                 self.particles.emit(x, y, 0.3, rng.normal(0, 0.4), rng.normal(0, 0.4), 0.8,
                                     0.7, Ink.MIST)  # fmt: skip
             if v.drift is not None and not v.ghost:
-                self._drift_effects(v, v.drift, rear, rng, rate)
+                self._drift_effects(v, v.drift, rear, rng, rate, dt)
         self.particles.update(dt)
 
-    def _drift_effects(self, v: KartVisual, drift: DriftState, rear, rng, rate: float) -> None:
-        """Wider skid marks and yellow sparks while sweeping; a short flash and an orange
-        trail while the push lasts. Everything in palette inks, nothing allocated per pixel."""
+    def _drift_effects(
+        self, v: KartVisual, drift: DriftState, rear, rng, rate: float, dt: float = 1 / 60
+    ) -> None:
+        """Wider skid marks and sparks that heat up with the charge while sweeping; a short
+        flash and an exhaust flame that cools with the push after the release. Everything in
+        palette inks (glowing, so the night does not dim them), nothing allocated per pixel."""
         kart = v.kart
         c, s = math.cos(kart.heading), math.sin(kart.heading)
         key = id(drift)
@@ -252,20 +263,24 @@ class WorldRenderer:
                     math.cos(angle) * puff, math.sin(angle) * puff, rng.uniform(0.6, 1.4),
                     rng.uniform(0.35, 0.55), ink, 0.28,
                 )  # fmt: skip
-        if drift.active:
+        if drift.active and v.lift <= 0.0 and not drift.airborne:
             if abs(kart.lateral_speed) <= SKID_SPEED:  # the sweep always leaves marks
                 for x, y in rear:
                     self.texture.stamp(x, y, 0.14, Ink.ASPHALT_DARK)
-            count = 2 if rng.random() < rate else 1
-            for _ in range(count):
+            charge = drift.charge
+            spec = spark_spec(charge)
+            for _ in range(stochastic_count(spec.rate * dt * rate, rng.random())):
                 x, y = rear[int(rng.integers(2))]
-                back = rng.uniform(1.5, 4.5)
+                back = spec.reach * rng.uniform(0.6, 1.5)
                 side = drift.direction * rng.uniform(-1.0, 3.0)
+                ink = blink_ink(charge, drift.time, rng.random())
                 self.particles.emit(
-                    x, y, 0.15, -c * back - s * side, -s * back + c * side, rng.uniform(1.0, 2.5),
-                    rng.uniform(0.2, 0.4), Ink.YELLOW, SPARK_SIZE, SPARK_GRAVITY,
+                    x, y, 0.15, -c * back - s * side, -s * back + c * side,
+                    spec.lift * rng.uniform(0.5, 1.3), spec.life * rng.uniform(0.7, 1.3),
+                    emissive(ink), spec.size * rng.uniform(0.8, 1.2), SPARK_GRAVITY,
                 )  # fmt: skip
         if drift.pushing:
+            heat = min(drift.push_speed / max(drift.params.boost_speed, 1e-9), 1.0)
             if self._pushes_seen.get(key) != drift.push_id:  # first frame of this push
                 self._pushes_seen[key] = drift.push_id
                 for x, y in rear:
@@ -273,15 +288,18 @@ class WorldRenderer:
                         self.particles.emit(
                             x, y, 0.2, -c * rng.uniform(2, 7) + rng.normal(0, 1.5),
                             -s * rng.uniform(2, 7) + rng.normal(0, 1.5), rng.uniform(0.5, 2.0),
-                            0.3, Ink.WHITE, 0.15, 4.0,
+                            0.3, emissive(heat_ink(0.5 + 0.5 * heat, rng.random())), 0.15, 4.0,
                         )  # fmt: skip
-            level = drift.push_level
-            if rng.random() < (0.5 + 0.5 * level) * rate:
-                x, y = (kart.x - c * 1.0, kart.y - s * 1.0)
-                ink = Ink.ORANGE if rng.random() < 0.7 else Ink.AMBER
+            flame = flame_spec(drift.push_level, heat)
+            for _ in range(stochastic_count(flame.rate * dt * rate, rng.random())):
+                back = 1.35 + rng.uniform(0.0, 0.2)  # behind the bumper, so it never hides it
                 self.particles.emit(
-                    x + rng.normal(0, 0.15), y + rng.normal(0, 0.15), 0.35,
-                    -c * 4.0, -s * 4.0, 0.2, 0.18 + 0.12 * level, ink, 0.2 + 0.12 * level,
+                    kart.x - c * back + rng.normal(0, 0.12),
+                    kart.y - s * back + rng.normal(0, 0.12),
+                    0.22, -c * flame.speed, -s * flame.speed, 0.2,
+                    flame.life * rng.uniform(0.7, 1.3),
+                    emissive(heat_ink(flame.heat, rng.random())),
+                    flame.size * rng.uniform(0.7, 1.1),
                 )  # fmt: skip
 
     # -- drawing -------------------------------------------------------------------------
@@ -401,7 +419,10 @@ class WorldRenderer:
     def _draw_particle(self, sx: float, sy: float, size: int, colour: int) -> None:
         rgb = self._ink_rgb.get(colour)
         if rgb is None:  # per variant, so looked up once per ink
-            rgb = tuple(int(c) for c in self.palette.rgb[self.sprites.remap[colour]])
+            if colour >= EMISSIVE:  # glowing: the light of the variant does not dim it
+                rgb = tuple(int(c) for c in self.palette.rgb[colour - EMISSIVE])
+            else:
+                rgb = tuple(int(c) for c in self.palette.rgb[self.sprites.remap[colour]])
             self._ink_rgb[colour] = rgb
         self.world.fill(rgb, (int(sx - size / 2 + 0.5), int(sy - size + 0.5), size, size))
 
