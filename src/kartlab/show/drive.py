@@ -493,6 +493,8 @@ def main(argv: list[str] | None = None) -> None:
         track = load_track_file(args.track_file) if args.track_file else resolve_track(args.track)
     except TrackFileError as error:
         raise SystemExit(f"Circuito no válido:\n{error}") from None
+    except (ValueError, IndexError):
+        raise SystemExit(f"Circuito no válido: {args.track}") from None
     app = DriveApp(
         track,
         scale=args.scale,

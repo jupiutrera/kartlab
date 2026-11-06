@@ -91,6 +91,11 @@ def scale_for(window: tuple[int, int]) -> int:
     return max(1, min(window[0] // WORLD_SIZE[0], window[1] // WORLD_SIZE[1]))
 
 
+def unit_for(window: tuple[int, int]) -> int:
+    """Base size of the interface text (px) for a window."""
+    return max(window[1] // 40, 12)
+
+
 class GameView:
     def __init__(
         self,
@@ -113,6 +118,7 @@ class GameView:
         self.last_timings: dict[str, float] = {}
         self._fps: deque[float] = deque(maxlen=120)
         self._start = time.perf_counter()
+        self.fixed_time: float | None = None  # offline rendering: time of the frame (s)
         self._speed = Smoothed()
         rgb = game_palette().rgb  # gap colours come from the palette like everything else
         self._ahead = tuple(int(c) for c in rgb[Ink.LEAF_LIGHT])
@@ -136,7 +142,7 @@ class GameView:
         self.scale = scale_for(window)
         w, h = WORLD_SIZE[0] * self.scale, WORLD_SIZE[1] * self.scale
         self.world_rect = pygame.Rect((window[0] - w) // 2, (window[1] - h) // 2, w, h)
-        unit = max(window[1] // 40, 12)
+        unit = unit_for(window)
         self.unit = unit
         self.text = TextCache(pygame.font.Font(SANS, unit))
         self.small = TextCache(pygame.font.Font(SANS_REGULAR, max(int(unit * 0.75), 10)))
@@ -162,8 +168,14 @@ class GameView:
         self.world.set_variant(variant)
         return variant
 
+    def now(self) -> float:
+        """Seconds since the view opened; frame-exact if ``fixed_time`` is set (videos)."""
+        if self.fixed_time is not None:
+            return self.fixed_time
+        return time.perf_counter() - self._start
+
     def notify(self, text: str) -> None:
-        self._notice = (text, time.perf_counter())
+        self._notice = (text, self.now())
 
     # -- per frame ------------------------------------------------------------------------
 
@@ -191,8 +203,9 @@ class GameView:
         info: HudInfo,
         dt: float,
         fps: float | None = None,
+        hud: bool = True,
     ) -> None:
-        now = time.perf_counter() - self._start
+        now = self.now()
         timings = self.world.render(pose, visuals, now)
         t0 = time.perf_counter()
         if self.world_rect.size != screen.get_size():
@@ -203,7 +216,8 @@ class GameView:
         else:
             pygame.transform.scale(self.world.world, self.world_rect.size, target)
         t1 = time.perf_counter()
-        self._draw_hud(screen, visuals, info, dt, now)
+        if hud:
+            self._draw_hud(screen, visuals, info, dt, now)
         t2 = time.perf_counter()
         timings["escalado"] = (t1 - t0) * 1000
         timings["HUD"] = (t2 - t1) * 1000
@@ -214,6 +228,10 @@ class GameView:
             self._watch_fps(fps)
         if self.diagnostics:
             self._draw_diagnostics(screen, fps)
+
+    def forget_fps(self) -> None:
+        """Drop the frame-rate samples (after a stall that was not the view being slow)."""
+        self._fps.clear()
 
     def _watch_fps(self, fps: float) -> None:
         self._fps.append(fps)
@@ -264,7 +282,9 @@ class GameView:
             self._draw_trial(screen, info.trial, left, top + h + pad // 2, w)
 
         # Model label and view settings (top right).
-        colour = tuple(int(c) for c in game_palette().rgb[KART_RAMPS[info.ramp % 6][1]])
+        colour = tuple(
+            int(c) for c in game_palette().rgb[KART_RAMPS[info.ramp % len(KART_RAMPS)][1]]
+        )
         label = self.text.get(info.label, WHITE)
         sub = self.small.get(
             f"Cámara {CAMERA_NAMES[self.camera_name]} · {VARIANT_NAMES[self.world.variant]}", DIM
@@ -382,7 +402,7 @@ class GameView:
         radius = max(panel.get_height() // 30, 3)
         for k, v in enumerate(visuals):
             x, y = to_px(v.kart.x, v.kart.y)
-            colour = tuple(int(c) for c in rgb[KART_RAMPS[v.ramp % 6][1]])
+            colour = tuple(int(c) for c in rgb[KART_RAMPS[v.ramp % len(KART_RAMPS)][1]])
             r = radius + (1 if k == 0 else 0)
             pygame.draw.circle(screen, (10, 10, 16), (at[0] + x, at[1] + y), r + 1)
             pygame.draw.circle(screen, colour, (at[0] + x, at[1] + y), r)
@@ -391,7 +411,7 @@ class GameView:
         if self._notice is None:
             return
         text, start = self._notice
-        age = time.perf_counter() - start
+        age = self.now() - start
         if age > 3.0:
             self._notice = None
             return
