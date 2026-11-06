@@ -189,6 +189,35 @@ def test_contact_pauses_the_stuck_timer(driver):
     assert "restart" not in events
 
 
+def test_contact_cannot_freeze_the_timers_for_ever(driver):
+    driver.restart_in_place = True
+    driver.version = Version(0, lambda obs: np.zeros((len(obs), 2)))
+    driver.place(*grid_slot(0))
+    events = []
+    for _ in range(60 * 9):
+        driver.touch()  # a human glued to it for nine seconds
+        events.append(driver.step())
+    assert "restart" in events  # frozen at most 3 s, then the usual 3 s
+
+
+def test_an_ai_on_the_grass_with_a_human_pressed_against_it_still_comes_back(driver):
+    track = driver.env.track
+    driver.restart_in_place = True
+    driver.version = Version(0, lambda obs: np.zeros((len(obs), 2)))
+    driver.place(*grid_slot(0))
+    x, y, _ = track.pose_at(driver.racer.position.s, track.half_width + 4.0)
+    driver.racer.displace(x - driver.racer.kart.x, y - driver.racer.kart.y)
+    assert driver.racer.on_grass
+    first = None
+    for i in range(60 * 6):
+        driver.touch()
+        if driver.step() == "restart":
+            first = i / 60
+            break
+    assert first is not None and first < 4.5  # the contact does not hold the timers on grass
+    assert not driver.racer.on_grass
+
+
 def test_speed_limiter_caps_the_speed_but_not_a_full_speed_driver(driver):
     track = showcase_track("harbor")
     driver.place(0.0, 0.0)

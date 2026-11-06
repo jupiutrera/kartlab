@@ -5,6 +5,8 @@ import math
 import pytest
 
 from kartlab.sim.contact import (
+    CIRCLE_RADIUS,
+    CORRECTION_RATE,
     MAX_CORRECTION,
     MAX_DV_CONTACT,
     MAX_DV_STEP,
@@ -15,41 +17,95 @@ from kartlab.sim.contact import (
     START_GRACE,
     Body,
     PairState,
+    circles,
     resolve,
 )
-from kartlab.sim.kart import KartState
+from kartlab.sim.kart import DT, KartState
 from kartlab.sim.race import Racer
 from kartlab.sim.showcase import showcase_track
 
 LATE = START_GRACE + 10.0  # a race time with no grace window left
+TOUCH = 2.0 * CIRCLE_RADIUS  # circles closer than this overlap
 
 
 def body(x, y, heading=0.0, vx=0.0, vy=0.0, **kw):
     return Body(KartState(x, y, heading, vx, vy), **kw)
 
 
-def test_no_contact_without_overlap():
-    contact = resolve(body(0, 0), body(3.0, 0), PairState(), LATE)
-    assert contact is None
+def apply(human, ai, contact):
+    """What the scene does with a contact, on the bare karts."""
+    for body_, push, dv in (
+        (human, contact.push_human, contact.dv_human),
+        (ai, contact.push_ai, contact.dv_ai),
+    ):
+        body_.kart.x += push[0]
+        body_.kart.y += push[1]
+        body_.kart.vx += dv[0]
+        body_.kart.vy += dv[1]
 
 
-def test_overlap_pushes_apart_with_a_60_40_share():
-    human, ai = body(0, 0), body(1.0, 0)  # 1 m apart: the circles overlap by ~0.2 m or more
+def min_circle_distance(a: KartState, b: KartState) -> float:
+    return min(math.hypot(p[0] - q[0], p[1] - q[1]) for p in circles(a) for q in circles(b))
+
+
+def test_no_contact_without_overlap_or_approach():
+    assert resolve(body(0, 0), body(3.0, 0), PairState(), LATE) is None
+    assert (
+        resolve(body(0, 0, vx=5.0), body(30.0, 0), PairState(), LATE) is None
+    )  # far, even closing in
+    assert resolve(body(0, 0, vx=-5.0), body(3.0, 0), PairState(), LATE) is None  # moving away
+
+
+def test_overlap_pushes_apart_with_a_60_40_share_that_grows_with_the_depth():
+    shallow = resolve(body(0, 0), body(1.8, 0), PairState(), LATE)  # circles overlap by 0.3 m
+    deep = resolve(body(0, 0), body(1.5, 0), PairState(), LATE)  # by 0.6 m
+    for contact, depth in ((shallow, 0.3), (deep, 0.6)):
+        assert contact is not None and contact.depth == pytest.approx(depth)
+        total = contact.push_ai[0] - contact.push_human[0]
+        assert total == pytest.approx(CORRECTION_RATE * depth)
+        assert contact.push_ai[0] / total == pytest.approx(SHARE_AI)
+        assert -contact.push_human[0] / total == pytest.approx(SHARE_HUMAN)
+    assert deep.push_ai[0] == pytest.approx(2 * shallow.push_ai[0])
+    buried = resolve(body(0, 0), body(0.2, 0), PairState(), LATE)
+    assert buried.push_ai[0] - buried.push_human[0] == pytest.approx(MAX_CORRECTION)  # capped
+
+
+def test_the_approach_is_removed_entirely_with_the_same_share_and_no_bounce():
+    human, ai = body(0, 0, vx=0.4), body(1.0, 0, vx=0.0)  # closing at 0.4 m/s, overlapping
     contact = resolve(human, ai, PairState(), LATE)
-    assert contact is not None and contact.depth > 0
-    assert contact.push_ai[0] > 0 > contact.push_human[0]  # the AI goes forward, the human back
-    total = contact.push_ai[0] - contact.push_human[0]
-    assert total == pytest.approx(MAX_CORRECTION)  # capped
-    assert contact.push_ai[0] / total == pytest.approx(SHARE_AI)
-    assert -contact.push_human[0] / total == pytest.approx(SHARE_HUMAN)
+    assert contact.dv_ai[0] == pytest.approx(SHARE_AI * 0.4)
+    assert contact.dv_human[0] == pytest.approx(-SHARE_HUMAN * 0.4)
+    apply(human, ai, contact)
+    assert human.kart.vx == pytest.approx(ai.kart.vx)  # they move together: restitution 0
+    # Separating karts keep their velocities (only the positions are corrected).
+    parting = resolve(body(0, 0, vx=0.0), body(1.0, 0, vx=5.0), PairState(), LATE)
+    assert parting.dv_ai == (0.0, 0.0) and parting.dv_human == (0.0, 0.0)
 
 
-def test_small_overlap_is_corrected_fully_and_never_beyond_the_cap():
-    human, ai = body(0, 0), body(1.8, 0)  # front circle of the human meets the rear one
+def test_the_ai_never_takes_more_than_its_caps_and_the_human_absorbs_the_rest():
+    human, ai = body(0, 0, vx=20.0), body(1.0, 0, vx=0.0)
     contact = resolve(human, ai, PairState(), LATE)
-    assert contact is not None
-    pushed = contact.push_ai[0] - contact.push_human[0]
-    assert pushed == pytest.approx(min(contact.depth, MAX_CORRECTION))
+    assert contact.dv_ai[0] == pytest.approx(MAX_DV_STEP)
+    assert contact.dv_human[0] == pytest.approx(-(20.0 - MAX_DV_STEP))
+    apply(human, ai, contact)
+    assert human.kart.vx == pytest.approx(ai.kart.vx)  # still no approach left, still no bounce
+
+
+def test_a_glued_human_cannot_keep_pushing_the_ai_more_than_the_contact_total():
+    """A human that keeps closing in (the AI brakes in front of it) moves the AI at most
+    ``MAX_DV_CONTACT`` in all, and the total starts again after a pause."""
+    state = PairState()
+    pushed = 0.0
+    for _ in range(120):
+        human, ai = body(0, 0, vx=8.0), body(1.0, 0, vx=0.0)  # the same approach every step
+        contact = resolve(human, ai, state, LATE)
+        pushed += contact.dv_ai[0]
+        assert contact.dv_ai[0] - contact.dv_human[0] == pytest.approx(8.0)  # approach removed
+    assert pushed == pytest.approx(MAX_DV_CONTACT)
+    for _ in range(round(QUIET_RESET / DT) + 1):
+        assert resolve(body(0, 0), body(9.0, 0), state, LATE) is None
+    contact = resolve(body(0, 0, vx=8.0), body(1.0, 0), state, LATE)
+    assert contact.dv_ai[0] == pytest.approx(MAX_DV_STEP)
 
 
 def test_symmetry_mirrored_positions_give_mirrored_results():
@@ -63,31 +119,80 @@ def test_symmetry_mirrored_positions_give_mirrored_results():
     assert left.depth == pytest.approx(right.depth)
 
 
-def test_velocity_change_removes_approach_but_never_adds_speed():
-    human = body(0, 0, vx=10.0)
-    ai = body(1.0, 0, vx=0.0)  # the human closes in at 10 m/s on a standing kart
-    state = PairState()
-    contact = resolve(human, ai, state, LATE)
-    dv = contact.dv_ai[0] - contact.dv_human[0]  # change of the relative velocity
-    assert dv == pytest.approx(MAX_DV_STEP)  # capped per step
-    assert contact.dv_ai[0] == pytest.approx(SHARE_AI * MAX_DV_STEP)
-    assert contact.dv_human[0] == pytest.approx(-SHARE_HUMAN * MAX_DV_STEP)
-    # Separating karts: positions are corrected but no velocity is touched.
-    separating = resolve(body(0, 0, vx=0.0), body(1.0, 0, vx=5.0), PairState(), LATE)
-    assert separating.dv_ai == (0.0, 0.0) and separating.dv_human == (0.0, 0.0)
+# -- never through each other, at any speed ---------------------------------------------------
 
 
-def test_accumulated_velocity_change_is_capped_per_contact_and_starts_again_after_a_pause():
+def run_pass(human, ai, steps=240, throttle_push=0.0):
+    """Both karts drive on in a straight line (``step_kart`` is not needed: the point is the
+    geometry) with contact resolved every step. Returns the smallest distance between any
+    two circles seen at the start of a step."""
+    closest = math.inf
     state = PairState()
-    removed = 0.0
-    for _ in range(100):
-        contact = resolve(body(0, 0, vx=10.0), body(1.0, 0, vx=0.0), state, LATE)
-        removed += contact.dv_ai[0] - contact.dv_human[0]
-    assert removed == pytest.approx(MAX_DV_CONTACT)
-    for _ in range(round(QUIET_RESET * 60) + 1):  # half a second apart
-        assert resolve(body(0, 0), body(9.0, 0), state, LATE) is None
-    contact = resolve(body(0, 0, vx=10.0), body(1.0, 0, vx=0.0), state, LATE)
-    assert contact.dv_ai[0] - contact.dv_human[0] == pytest.approx(MAX_DV_STEP)
+    for i in range(steps):
+        for b in (human, ai):
+            b.kart.x += b.kart.vx * DT
+            b.kart.y += b.kart.vy * DT
+        closest = min(closest, min_circle_distance(human.kart, ai.kart))
+        contact = resolve(human, ai, state, LATE + i * DT)
+        if contact is not None:
+            apply(human, ai, contact)
+        if throttle_push:  # the driver keeps the pedal down: the speed comes back every step
+            human.kart.vx += throttle_push * DT
+    return closest
+
+
+@pytest.mark.parametrize("closing", [2.0, 6.0, 10.0, 24.0, 40.0, 52.0])
+def test_a_kart_never_goes_through_another_from_behind(closing):
+    human = body(-12.0, 0.0, vx=closing)
+    ai = body(0.0, 0.0, vx=0.0)
+    assert run_pass(human, ai) >= 0.8 * TOUCH
+    assert human.kart.x < ai.kart.x  # still behind it
+
+
+@pytest.mark.parametrize("ai_speed", [0.0, 12.0, 18.0, 23.0])
+def test_overtaking_fast_does_not_cross_the_slower_kart(ai_speed):
+    human = body(-9.0, 0.0, vx=24.0)  # 24 m/s on a kart doing less, dead behind it
+    ai = body(0.0, 0.0, vx=ai_speed)
+    assert run_pass(human, ai, throttle_push=14.0) >= 0.8 * TOUCH
+    assert human.kart.x < ai.kart.x
+
+
+@pytest.mark.parametrize("speed", [5.0, 13.0, 26.0])
+def test_head_on_karts_do_not_cross(speed):
+    human = body(-15.0, 0.0, heading=0.0, vx=speed)
+    ai = body(15.0, 0.0, heading=math.pi, vx=-speed)  # closing at up to 52 m/s
+    assert run_pass(human, ai) >= 0.8 * TOUCH
+    assert human.kart.x < ai.kart.x
+
+
+@pytest.mark.parametrize("speed", [8.0, 26.0])
+def test_a_side_on_hit_does_not_cross(speed):
+    human = body(0.0, -10.0, heading=math.pi / 2, vy=speed)  # hits it broadside
+    ai = body(0.0, 0.0, heading=0.0, vx=0.0)
+    assert run_pass(human, ai) >= 0.8 * TOUCH
+    assert human.kart.y < ai.kart.y
+
+
+@pytest.mark.parametrize("offset", [0.9, 1.3, 1.8])
+def test_overtaking_alongside_at_speed_does_not_overlap(offset):
+    human = body(-6.0, offset, vx=24.0)
+    ai = body(0.0, 0.0, vx=18.0)
+    closest = run_pass(human, ai, steps=120)
+    assert closest >= 0.8 * TOUCH
+
+
+def test_a_clean_pass_wide_of_the_other_kart_is_not_touched():
+    human = body(-10.0, 3.0, vx=24.0)
+    ai = body(0.0, 0.0, vx=10.0)
+    state = PairState()
+    for i in range(90):
+        for b in (human, ai):
+            b.kart.x += b.kart.vx * DT
+        assert resolve(human, ai, state, LATE + i * DT) is None
+    assert human.kart.vx == 24.0
+
+
+# -- when it does not apply ---------------------------------------------------------------------
 
 
 def test_no_contact_between_different_levels():
@@ -113,6 +218,9 @@ def test_grace_windows():
     restarted = body(1.0, 0, grace_until=20.0 + RESTART_GRACE)  # an AI put back on the track
     assert resolve(body(0, 0), restarted, PairState(), 20.5) is None
     assert resolve(body(0, 0), restarted, PairState(), 20.0 + RESTART_GRACE + 0.1) is not None
+
+
+# -- Racer ------------------------------------------------------------------------------------
 
 
 def test_displace_moves_the_kart_and_relocates_it_on_the_track():

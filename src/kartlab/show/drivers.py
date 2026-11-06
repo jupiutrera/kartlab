@@ -21,6 +21,7 @@ RESTART_SECONDS = 3.0  # stuck or off the track this long: back to the start lin
 VALUE_SECONDS = 10.0  # how much history of V(s) the brain view keeps
 LIMITER_BAND = 2.0  # speed limiter: throttle fades out over this many m/s below the cap
 CONTACT_HOLD = 1.0  # after a bump the stuck and off-track timers stay frozen this long (s)
+CONTACT_FREEZE_MAX = 3.0  # ...but never more than this in one episode of bumps (s)
 
 
 def format_steps(steps: int) -> str:
@@ -117,6 +118,7 @@ class PolicyDriver:
         self.origin = 0.0
         self.no_contact_until = 0.0  # race time before which other karts do not touch it (s)
         self._contact_left = 0.0
+        self._frozen_for = 0.0  # time the timers have waited in this episode of bumps (s)
         self.trail: deque[tuple[float, float]] = deque(maxlen=14)
         # What the brain view shows: the observation the policy acted on, and V(s) at each
         # decision while tracking is on (a bounded history, about VALUE_SECONDS long).
@@ -150,7 +152,8 @@ class PolicyDriver:
         return self.racer.progress.distance - self.origin
 
     def touch(self) -> None:
-        """A kart bumped into this one: the stuck and off-track timers wait for a while."""
+        """A kart bumped into this one: the stuck and off-track timers wait for a while (on
+        the asphalt, and at most ``CONTACT_FREEZE_MAX`` per episode of bumps)."""
         self._contact_left = CONTACT_HOLD
 
     def set_tracking(self, on: bool) -> None:
@@ -168,6 +171,7 @@ class PolicyDriver:
         self.racer.reset(start_s, lateral)
         self.origin = -start_s
         self._contact_left = 0.0
+        self._frozen_for = 0.0
         self.no_contact_until = 0.0
         self.env.hold_action(np.zeros(2))
         self._phase = 0
@@ -195,6 +199,7 @@ class PolicyDriver:
         self._last_progress_time = racer.time
         self._off_since = None
         self._contact_left = 0.0
+        self._frozen_for = 0.0
         self.no_contact_until = racer.time + RESTART_GRACE
         self.restarts += 1
         self.trail.clear()
@@ -238,9 +243,13 @@ class PolicyDriver:
             return "lap"
         if self._contact_left > 0.0:  # being pushed around is not being stuck
             self._contact_left -= DT
-            self._last_progress_time = racer.time
-            if self._off_since is not None:
-                self._off_since = racer.time
+            if not racer.on_grass and self._frozen_for < CONTACT_FREEZE_MAX:
+                self._frozen_for += DT
+                self._last_progress_time = racer.time
+                if self._off_since is not None:
+                    self._off_since = racer.time
+        else:
+            self._frozen_for = 0.0  # the episode is over
         stuck = racer.time - self._last_progress_time > RESTART_SECONDS
         lost = self._off_since is not None and racer.time - self._off_since > RESTART_SECONDS
         if stuck or lost:
