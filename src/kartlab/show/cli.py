@@ -4,10 +4,38 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from kartlab.render.palette import KART_RAMPS, game_palette
 from kartlab.sim.track import Track
 from kartlab.sim.trackfile import TrackFileError
 from kartlab.sim.tracksets import resolve_track
 from kartlab.train.run import RunPaths
+
+# Names of the eight kart colours, in the order of ``KART_RAMPS`` (``KartVisual.ramp``).
+KART_COLOR_NAMES = ("Naranja", "Azul", "Morado", "Turquesa", "Rosa", "Amarillo", "Blanco", "Rojo")
+
+
+class NoCheckpoints(Exception):
+    """A run without checkpoints: the apps raise it; each ``main()`` turns it into an exit."""
+
+
+def kart_color_rgb(ramp: int) -> tuple[int, int, int]:
+    """Screen colour of a kart ramp (its main shade), for the top-down view and the menus."""
+    rgb = game_palette().rgb[KART_RAMPS[ramp % len(KART_RAMPS)][1]]
+    return int(rgb[0]), int(rgb[1]), int(rgb[2])
+
+
+def parse_kart_color(text: str) -> int:
+    """A kart colour by name (``azul``) or index (``1``); ``ValueError`` if it is neither."""
+    wanted = text.strip().lower()
+    if wanted.isdigit() and int(wanted) < len(KART_COLOR_NAMES):
+        return int(wanted)
+    for index, name in enumerate(KART_COLOR_NAMES):
+        if name.lower() == wanted:
+            return index
+    raise ValueError(
+        f"Color de kart no válido: «{text}». Usa un nombre ({', '.join(KART_COLOR_NAMES)}) "
+        f"o un número de 0 a {len(KART_COLOR_NAMES) - 1}."
+    )
 
 
 def resolve_track_or_exit(choice: str) -> Track:

@@ -41,7 +41,7 @@ from kartlab.render.view import (
 )
 from kartlab.show.brain import BrainPanel
 from kartlab.show.charts import MetricsReader, RewardChart
-from kartlab.show.cli import existing_run_or_exit, resolve_track_or_exit
+from kartlab.show.cli import NoCheckpoints, existing_run_or_exit, resolve_track_or_exit
 from kartlab.show.drivers import PolicyDriver, format_steps
 from kartlab.show.overlays import Overlays, ease_in_out
 from kartlab.show.scenes import SCENES, AttractScene, Scene, WatchScene
@@ -101,7 +101,7 @@ HELP_SECTIONS = (
         "Modos",
         (
             ("M", "cambiar de modo (ver · carrera · progresión)"),
-            ("Esc", "volver al título; en el título, salir"),
+            ("Esc", "volver al título (al menú, si vienes de él); en el título, salir"),
         ),
     ),
     (
@@ -176,10 +176,12 @@ class ViewerApp:
         rays: bool = False,
         diagnostics: bool = False,
         brain: bool = False,
+        embedded: bool = False,
     ) -> None:
         if not run.list_checkpoints():
-            raise SystemExit(f"{run.root} no tiene checkpoints")
+            raise NoCheckpoints(f"{run.root} no tiene checkpoints")
         self.run = run
+        self.embedded = embedded  # run by the main menu: Esc leaves, no title screen
         self.realtime = realtime
         self.laps = laps
         self.start_version = version
@@ -204,6 +206,7 @@ class ViewerApp:
         self.scale = scale
         self.allow_auto_light = True
         self.running = False
+        self.quit_requested = False  # the window was closed (the main menu closes too)
         self.t = 0.0  # UI clock (s): advances with the display, also while paused
         self._fade: list | None = None  # [start, callback, fired]
         self._job: tuple[str, Callable[[], None]] | None = None
@@ -230,7 +233,7 @@ class ViewerApp:
         self.attract = AttractScene(self)
         self.scene: Scene = self.attract
         self.state = "title"
-        if mode is None:
+        if mode is None and not embedded:
             self._enter_title()
         else:
             self._enter_scene(mode)
@@ -420,7 +423,10 @@ class ViewerApp:
 
     def _scene_key(self, key: int) -> None:
         if key == pygame.K_ESCAPE:
-            self.go_title()
+            if self.embedded:
+                self.running = False  # back to the main menu
+            else:
+                self.go_title()
         elif key == pygame.K_m:
             self.next_mode()
         elif self.scene.on_key(key):
@@ -488,6 +494,7 @@ class ViewerApp:
 
     def handle_event(self, event: pygame.event.Event) -> None:
         if event.type == pygame.QUIT:
+            self.quit_requested = True
             self.running = False
         elif event.type == pygame.KEYDOWN:
             self.handle_key(event.key)
@@ -766,22 +773,25 @@ def main(argv: list[str] | None = None) -> None:
     else:
         track = None
         resolve_track_or_exit(args.track)  # fail now, with a clear message
-    app = ViewerApp(
-        run,
-        args.track,
-        track,
-        args.mode,
-        args.camera,
-        args.variant,
-        args.scale,
-        args.fullscreen,
-        realtime=args.frames is None,
-        laps=max(1, args.laps),
-        version=args.version,
-        rays=args.rays,
-        diagnostics=args.diagnostics,
-        brain=args.brain,
-    )
+    try:
+        app = ViewerApp(
+            run,
+            args.track,
+            track,
+            args.mode,
+            args.camera,
+            args.variant,
+            args.scale,
+            args.fullscreen,
+            realtime=args.frames is None,
+            laps=max(1, args.laps),
+            version=args.version,
+            rays=args.rays,
+            diagnostics=args.diagnostics,
+            brain=args.brain,
+        )
+    except NoCheckpoints as error:
+        raise SystemExit(str(error)) from None
     try:
         app.run_loop(args.frames)
         if args.screenshot:

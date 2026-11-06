@@ -66,7 +66,12 @@ def build_model(config: TrainConfig, vec_env, tensorboard: Path | None):
     )
 
 
-def train(config: TrainConfig, runs_dir: Path = RUNS_DIR, verbose: int = 1) -> RunPaths:
+def train(
+    config: TrainConfig,
+    runs_dir: Path = RUNS_DIR,
+    verbose: int = 1,
+    stop_file: Path | None = None,
+) -> RunPaths:
     import torch
     from stable_baselines3.common.callbacks import CallbackList
 
@@ -75,6 +80,7 @@ def train(config: TrainConfig, runs_dir: Path = RUNS_DIR, verbose: int = 1) -> R
         CurriculumCallback,
         EvalCallback,
         MetricsCallback,
+        StopFileCallback,
     )
 
     if config.low_priority:
@@ -93,6 +99,9 @@ def train(config: TrainConfig, runs_dir: Path = RUNS_DIR, verbose: int = 1) -> R
         run, config.eval_every, config.eval_tracks, config.env_config(), config.eval_laps, verbose
     )
     callbacks = [metrics, checkpoints, evaluation]
+    stopper = StopFileCallback(stop_file) if stop_file is not None else None
+    if stopper is not None:
+        callbacks.append(stopper)
     if config.curriculum:
         callbacks.append(CurriculumCallback(config.curriculum, verbose))
 
@@ -105,8 +114,11 @@ def train(config: TrainConfig, runs_dir: Path = RUNS_DIR, verbose: int = 1) -> R
         if verbose:
             print("Interrumpido: guardando el último checkpoint", flush=True)
     finally:
+        stopped = stopper is not None and stopper.stopped
+        if stopped and verbose:
+            print("Parado desde el menú: guardando el último checkpoint", flush=True)
         checkpoints.save()
-        if not interrupted:
+        if not (interrupted or stopped):  # a stop is a deliberate cut: no final evaluation
             evaluation.run_eval()
         vec_env.close()
 
@@ -116,7 +128,7 @@ def train(config: TrainConfig, runs_dir: Path = RUNS_DIR, verbose: int = 1) -> R
         {
             "steps": int(model.num_timesteps),
             "seconds": round(time.perf_counter() - start, 1),
-            "interrupted": interrupted,
+            "interrupted": interrupted or stopped,
             "first_lap": metrics.first_lap,
             "best_eval": None
             if best is None
@@ -132,6 +144,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--name", help="nombre del run (por defecto, el de la configuración)")
     parser.add_argument("--steps", type=int, help="pasos totales (sustituye a total_steps)")
     parser.add_argument("--runs-dir", type=Path, default=RUNS_DIR)
+    parser.add_argument(
+        "--stop-file",
+        type=Path,
+        help="si este fichero existe, se para guardando un checkpoint (lo usa el menú)",
+    )
     args = parser.parse_args(argv)
 
     config = TrainConfig.from_yaml(args.config)
@@ -141,5 +158,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.steps:
         overrides["total_steps"] = args.steps
     config = dataclasses.replace(config, **overrides)
-    run = train(config, args.runs_dir)
+    run = train(config, args.runs_dir, stop_file=args.stop_file)
     print(f"Terminado: {run.root}")
+
+
+if __name__ == "__main__":  # python -m kartlab.train.train (the main menu launches it so)
+    main()
