@@ -480,6 +480,8 @@ class DriveApp:
             return 0.0
         position = self.track.locate_following(ghost.x, ghost.y, self._ghost_hint)
         self._ghost_hint = position.index
+        if abs(position.lateral) > self.track.half_width:
+            return 0.0  # on the grass beside a ramp: on the ground
         return self.track.height_at(position.s)
 
     def trial_hud(self) -> TrialHud:

@@ -73,11 +73,14 @@ class Racer:
 
     @property
     def level_z(self) -> float:
-        """Height (m) of the road under the kart: 0 except on a bridge and its ramps.
+        """Height (m) of the ground under the kart: 0 except on a bridge and its ramps (a kart on
+        the grass beside them is on the ground).
 
         Other code that asks "how high is this kart" (contact between karts, the renderer's
         ``lift``) adds the hop height of the sweep on top of it.
         """
+        if abs(self.position.lateral) > self.track.half_width:
+            return 0.0  # on the grass beside a ramp or the deck: on the ground
         return self.track.height_at(self.position.s)
 
     def displace(self, dx: float, dy: float) -> None:

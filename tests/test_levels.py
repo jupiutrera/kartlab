@@ -347,3 +347,42 @@ def test_the_ghost_crosses_the_bridge_without_changing_branch(bridge, levels, tm
         previous = pos.s
         highest = max(highest, bridge.height_at(pos.s))
     assert highest == pytest.approx(levels.deck_height)
+
+
+@pytest.mark.parametrize("angle", [0.0, math.radians(30), math.pi / 2])
+@pytest.mark.parametrize("speed", [10.0, 20.0, 30.0])
+@pytest.mark.parametrize("side", [+1.0, -1.0])
+def test_grazing_the_tunnel_wall_never_teleports_the_kart(bridge, levels, side, speed, angle):
+    """A hit on the wall in the middle of the tunnel only moves the kart sideways, by the wall."""
+    for offset in (-6.0, -2.0, 0.0, 3.0, 6.0):
+        s = levels.s_under + offset
+        racer = Racer(bridge, start_s=s)
+        racer.reset(s, lateral=side * (bridge.half_width - WALL_INSET - 0.5),
+                    heading_offset=side * angle, speed=speed)  # fmt: skip
+        branch = racer.level_z
+        progress = racer.progress.distance
+        for _ in range(40):
+            before = (racer.kart.x, racer.kart.y)
+            racer.step(0.0, 1.0)
+            moved = math.hypot(racer.kart.x - before[0], racer.kart.y - before[1])
+            assert moved <= speed * 1.5 * DT + 1.0, f"jumped {moved:.1f} m at offset {offset}"
+            assert racer.progress.distance >= progress - 1.0, "the net progress went backwards"
+            progress = max(progress, racer.progress.distance)
+            assert racer.level_z == branch  # still on the lower road
+            assert abs(levels.wrap(racer.position.s - levels.s_under)) < 60.0  # same branch
+
+
+def test_a_kart_on_the_grass_beside_the_ramp_or_deck_is_on_the_ground(bridge, levels):
+    for s in (levels.s_over - levels.deck_half - 8.0, levels.s_over, levels.s_over + 6.0):
+        on_road = Racer(bridge, start_s=s, lateral=bridge.half_width - 1.0)
+        beside = Racer(bridge, start_s=s, lateral=bridge.half_width + 1.0)
+        assert on_road.level_z == pytest.approx(bridge.height_at(s), abs=1e-6)
+        assert beside.level_z == 0.0 and on_road.level_z > 0.5
+    # the same walls hold a kart out of the road, so the grass never turns into deck by itself
+    racer = Racer(bridge, start_s=levels.s_over, lateral=bridge.half_width + 3.0)
+    racer.reset(
+        levels.s_over, lateral=bridge.half_width + 3.0, heading_offset=-math.pi / 2, speed=8.0
+    )
+    for _ in range(90):
+        racer.step(0.0, 0.5)
+        assert racer.level_z == 0.0

@@ -78,7 +78,7 @@ class RideHeight:
             return 0.0
         position = track.locate_following(kart.x, kart.y, self._hint)
         self._hint = position.index
-        ground = track.height_at(position.s)
+        ground = 0.0 if abs(position.lateral) > track.half_width else track.height_at(position.s)
         target = ground
         if self.duck and ground < 0.5 and levels.in_tunnel_zone(*eye, TUNNEL_MARGIN):
             target = min(levels.ceiling - TUNNEL_HEADROOM - lens.height, 0.0)

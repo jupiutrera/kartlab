@@ -171,15 +171,21 @@ class Levels:
         was one step ago. The correction relocates the kart to the surface of the obstacle
         and removes only the velocity that points into it: no tangential friction.
         """
-        moved = self._wall(kart, position, previous)
-        if self._near_under_list[position.index] and self._embankment(kart, position):
+        wall = self._wall(kart, position, previous)
+        moved = wall != 0
+        # ``position`` is from before the wall moved the kart: a kart the wall pushed back into
+        # the tunnel is in the tunnel, whatever its old lateral offset said.
+        if self._near_under_list[position.index] and self._embankment(
+            kart, position, pushed_in=wall == 1
+        ):
             moved = True
         return moved
 
     def _wall(self, kart: KartState, position: TrackPosition, previous: TrackPosition | None):
+        """0 if the wall did nothing, 1 if it pushed the kart in, 2 if it pushed it out."""
         i = position.index
         if not self._walled_list[i]:
-            return False
+            return 0
         track = self._track
         lateral = position.lateral
         reach = abs(lateral)
@@ -188,7 +194,7 @@ class Levels:
         # Inside the walls unless the kart came from the grass (it was beyond the asphalt).
         inside = previous is None or abs(previous.lateral) <= outer
         if inside and reach <= inner or not inside and reach > outer:
-            return False
+            return 0
         sign = 1.0 if lateral >= 0.0 else -1.0
         nx, ny = -track._dir_y[i], track._dir_x[i]  # left normal: lateral grows along it
         away = sign if inside else -sign  # which way the wall blocks the kart
@@ -198,12 +204,14 @@ class Levels:
         kart.x += sign * nx * shift
         kart.y += sign * ny * shift
         self._cancel(kart, away * nx, away * ny)
-        return True
+        return 1 if inside else 2
 
-    def _embankment(self, kart: KartState, position: TrackPosition) -> bool:
+    def _embankment(self, kart: KartState, position: TrackPosition, pushed_in: bool) -> bool:
         """Push a kart of the lower branch out of the solid ground under the upper road."""
         inner = self.half_width - WALL_INSET
-        if self._walled_list[position.index] and abs(position.lateral) <= inner + 1e-6:
+        if self._walled_list[position.index] and (
+            pushed_in or abs(position.lateral) <= inner + 1e-6
+        ):
             return False  # inside the tunnel
         hit = self._bank_hit(kart.x, kart.y)
         if hit is None:
