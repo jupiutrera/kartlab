@@ -19,6 +19,9 @@ LIGHTS = ("day", "sunset", "night")
 CAMERAS = ("auto", "chase", "broadcast", "top")
 DEFAULT_TRACK = "harbor"
 KART_COUNT = 8
+RACE_DIFFICULTIES = ("facil", "normal", "dificil", "campeon")  # as in humanrace.DIFFICULTIES
+RACE_LAPS = (1, 3, 5)
+RACE_RIVALS = (1, 2, 3)
 
 
 @dataclass
@@ -30,6 +33,11 @@ class Settings:
     last_track: str = DEFAULT_TRACK  # "harbor", "file:tracks/x.json", "random", "eval:7"...
     last_run: str = ""  # folder name of the run the AI modes use ("": the latest)
     kart_ramp: int = 0  # the player's kart colour (an index of KART_RAMPS)
+    # The race against the AI (the options screen of "Carrera contra la IA").
+    race_difficulty: str = "normal"
+    race_rivals: int = 2
+    race_laps: int = 3
+    race_collisions: bool = True
 
     # -- loading and saving --------------------------------------------------------------
 
@@ -64,6 +72,14 @@ class Settings:
             return isinstance(value, str) and len(value) < 300
         if name == "kart_ramp":
             return type(value) is int and 0 <= value < KART_COUNT
+        if name == "race_difficulty":
+            return value in RACE_DIFFICULTIES
+        if name == "race_rivals":
+            return type(value) is int and value in RACE_RIVALS
+        if name == "race_laps":
+            return type(value) is int and value in RACE_LAPS
+        if name == "race_collisions":
+            return isinstance(value, bool)
         return False
 
     def to_json(self) -> str:

@@ -354,7 +354,10 @@ class MenuScreen(Screen):
     def __init__(self, hub: KartLabApp, entries: list[Entry]) -> None:
         super().__init__(hub)
         self.entries = entries
-        self.selected = 0
+        # It opens on the first entry that can be opened (the AI modes are off without a run).
+        self.selected = next(
+            (i for i, e in enumerate(entries) if hub.disabled_reason(e) is None), 0
+        )
         self.esc_until = -1.0  # a second Esc before this time leaves
         self._rows: list[tuple[str, Entry | str, pygame.Rect]] = []
         self.rects: dict[int, pygame.Rect] = {}  # entry index -> its row

@@ -211,10 +211,12 @@ def test_invalid_values_fall_back_one_by_one(tmp_path):
 def test_keyboard_moves_the_selection_and_wraps(make_hub):
     app = make_hub()
     menu = app.main_screen
-    assert app.entries[menu.selected].key == "contrarreloj"
+    assert app.entries[menu.selected].key == "contrarreloj"  # the first one that is on
     key(app, pygame.K_DOWN)
     assert app.entries[menu.selected].key == "conduccion"
     key(app, pygame.K_UP)
+    key(app, pygame.K_UP)
+    assert app.entries[menu.selected].key == "carrera"  # off without a run, but on the list
     key(app, pygame.K_UP)
     assert app.entries[menu.selected].key == "salir"  # wrapped
 

@@ -46,6 +46,7 @@ from kartlab.show.menu import (
     open_folder,
 )
 from kartlab.show.pickers import KartScreen, TrackCatalog, TrackScreen
+from kartlab.show.raceoptions import RaceOptionsScreen, race_choices
 from kartlab.show.settings import SETTINGS_PATH, Settings
 from kartlab.show.title import build_wordmark
 from kartlab.show.training_job import CONFIGS_DIR, LOGS_DIR, TrainingJob, live_run
@@ -141,6 +142,52 @@ def launch_progression(hub: KartLabApp, choices: dict) -> None:
     launch_viewer(hub, choices, "progression")
 
 
+def launch_vs_ai(hub: KartLabApp, choices: dict) -> None:
+    """Carrera contra la IA: ``kart``, ``track`` and ``race`` come from the flow's steps."""
+    from kartlab.show.viewer import ViewerApp
+
+    run = hub.opponent_run()
+    if run is None:
+        hub.message("Sin IA", NO_RUN_REASON + ".")
+        return
+    choice = choices["track"]
+    track = hub.resolve_track(choice)
+    if track.crossings:
+        raise ActivityError(
+            "Circuito no válido", "La carrera contra la IA no admite circuitos con cruces a nivel."
+        )
+    race = choices["race"]
+    try:
+        app = ViewerApp(
+            run,
+            choice,
+            track,
+            "vsai",
+            _camera(hub, None),
+            hub.settings.light,
+            hub.scale,
+            hub.fullscreen,
+            realtime=hub.realtime,
+            embedded=True,
+            vs_laps=race["laps"],
+            rivals=race["rivals"],
+            difficulty=race["difficulty"],
+            collisions=race["collisions"],
+            kart_ramp=choices.get("kart", hub.settings.kart_ramp),
+        )
+    except NoCheckpoints as error:
+        hub.message("Sin checkpoints", str(error))
+        return
+    hub.run_activity(
+        app, lambda: app.run_loop(hub.activity_frames), app.save_screenshot, close=app.close
+    )
+
+
+def no_crossings(option) -> bool:
+    """The circuits of the race against the AI: playable ones without level crossings."""
+    return option.track is not None and not option.track.crossings
+
+
 def launch_live(hub: KartLabApp, run) -> None:
     from kartlab.show.live import LiveApp
 
@@ -194,6 +241,16 @@ def launch_quit(hub: KartLabApp, choices: dict) -> None:
 
 
 ENTRIES: list[Entry] = [
+    Entry(
+        "carrera",
+        "Carrera contra la IA",
+        "Tú contra karts de la IA: cuenta atrás, vueltas y choques suaves",
+        "JUGAR",
+        ("kart", "track", "race"),
+        launch_vs_ai,
+        needs_run=True,
+        track_filter=no_crossings,
+    ),
     Entry(
         "contrarreloj",
         "Contrarreloj con fantasma",
@@ -277,6 +334,7 @@ STEPS: dict[str, Step] = {
     "edit_track": Step(
         lambda hub, flow: TrackScreen(hub, flow, for_editor=True), lambda hub: "new"
     ),
+    "race": Step(RaceOptionsScreen, lambda hub: race_choices(hub.settings)),
     "options": Step(OptionsScreen),
     "train": Step(TrainScreen),
 }
@@ -447,6 +505,7 @@ class KartLabApp:
         self.time_to_menu: float | None = None
         self._run_cache: tuple[float, list, object | None] | None = None
         self._live_cache: tuple[float, object | None] | None = None
+        self._opponent_cache: tuple[float, object | None] | None = None
 
         self.screen = open_window(TITLE, self.scale, self.fullscreen)
         self.clock = pygame.time.Clock()
@@ -512,6 +571,7 @@ class KartLabApp:
     def invalidate(self) -> None:
         self._run_cache = None
         self._live_cache = None
+        self._opponent_cache = None
 
     def _scan_runs(self) -> list:
         from kartlab.train.run import RunPaths
@@ -541,6 +601,22 @@ class KartLabApp:
             if wanted and run.root.name == wanted:
                 return run
         return runs[0] if runs else None
+
+    def opponent_run(self):
+        """The AI of the race against the AI: the run chosen in Opciones if there is one, else
+        the best generalist (see ``versions.best_generalist_run``); ``None`` if no run has
+        checkpoints."""
+        runs = self._runs()
+        wanted = self.settings.last_run
+        for run in runs:
+            if wanted and run.root.name == wanted:
+                return run
+        now = time.perf_counter()
+        if self._opponent_cache is None or now - self._opponent_cache[0] > CACHE_SECONDS:
+            from kartlab.show.versions import best_generalist_run
+
+            self._opponent_cache = (now, best_generalist_run(self.runs_dir))
+        return self._opponent_cache[1]
 
     def latest_run_with_config(self):
         from kartlab.train.run import latest_run
