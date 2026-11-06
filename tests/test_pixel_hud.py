@@ -543,6 +543,17 @@ def test_the_big_lettering_only_shrinks_when_no_room_is_left():
     assert cell == 6 and center == (160, 68)  # with room it stays where it was
 
 
+def test_with_nothing_in_the_way_the_pop_reaches_its_full_size():
+    # The pop used to be checked on the search lattice, whose points depend on the parity of
+    # the size, so a size that fitted right there was thrown away and the sign looked smaller.
+    for text in ("3", "2", "1", "¡YA!", "¡META!", "ÚLTIMA VUELTA"):
+        for cell in (4, 5, 6, 7):
+            for pop in range(0, 9):
+                got, center = bigtext.place_sign(text, cell, pop, 0.7, (160, 68), ())
+                assert center == (160, 68), (text, cell, pop)
+                assert got == bigtext.fit_cell(text, cell + pop, 0.7), (text, cell, pop)
+
+
 def test_the_results_card_of_the_top_down_trial_covers_no_panel(trial_app, monkeypatch):
     app = trial_app()
     app.run(max_frames=5)

@@ -100,10 +100,16 @@ def place_label(
     if rect.top < bounds.top + 1:  # at the top edge: below the kart instead
         rect.midtop = (round(kart[0]), round(kart[1]) + 5)
         step = rect.height
-    rect.clamp_ip(bounds.inflate(-6, -2))  # room for the outline of the letters
-    while rect.collidelist(placed) != -1:  # karts side by side: stack the labels
-        rect.move_ip(0, step)
-    return rect
+    inner = bounds.inflate(-6, -2)  # room for the outline of the letters
+    rect.clamp_ip(inner)
+    start = rect.copy()
+    for direction in (step, -step):  # karts side by side: stack the labels, away from the edge
+        rect = start.copy()
+        while rect.collidelist(placed) != -1 and inner.contains(rect):
+            rect.move_ip(0, direction)
+        if inner.contains(rect):
+            return rect
+    return start  # no room either way: overlap another label rather than poke out of the map
 
 
 class LiveApp:

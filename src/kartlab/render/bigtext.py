@@ -192,15 +192,27 @@ def place_sign(
     rects = tuple(tuple(r) for r in avoid)
     settled = fit_cell(text, cell, share, bold)
     for c in range(settled, 1, -1):
-        spot = _free_center(sign_size(text, c, bold), center, rects)
+        size = sign_size(text, c, bold)
+        spot = center if _clear_at(size, center, rects) else _free_center(size, center, rects)
         if spot is not None:
             break
     else:
         return 1, center
     for grown in range(fit_cell(text, cell + pop, share, bold), c, -1):
-        if _free_center(sign_size(text, grown, bold), spot, rects) == spot:
+        if _clear_at(sign_size(text, grown, bold), spot, rects):
             return grown, spot
     return c, spot
+
+
+def _clear_at(
+    size: tuple[int, int], center: tuple[int, int], avoid: tuple[tuple[int, int, int, int], ...]
+) -> bool:
+    """Whether a ``size`` rectangle centred on ``center`` touches none of ``avoid``. Checked
+    directly, not on the search lattice of ``_free_center``: the lattice depends on the
+    parity of the size, so a size that fits right there could look as if it did not."""
+    w, h = size
+    box = pygame.Rect(center[0] - w // 2, center[1] - h // 2, w, h)
+    return box.collidelist([pygame.Rect(r) for r in avoid]) < 0
 
 
 def countdown(

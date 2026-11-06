@@ -318,6 +318,14 @@ def test_the_ghost_labels_stay_whole_inside_the_map_even_at_its_edges():
             assert bounds.contains(rect), (kart, width, rect)
             assert rect.collidelist(placed) == -1, (kart, width, rect, placed)
             placed.append(rect)
+    # Karts bunched up near the top or the bottom edge: the labels stack away from that edge
+    # instead of poking out of the map (at the start of a race the karts are side by side).
+    for kart in [(110, 12), (110, 20), (110, 168), (110, 160), (5, 14), (219, 166)]:
+        placed = []
+        for width in widths:
+            rect = place_label(width, kart, bounds, placed)
+            assert bounds.contains(rect), (kart, width, rect)
+            placed.append(rect)
     # With room all round the label is centred above its kart, as always.
     rect = place_label(60, (100, 90), bounds, [])
     assert rect.midbottom == (100, 85)
