@@ -45,11 +45,16 @@ def distance_to_track(track, x, y):
     nxt = np.roll(pts, -1, axis=0)
     seg = nxt - pts
     length2 = (seg**2).sum(axis=1)
-    px = x[..., None] - pts[:, 0]
-    py = y[..., None] - pts[:, 1]
-    t = np.clip((px * seg[:, 0] + py * seg[:, 1]) / length2, 0.0, 1.0)
-    d = np.hypot(px - t * seg[:, 0], py - t * seg[:, 1])
-    return d.min(axis=-1)
+    flat_x, flat_y = np.ravel(x), np.ravel(y)
+    nearest = np.empty(flat_x.shape)
+    # In blocks of points: all points against all segments at once is over a gigabyte.
+    for start in range(0, len(flat_x), 2048):
+        block = slice(start, start + 2048)
+        px = flat_x[block, None] - pts[:, 0]
+        py = flat_y[block, None] - pts[:, 1]
+        t = np.clip((px * seg[:, 0] + py * seg[:, 1]) / length2, 0.0, 1.0)
+        nearest[block] = np.hypot(px - t * seg[:, 0], py - t * seg[:, 1]).min(axis=-1)
+    return nearest.reshape(np.shape(x))
 
 
 # -- the camera -----------------------------------------------------------------------
