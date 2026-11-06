@@ -235,11 +235,16 @@ class Track:
         if not self.crossings:
             return covered[0], covered[1]
         idx = np.arange(self._n)
-        gap = np.abs(idx[:, None] - idx[None, :])
-        far = np.minimum(gap, self._n - gap) > self._branch_guard()
-        for k, edge in enumerate((self.left_edge, self.right_edge)):
-            d2 = ((edge[:, None, :] - self.points[None, :, :]) ** 2).sum(axis=2)
-            covered[k] = np.where(far, d2, np.inf).min(axis=1) < (self.half_width + 0.1) ** 2
+        guard = self._branch_guard()
+        reach2 = (self.half_width + 0.1) ** 2
+        # In blocks of samples: the full (samples x samples) matrices take hundreds of MB.
+        for start in range(0, self._n, 128):
+            rows = slice(start, min(start + 128, self._n))
+            gap = np.abs(idx[rows, None] - idx[None, :])
+            far = np.minimum(gap, self._n - gap) > guard
+            for k, edge in enumerate((self.left_edge, self.right_edge)):
+                d2 = ((edge[rows, None, :] - self.points[None, :, :]) ** 2).sum(axis=2)
+                covered[k][rows] = np.where(far, d2, np.inf).min(axis=1) < reach2
         return covered[0], covered[1]
 
     def _dist2(self, x: float, y: float, i: int) -> float:
