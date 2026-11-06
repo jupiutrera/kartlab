@@ -23,6 +23,10 @@ events.out.tfevents.*
 # Contrarreloj: la mejor vuelta de cada circuito
 records/
 
+# Menú principal: ajustes del jugador y registros de los entrenamientos que lanza
+settings.json
+logs/
+
 # Vídeos y capturas generadas
 videos/
 *.mp4
