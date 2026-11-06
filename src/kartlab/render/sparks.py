@@ -84,9 +84,9 @@ def spark_spec(charge: float) -> SparkSpec:
     c = min(max(charge, 0.0), 1.0)
     full = 1.0 if c >= 1.0 else 0.0
     return SparkSpec(
-        rate=8.0 + 100.0 * c,  # barely a few sparks in the dead zone
-        size=0.05 + 0.08 * c,
-        life=0.18 + 0.28 * c + 0.12 * full,  # at full charge they fly longer
+        rate=6.0 + 62.0 * c,  # barely a few sparks in the dead zone
+        size=0.05 + 0.09 * c,
+        life=0.16 + 0.22 * c + 0.08 * full,  # at full charge they fly longer
         lift=1.2 + 2.2 * c,
         reach=2.0 + 2.5 * c + 1.5 * full,
     )
@@ -108,7 +108,7 @@ def flame_spec(level: float, charge: float) -> FlameSpec:
     lv = min(max(level, 0.0), 1.0)
     ch = min(max(charge, 0.0), 1.0)
     return FlameSpec(
-        rate=120.0 * lv * (0.5 + 0.5 * ch),
+        rate=90.0 * lv * (0.5 + 0.5 * ch),
         size=0.06 + 0.10 * lv,
         life=0.08 + 0.12 * lv,
         speed=2.0 + 5.0 * lv,
