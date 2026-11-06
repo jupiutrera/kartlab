@@ -185,9 +185,12 @@ class Overlays:
                 ui.hline(self.canvas, cursor, y + 11, widths[i], ui.YELLOW)
             cursor += widths[i] + gap
 
-    def countdown(self, frame: int, start_frames: int, fps: int) -> None:
-        """3, 2, 1 before ``start_frames`` and "¡YA!" right after, in big letters."""
-        bigtext.countdown(self.canvas, frame, start_frames, fps)
+    def countdown(self, frame: int, start_frames: int, fps: int) -> pygame.Rect | None:
+        """3, 2, 1 before ``start_frames`` and "¡YA!" right after, in big letters, clear of
+        the panels of the frame."""
+        return bigtext.countdown(
+            self.canvas, frame, start_frames, fps, avoid=self.game.hud.reserved
+        )
 
 
 def build_help(title: str | None, columns: list[list[tuple[str, str, bool]]]) -> pygame.Surface:

@@ -499,3 +499,45 @@ def test_the_top_down_signs_sit_clear_of_the_data_panels(tmp_path):
             assert not any(sign.colliderect(plate) for plate in plates), (sign, plates)
     finally:
         pygame.quit()
+
+
+# -- the big lettering and the results card keep clear of the panels ------------------------------
+
+
+def test_the_countdown_and_the_banners_cover_no_panel_with_seven_versions_racing(view):
+    ov = Overlays(view)
+    hud = RaceHud(ov)
+    rows = [(i, f"{(i + 1) * 100}k pasos", "1/2") for i in range(7)]
+    info = HudInfo(
+        laps=0,
+        lap_time=0.0,
+        best_lap=None,
+        speed=0.0,
+        label="Carrera de versiones",
+        extra=["Puerto", "2 vueltas", "Sigues a 1,5M pasos"],
+        lap_panel=False,
+    )
+    drawn = 0
+    for age in (0.0, 0.05, 0.1, 0.2, 0.5, 1.0):
+        for step in range(0, 241, 5):
+            frame(view, info)
+            ov.standings(rows, (3, 3), 1)
+            rect = hud.countdown(step, 180, 60)
+            if rect is not None:
+                drawn += 1
+                assert not overlaps(view, rect), (step, rect, view.hud.reserved)
+        for text in ("ÚLTIMA VUELTA", "¡META!"):
+            frame(view, info)
+            ov.standings(rows, (3, 3), 1)
+            rect = hud.banner(text, age)
+            assert rect is not None and not overlaps(view, rect), (text, age, rect)
+    assert drawn > 20
+
+
+def test_the_big_lettering_only_shrinks_when_no_room_is_left():
+    avoid = [(0, 0, 320, 120)]  # a panel over the top two thirds of the canvas
+    cell, center = bigtext.place_sign("¡YA!", 6, 0, 0.7, (160, 68), avoid)
+    width, height = bigtext.sign_size("¡YA!", cell)
+    assert cell < 6 and center[1] - height // 2 >= 120  # it dropped below the panel and shrank
+    cell, center = bigtext.place_sign("¡YA!", 6, 0, 0.7, (160, 68), ())
+    assert cell == 6 and center == (160, 68)  # with room it stays where it was
