@@ -432,6 +432,22 @@ def test_the_kart_is_chosen_with_arrows_or_the_mouse(make_hub):
     assert saved["kart_ramp"] == 3
 
 
+def test_the_3d_backdrop_is_built_in_a_thread_while_the_menu_answers(make_hub):
+    app = make_hub(realtime=True, background=True)
+    app.run(1)
+    assert app.backdrop.game is None  # still building: a plain dark background, but the menu is up
+    assert app.time_to_menu < 2.0
+    key(app, pygame.K_DOWN)  # and it answers meanwhile
+    assert app.entries[app.main_screen.selected].key == "conduccion"
+    for _ in range(600):  # up to ten seconds
+        app.run(1)
+        if app.backdrop.game is not None and app.backdrop.fade >= 1.0:
+            break
+    assert app.backdrop.error is None
+    assert app.backdrop.game is not None and app.backdrop.fade == 1.0
+    app.close()
+
+
 def test_the_accept_button_confirms_and_clicking_the_kart_does_not(make_hub):
     app = make_hub()
     key(app, pygame.K_RETURN)

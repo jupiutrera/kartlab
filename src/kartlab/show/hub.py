@@ -16,6 +16,7 @@ import argparse
 import contextlib
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Callable
@@ -55,6 +56,7 @@ from kartlab.sim.showcase import showcase_track
 from kartlab.sim.trackfile import TrackFileError, load_spec
 
 TITLE = "KART LAB"
+BACKGROUND = (14, 14, 22)  # until the 3D backdrop is ready
 TRACKS_DIR = REPO_ROOT / "tracks"
 RUNS_DIR = REPO_ROOT / "runs"
 MAX_PENDING = 0.1  # never advance more than this after a stall (s)
@@ -284,29 +286,68 @@ STEPS: dict[str, Step] = {
 
 
 class Backdrop:
-    """A kart driven by the reference autopilot behind the menu (built after the first frame)."""
+    """A kart driven by the reference autopilot behind the menu.
+
+    The 3D view takes about two seconds to build (floor texture, clouds, mipmaps), so in real
+    time it is built in a thread while the menu already answers; until it is ready the screen
+    is a plain dark colour, and then it fades in. Headless runs build it at once."""
+
+    FADE_SECONDS = 0.8
 
     def __init__(self, hub: KartLabApp) -> None:
         self.hub = hub
         self.game: GameView | None = None
         self.pending = 0.0
+        self.fade = 0.0  # 0: not shown yet, 1: fully shown
+        self.error: Exception | None = None
+        self._thread: threading.Thread | None = None
+        self._result: tuple | None = None
+        self._black: pygame.Surface | None = None
 
-    def build(self) -> None:
+    # -- building ------------------------------------------------------------------------
+
+    def start(self, threaded: bool) -> None:
         hub = self.hub
-        track = showcase_track("harbor")
-        self.racer = Racer(track)
-        self.pilot = Autopilot(track)
+        args = (hub.screen.get_size(), hub.settings.light, hub.settings.kart_ramp)
+        if threaded:
+            self._thread = threading.Thread(
+                target=self._work, args=args, name="menu-backdrop", daemon=True
+            )
+            self._thread.start()
+        else:
+            self._work(*args)
+            self._adopt()
+            self.fade = 1.0  # deterministic captures: no fade
+
+    def _work(self, size: tuple[int, int], light: str, ramp: int) -> None:
+        try:
+            track = showcase_track("harbor")
+            game = GameView(track, size, "chase", light, seed=track.decoration_seed, ramps=(ramp,))
+            self._result = (Racer(track), Autopilot(track), game)
+        except Exception as error:  # no backdrop is better than no menu
+            self.error = error
+
+    def _adopt(self) -> None:
+        """Take the finished view (in the main thread, which owns the window)."""
+        if self._result is None:
+            return
+        self.racer, self.pilot, self.game = self._result
+        self._result = None
         self.throttle = 0.0
-        self.game = GameView(
-            track,
-            hub.screen.get_size(),
-            "chase",
-            hub.settings.light,
-            seed=track.decoration_seed,
-            ramps=(hub.settings.kart_ramp,),
-        )
+        size = self.hub.screen.get_size()
+        if self.game.window != size:  # the window changed while it was being built
+            self.game.resize(size)
+        self.set_light(self.hub.settings.light)
+
+    def wait(self, timeout: float = 5.0) -> None:
+        """Before the window goes away: let a running build finish."""
+        if self._thread is not None:
+            self._thread.join(timeout)
+
+    # -- per frame -----------------------------------------------------------------------
 
     def resize(self, size: tuple[int, int]) -> None:
+        self._black = None
         if self.game is not None:
             self.game.resize(size)
 
@@ -315,8 +356,12 @@ class Backdrop:
             self.game.world.set_variant(light)
 
     def update(self, dt: float) -> None:
+        if self._thread is not None and not self._thread.is_alive():
+            self._thread = None
+            self._adopt()
         if self.game is None:
             return
+        self.fade = min(self.fade + dt / self.FADE_SECONDS, 1.0)
         self.pending = min(self.pending + dt, MAX_PENDING)
         while self.pending >= DT:
             steer, self.throttle = self.pilot.act(self.racer)
@@ -337,6 +382,12 @@ class Backdrop:
         self.game.fixed_time = None if self.hub.realtime else self.hub.t
         shown = [] if hide_kart else [visual]  # the camera still follows it
         self.game.draw(screen, pose, shown, HudInfo(), dt, None, hud=False)
+        if self.fade < 1.0:  # fading in from the plain background
+            if self._black is None or self._black.get_size() != screen.get_size():
+                self._black = pygame.Surface(screen.get_size())
+                self._black.fill(BACKGROUND)
+            self._black.set_alpha(round(255 * (1.0 - self.fade)))
+            screen.blit(self._black, (0, 0))
         return True
 
 
@@ -410,7 +461,10 @@ class KartLabApp:
         self.current: Screen = self.main_screen
         self.current.enter()
         if self.use_background:
-            self.defer(None, self._build_backdrop)
+            if self.realtime:  # a thread: the menu answers while the 3D view is built
+                self.backdrop.start(threaded=True)
+            else:  # after the first frame, so the menu is already on screen
+                self.defer(None, lambda: self.backdrop.start(threaded=False))
 
     # -- settings and window -----------------------------------------------------------------
 
@@ -680,10 +734,6 @@ class KartLabApp:
         if text is not None:
             self.busy_text = text
 
-    def _build_backdrop(self) -> None:
-        self.backdrop.build()
-        self.backdrop.set_light(self.settings.light)
-
     def _run_deferred(self) -> None:
         if not self._jobs:
             return
@@ -738,7 +788,7 @@ class KartLabApp:
     def draw(self, dt: float) -> None:
         screen = self.screen
         if not self.backdrop.draw(screen, dt, self.current.hide_backdrop_kart):
-            screen.fill((14, 14, 22))
+            screen.fill(BACKGROUND)
         self.ui.draw_veil(screen, self.current.dim)
         self.current.draw(screen)
         if self.current.show_status:
@@ -801,6 +851,9 @@ class KartLabApp:
         path.parent.mkdir(parents=True, exist_ok=True)
         pygame.image.save(self.screen, str(path))
 
+    def close(self) -> None:
+        self.backdrop.wait()  # a build in the thread must not outlive the window
+
 
 class ActivityError(Exception):
     """Something the player should read in a box (an invalid circuit...), not a traceback."""
@@ -847,4 +900,5 @@ def main(argv: list[str] | None = None) -> None:
     finally:
         if app.training_alive():
             print(STILL_TRAINING, file=sys.stderr)
+        app.close()
         pygame.quit()
