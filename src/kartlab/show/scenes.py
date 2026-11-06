@@ -942,7 +942,6 @@ class HumanRaceScene(Scene):
                 f"{self.laps} vueltas · {self.difficulty.label}",
                 "Choques activados" if self.collisions else "Sin choques",
             ],
-            drift=self.drift if manual else None,
             lap_panel=False,  # the race HUD shows the laps and times
             # The mode panel is only for the countdown (and while paused, or H is pressed).
             label_panel=self.frame_no < self.start_frames or self.app.paused or self.app.help_open,

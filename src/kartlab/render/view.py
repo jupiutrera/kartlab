@@ -22,7 +22,6 @@ from kartlab.render.palette import KART_RAMPS, Ink, game_palette
 from kartlab.render.scene import WORLD_SIZE, KartVisual, WorldRenderer
 from kartlab.render.sprites import VOXEL
 from kartlab.render.topdown import TextCache, format_time
-from kartlab.sim.drift import DriftState
 from kartlab.sim.sensors import RaySensor
 from kartlab.sim.track import Track
 
@@ -83,7 +82,6 @@ class HudInfo:
     ramp: int = 0
     notice: str | None = None
     extra: list[str] = field(default_factory=list)
-    drift: DriftState | None = None  # manual sweep: shows the charge bar
     trial: TrialHud | None = None  # time trial: gap, record and last lap
     lap_panel: bool = True  # False: a race HUD (show/racehud.py) shows the laps and times instead
     label_panel: bool = True  # False: hide the model label and view settings (top right)
@@ -305,8 +303,6 @@ class GameView:
         )
 
         self._draw_minimap(screen, visuals, (left, bottom - self._minimap[0].get_height()))
-        if info.drift is not None:
-            self._draw_drift(screen, info.drift)
         self._draw_notice(screen)
 
     def _draw_label_panel(self, screen, info: HudInfo, right: int, top: int, pad: int) -> None:
@@ -355,35 +351,6 @@ class GameView:
         for line in lines:
             screen.blit(line, (left + pad, y))
             y += line.get_height()
-
-    def _draw_drift(self, screen, drift: DriftState) -> None:
-        """Linear bar above the bottom edge: the charge while sweeping, the push draining after."""
-        if drift.active:
-            fraction, ink, name = drift.charge, Ink.YELLOW, "BARRIDO"
-        elif drift.pushing:
-            fraction, ink, name = drift.push_level, Ink.ORANGE, "IMPULSO"
-        else:
-            return
-        u = self.unit
-        rgb = game_palette().rgb
-        width, height = u * 14, max(u * 7 // 10, 8)
-        label = self.small.get(name, WHITE)
-        x = self.world_rect.centerx - width // 2
-        y = self.world_rect.bottom - u * 4
-        pad = max(u // 4, 3)
-        screen.blit(
-            self._panel(width + 2 * pad, height + label.get_height() + 2 * pad),
-            (x - pad, y - label.get_height() - pad),
-        )
-        screen.blit(label, (x, y - label.get_height()))
-        screen.fill(tuple(int(c) for c in rgb[Ink.BLACK]), (x, y, width, height))
-        filled = round((width - 2) * fraction)
-        if filled > 0:
-            screen.fill(tuple(int(c) for c in rgb[ink]), (x + 1, y + 1, filled, height - 2))
-        if drift.active and fraction >= 1.0:  # full: the frame lights up
-            pygame.draw.rect(
-                screen, tuple(int(c) for c in rgb[Ink.WHITE]), (x, y, width, height), 1
-            )
 
     def _build_minimap(self, size: int):
         pts = self.track.points
