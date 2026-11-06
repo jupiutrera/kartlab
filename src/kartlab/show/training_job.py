@@ -282,7 +282,7 @@ class TrainingJob:
                 text = f.read().decode("utf-8", errors="replace")
         except OSError:
             return []
-        return [line for line in text.splitlines() if line.strip()][-lines:]
+        return [line.strip() for line in text.splitlines() if line.strip()][-lines:]
 
     # -- stopping ------------------------------------------------------------------------
 

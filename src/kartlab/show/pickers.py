@@ -157,7 +157,7 @@ class KartScreen(Screen):
         screen.blit(label, (cx - label.get_width() // 2, ly))
 
         for rect, direction in ((self.arrow_left, -1), (self.arrow_right, 1)):
-            half = rect.h // 3
+            half = rect.h // 5
             tip = rect.centerx + direction * half // 2
             back = rect.centerx - direction * half // 2
             top, bottom = rect.centery - half, rect.centery + half
