@@ -795,3 +795,19 @@ def test_the_window_layout_is_not_rebuilt_every_frame(make_app, monkeypatch):
     monkeypatch.setattr(app, "_build_fonts", lambda: (calls.append(1), original()))
     app.run(max_frames=20)
     assert calls == []
+
+
+def test_toasts_never_overflow_the_canvas_even_with_a_long_path(make_app, tmp_path):
+    app = make_app()
+    deep = tmp_path / ("carpeta-larga-" * 3) / ("otra-" * 4)
+    assert app.save(deep / "circuito.json")
+    assert app.message.startswith(
+        "Guardado circuito.json"
+    )  # only the file name outside the project
+    app.say("Guardado " + "x" * 400, "ok")  # a word wider than the canvas is cut, not overflowed
+    for line in ed._wrap(app.font, app.message, app.canvas.width - 80):
+        assert app.font.size(line)[0] <= app.canvas.width - 80
+    app.draw()
+    assert tuple(app.screen.get_at((app.panel_rect.x + 30, 20)))[:3] != ed.GRASS
+    app.say("Abierto tracks/ejemplo.json")
+    assert app._toast_path(EXAMPLE.resolve()) == "tracks/ejemplo.json"

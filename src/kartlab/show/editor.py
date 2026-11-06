@@ -419,9 +419,19 @@ class Toast:
 
 
 def _wrap(font: pygame.font.Font, text: str, width: int) -> list[str]:
+    """Greedy word wrap; a word wider than ``width`` (a path has no spaces) is cut."""
     lines: list[str] = []
     line = ""
     for word in text.split(" "):
+        while font.size(word)[0] > width and len(word) > 1:
+            cut = len(word) - 1
+            while cut > 1 and font.size(word[:cut])[0] > width:
+                cut -= 1
+            if line:
+                lines.append(line)
+                line = ""
+            lines.append(word[:cut])
+            word = word[cut:]
         trial = f"{line} {word}" if line else word
         if line and font.size(trial)[0] > width:
             lines.append(line)
@@ -490,7 +500,7 @@ class EditorApp:
         self.fit_view()
         self.settle()
         if path and not new:
-            self.say(f"Abierto {self._display_path(Path(path))}", "info")
+            self.say(f"Abierto {self._toast_path(Path(path))}", "info")
         elif new:
             self.say("Circuito nuevo: clic en un borde para añadir esquinas", "info")
 
@@ -556,6 +566,14 @@ class EditorApp:
             return path.resolve().relative_to(REPO_ROOT).as_posix()
         except ValueError:
             return str(path)
+
+    @staticmethod
+    def _toast_path(path: Path) -> str:
+        """A path for a toast: inside the project as is, anywhere else just the file name."""
+        try:
+            return path.resolve().relative_to(REPO_ROOT).as_posix()
+        except ValueError:
+            return path.name
 
     # -- messages ----------------------------------------------------------------------------
 
@@ -1004,7 +1022,7 @@ class EditorApp:
         own = self.path is not None and _same_file(target, self.path)
         if target.exists() and not own:
             self.say(
-                f"{self._display_path(target)} ya existe: elige otro nombre con Ctrl+Mayús+S "
+                f"{self._toast_path(target)} ya existe: elige otro nombre con Ctrl+Mayús+S "
                 "o ábrelo para editarlo",
                 "error",
                 6.0,
@@ -1017,7 +1035,7 @@ class EditorApp:
             return False
         self.path = target
         self.model.mark_saved()
-        self.say(f"Guardado {self._display_path(target)} ({analysis.report.length:.0f} m)", "ok")
+        self.say(f"Guardado {self._toast_path(target)} ({analysis.report.length:.0f} m)", "ok")
         return True
 
     # -- test drive ---------------------------------------------------------------------------
