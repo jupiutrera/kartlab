@@ -195,6 +195,8 @@ class WorldRenderer:
         self.bridge = (
             BridgeRenderer(track, self.world, self._bridge_rgb, SUN) if track.levels else None
         )
+        if self.bridge is not None:
+            self.bridge.set_variant(variant)
         self._configure()
 
     # -- configuration ------------------------------------------------------------------
@@ -218,6 +220,8 @@ class WorldRenderer:
             self._halos.clear()
             self._ink_rgb.clear()
             self._bridge_rgb_cache.clear()
+            if self.bridge is not None:
+                self.bridge.set_variant(variant)
             self._configure()
 
     def set_light_mode(self, on: bool) -> None:

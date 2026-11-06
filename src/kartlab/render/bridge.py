@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from typing import NamedTuple
 
 import numpy as np
 import pygame
@@ -52,13 +53,42 @@ LOD_DEPTH = 32.0  # farther than this, pairs of sections are drawn as one of 8 m
 LINES_UNTIL = 55.0  # the painted lines of the deck are drawn up to this depth (m)
 LAMP_EVERY = 3  # a lamp strip on the roof of the tunnel every this many segments
 
+SLAB = 0.5  # thickness of the deck, seen as a cornice that sticks out of the face (m)
+OVERHANG = 0.7  # how far the cornice sticks out (m)
+COURSES = (1.0, 2.0, 3.0)  # heights of the joints between courses of stone (m)
+
 # Ink of each part. Faces take the lit or the shaded one according to the sun.
 DECK = (Ink.ASPHALT, Ink.ASPHALT)  # the two alternate every section
-DECK_LINE = Ink.MIST
-FACE_LIT, FACE_SHADE = Ink.STONE, 5
-UP_LIT, UP_SHADE = Ink.STONE_LIGHT, Ink.STONE
-CAP = Ink.MIST
-INNER_LIT, INNER_SHADE = Ink.STONE, 5
+
+
+class Inks(NamedTuple):
+    """The ink of each part of the bridge, per light. The palette is remapped at sunset and at
+    night (an ink goes to the nearest colour of its tinted version), and the sandstone of the
+    day falls on the asphalt's colour at night: the night set uses the stones that stay lighter."""
+
+    face: tuple[int, int]  # two blocks that alternate every section (lit side)
+    face_shade: tuple[int, int]
+    joint: int
+    joint_shade: int
+    under: int  # the underside of the cornice, in shade
+    front: int
+    front_shade: int
+    ledge: int
+    up: int  # the outer face of the parapet
+    up_shade: int
+    cap: int
+    inner: int
+    inner_shade: int
+    line: int  # painted lines of the deck
+
+
+# Blocks of sandstone, the road is dark and purple (and white where it is painted).
+DAY_INKS = Inks((4, 3), (3, 5), 5, Ink.ASPHALT_DARK, Ink.ASPHALT, 4, 3, 4, 4, 3, 4, 3, 5, Ink.MIST)
+NIGHT_INKS = Inks(
+    (7, 4), (4, 2), Ink.ASPHALT_DARK, Ink.ASPHALT_DARK, Ink.ASPHALT_DARK, 7, 4, 9, 7, 4, 9, 7, 2,
+    Ink.WHITE,
+)  # fmt: skip
+INKS = {"day": DAY_INKS, "sunset": DAY_INKS, "night": NIGHT_INKS}
 LINTEL_INK = Ink.STONE_LIGHT
 WALL_INKS = (Ink.ASPHALT_DARK, Ink.ASPHALT)
 ROOF_INK, LAMP_INK = Ink.ASPHALT_DARK, Ink.ASPHALT_LIGHT
@@ -79,6 +109,13 @@ STRIPS = (
     (8, 9),
     (10, 11),
     (12, 13),
+    # The cornice of the deck, on each side: its underside, its front and its top.
+    (14, 15),
+    (15, 16),
+    (16, 1),
+    (17, 18),
+    (18, 19),
+    (19, 8),
 )
 (
     LOW_L,
@@ -92,17 +129,25 @@ STRIPS = (
     LOW_R,
     LINE_L,
     LINE_R,
+    UNDER_L,
+    FRONT_L,
+    LEDGE_L,
+    UNDER_R,
+    FRONT_R,
+    LEDGE_R,
 ) = range(len(STRIPS))
+# Columns 14-19 are the cornice (the point on the face under it, the underside edge, the front
+# top) and 20-25 the points of the joints between courses of stone, left then right.
 # Each section is drawn in two parts. The far part (the side of the road farthest from the camera,
 # then the deck and its lines) goes first and the near part (the nearer parapet and its outer
 # faces) last, with the karts that are on the deck in between: they are in front of the far
 # parapet and behind the near one.
-FAR_LEFT = (LOW_L, UP_L, CAP_L, INNER_L, DECK_STRIP, LINE_L, LINE_R)
-FAR_RIGHT = (LOW_R, UP_R, CAP_R, INNER_R, DECK_STRIP, LINE_L, LINE_R)
-NEAR_LEFT = (INNER_L, CAP_L, UP_L, LOW_L)
-NEAR_RIGHT = (INNER_R, CAP_R, UP_R, LOW_R)
-LEFT_STRIPS = (LOW_L, UP_L, CAP_L, INNER_L)
-RIGHT_STRIPS = (LOW_R, UP_R, CAP_R, INNER_R)
+FAR_LEFT = (LOW_L, UP_L, LEDGE_L, FRONT_L, UNDER_L, CAP_L, INNER_L, DECK_STRIP, LINE_L, LINE_R)
+FAR_RIGHT = (LOW_R, UP_R, LEDGE_R, FRONT_R, UNDER_R, CAP_R, INNER_R, DECK_STRIP, LINE_L, LINE_R)
+NEAR_LEFT = (INNER_L, CAP_L, UP_L, LOW_L, LEDGE_L, UNDER_L, FRONT_L)
+NEAR_RIGHT = (INNER_R, CAP_R, UP_R, LOW_R, LEDGE_R, UNDER_R, FRONT_R)
+LEFT_STRIPS = (LOW_L, UP_L, CAP_L, INNER_L, UNDER_L, FRONT_L, LEDGE_L)
+RIGHT_STRIPS = (LOW_R, UP_R, CAP_R, INNER_R, UNDER_R, FRONT_R, LEDGE_R)
 
 Rgb = Callable[[int, int], tuple[int, int, int]]
 
@@ -174,12 +219,14 @@ class BridgeRenderer:
         self.wide = levels.embankment_half  # outer face, from the upper centerline
         self.inner = hw - WALL_INSET  # inner face of the parapets and walls
         self.sun = np.asarray(sun, dtype=np.float64) / math.hypot(*sun)
+        self.inks = DAY_INKS
         self._build_sections()
         self._build_tunnel()
         self.visible_sections: list[int] = []
         self._frame: dict | None = None
         self.camera_in_tunnel = False
         self._size = (320, 180)
+        self._piece_frame = ([], [], [])
         self.exit_depth = 0.0  # depth of the far mouth while the camera is inside
 
     # -- geometry ------------------------------------------------------------------------
@@ -202,9 +249,26 @@ class BridgeRenderer:
             + [mark_out, mark_in, -mark_in, -mark_out]
         )
         ground = np.zeros_like(heights)
+        # The cornice: the deck is a slab SLAB thick whose edge sticks out of the face, but only
+        # where the deck is high enough to clear the mouth of the tunnel.
+        floor = levels.ceiling + LINTEL + 0.05
+        under = np.minimum(heights, np.maximum(heights - SLAB, floor))
+        self.slab = heights - under
+        lat = np.concatenate(
+            [
+                lat,
+                [wide, wide + OVERHANG, wide + OVERHANG, -wide, -wide - OVERHANG, -wide - OVERHANG],
+                [wide] * len(COURSES),
+                [-wide] * len(COURSES),
+            ]
+        )
+        joints = [np.minimum(level, heights) for level in COURSES]
         z = np.stack(
             [ground, heights, top, top, heights, heights, top, top, heights, ground]
-            + [heights + eps] * 4,
+            + [heights + eps] * 4
+            + [under, under, heights, under, under, heights]
+            + joints
+            + joints,
             axis=1,
         )
         c, sn = np.cos(poses[:, 2]), np.sin(poses[:, 2])
@@ -245,6 +309,9 @@ class BridgeRenderer:
         g0, g1 = heights[:-1], heights[1:]
         ok[:, [LOW_L, LOW_R]] = ((g0 > 0.02) | (g1 > 0.02))[:, None]
         ok[:, [UP_L, UP_R, INNER_L, INNER_R]] = ((p0 > 0.02) | (p1 > 0.02))[:, None]
+        s0, s1 = self.slab[:-1], self.slab[1:]
+        cornice = [UNDER_L, FRONT_L, LEDGE_L, UNDER_R, FRONT_R, LEDGE_R]
+        ok[:, cornice] = ((s0 > 0.05) & (s1 > 0.05))[:, None]
         self.strip_ok = ok
         # Lit or shaded sides: the sun shines from the opposite way to the shadows.
         normal = np.stack([-np.sin(self.heading), np.cos(self.heading)], axis=1)  # left of the road
@@ -278,6 +345,14 @@ class BridgeRenderer:
         self._inks = [
             [self._ink(k, s, bool(self.lit_left[k])) for s in range(len(STRIPS))]
             for k in range(count)
+        ]
+
+    def set_variant(self, variant: str) -> None:
+        """Pick the inks of the light (day, sunset or night)."""
+        self.inks = INKS[variant]
+        self._inks = [
+            [self._ink(k, s, bool(self.lit_left[k])) for s in range(len(STRIPS))]
+            for k in range(self.count)
         ]
 
     def _build_tunnel(self) -> None:
@@ -316,14 +391,15 @@ class BridgeRenderer:
             t0, t1 = k / segments, (k + 1) / segments
             left = (_lerp((ax, ay), (bx, by), t0), _lerp((ax, ay), (bx, by), t1))
             right = (_lerp((cx, cy), (dx, dy), t0), _lerp((cx, cy), (dx, dy), t1))
+            mouth = k in (0, segments - 1)  # lighter where the daylight comes in
             for side in (left, right):
                 (p0x, p0y), (p1x, p1y) = side
                 quads.append([(p0x, p0y, 0.0), (p1x, p1y, 0.0), (p1x, p1y, roof), (p0x, p0y, roof)])
-                inks.append(WALL_INKS[k % 2])
+                inks.append(Ink.ASPHALT if mouth else WALL_INKS[k % 2])
             (l0x, l0y), (l1x, l1y) = left
             (r0x, r0y), (r1x, r1y) = right
             quads.append([(l0x, l0y, roof), (l1x, l1y, roof), (r1x, r1y, roof), (r0x, r0y, roof)])
-            inks.append(LAMP_INK if k % LAMP_EVERY == 1 else ROOF_INK)
+            inks.append(LAMP_INK if k % LAMP_EVERY == 1 else Ink.ASPHALT if mouth else ROOF_INK)
         self.tunnel_quads = np.array(quads)
         self.tunnel_inks = inks
         self.entry_planes = (entry, planes)
@@ -341,6 +417,10 @@ class BridgeRenderer:
             ]
             self.portal_sections.append(touched)
         self._build_holes(ux, uy, ox, oy)
+        self._finish_holes()
+
+    def _finish_holes(self) -> None:
+        self.hole_world = np.array(self._hole_pieces).reshape(-1, 4, 3)
 
     def _build_holes(self, ux: float, uy: float, ox: float, oy: float) -> None:
         """The face of the embankment with the mouth of the tunnel cut out of it.
@@ -353,6 +433,8 @@ class BridgeRenderer:
         """
         roof = self.roof
         self.holes: dict[tuple[int, int], list[list[tuple[float, float, float]]]] = {}
+        self.hole_span: dict[tuple[int, int], tuple[float, float]] = {}  # opening, as fractions
+        self._hole_pieces: list[list[tuple[float, float, float]]] = []
         for tau, a, b in self.portals:
             strip, col = (LOW_L, 0) if tau > 0 else (LOW_R, 9)
             lo = min((p[0] - ox) * ux + (p[1] - oy) * uy for p in (a, b))
@@ -382,7 +464,11 @@ class BridgeRenderer:
                 top = [max(h0 + (h1 - h0) * f, roof) for f in (f0, f1)]
                 if max(top) > roof + 1e-6:  # above the opening
                     pieces.append([at(f0, roof), at(f1, roof), at(f1, top[1]), at(f0, top[0])])
-                self.holes[(k, strip)] = pieces
+                self.holes[(k, strip)] = list(
+                    range(len(self._hole_pieces), len(self._hole_pieces) + len(pieces))
+                )
+                self._hole_pieces.extend(pieces)
+                self.hole_span[(k, strip)] = (f_lo, f_hi)
 
     def _section_along(self, k: int, ux: float, uy: float, ox: float, oy: float):
         """Range of the section's centre along the upper road's axis at the crossing."""
@@ -429,6 +515,9 @@ class BridgeRenderer:
             drawables.append((self.exit_depth, 0, (self._draw_interior,)))
             return drawables
 
+        points = self.hole_world
+        psx, psy, pdepth = projection.project(pose, points[..., 0], points[..., 1], points[..., 2])
+        self._piece_frame = (psx.tolist(), psy.tolist(), (pdepth > NEAR).all(axis=1).tolist())
         if any(tau * lat_u > self.wide for tau, _, _ in self.portals):
             # Facing a mouth: the inside shows through the hole in the face. It is drawn after
             # what is beyond the far mouth and before the face and the karts in the tunnel.
@@ -519,6 +608,11 @@ class BridgeRenderer:
 
         out[:, [LOW_L, UP_L]] = both(lat > self.wide)[:, None]
         out[:, [LOW_R, UP_R]] = both(lat < -self.wide)[:, None]
+        out[:, FRONT_L] = both(lat > self.wide + OVERHANG)
+        out[:, FRONT_R] = both(lat < -self.wide - OVERHANG)
+        under = self.height - self.slab
+        out[:, UNDER_L] = both(lat > self.wide) & both(eye < under)
+        out[:, UNDER_R] = both(lat < -self.wide) & both(eye < under)
         out[:, INNER_L] = both(lat < self.inner)
         out[:, INNER_R] = both(lat > -self.inner)
         up = {
@@ -527,6 +621,8 @@ class BridgeRenderer:
             DECK_STRIP: self.height,
             LINE_L: self.height,
             LINE_R: self.height,
+            LEDGE_L: self.height,
+            LEDGE_R: self.height,
         }
         for strip, z in up.items():
             out[:, strip] = both(eye > z)
@@ -564,8 +660,9 @@ class BridgeRenderer:
             if not show[strip]:
                 continue
             if (k, strip) in self.holes and not frame["pair"][k]:
-                for piece in self.holes[(k, strip)]:
-                    self._world_polygon(piece, inks[strip], fog)
+                for number in self.holes[(k, strip)]:
+                    self._draw_piece(number, inks[strip], fog)
+                self._draw_joints_around_hole(k, strip)
                 continue
             if frame["partial"][k][strip]:
                 points = self._clipped(k, strip)
@@ -577,30 +674,114 @@ class BridgeRenderer:
             points = _fit(points, self._size[0], self._size[1])
             if len(points) >= 3:
                 pygame.draw.polygon(surface, rgb(inks[strip], fog), points)
+            if strip in (LOW_L, LOW_R):
+                self._draw_joints(k, strip, frame)
         if far and k % 2 == 0 and show[DECK_STRIP]:
             self._draw_dash(k // 2, fog)
 
+    def _draw_joints(self, k: int, strip: int, frame: dict) -> None:
+        """Joints between the blocks of the face: one up each section boundary and one along
+        each course, so the face reads as masonry and not as one more asphalt-coloured slab."""
+        if frame["pair"][k] or frame["partial"][k][strip] or self._section_depth[k] > LINES_UNTIL:
+            return
+        left = strip == LOW_L
+        base = 20 if left else 23
+        top_col = 1 if left else 8
+        ground_col = 0 if left else 9
+        lit = bool(self.lit_left[k]) if left else not bool(self.lit_left[k])
+        ink = self.inks.joint if lit else self.inks.joint_shade
+        colour = self.rgb(ink, 0)
+        sx, sy = frame["sx"], frame["sy"]
+        surface = self.surface
+        heights = self._ring_z
+        if heights[k][top_col] > 0.3:
+            pygame.draw.line(
+                surface,
+                colour,
+                (sx[k][ground_col], sy[k][ground_col]),
+                (sx[k][top_col], sy[k][top_col]),
+            )
+        for level, col in zip(COURSES, range(base, base + len(COURSES)), strict=True):
+            if heights[k][top_col] > level + 0.15 and heights[k + 1][top_col] > level + 0.15:
+                pygame.draw.line(
+                    surface, colour, (sx[k][col], sy[k][col]), (sx[k + 1][col], sy[k + 1][col])
+                )
+
+    def _draw_piece(self, number: int, ink: int, fog: int) -> None:
+        """A piece of the face around the opening, from the projection done for the frame."""
+        sxl, syl, whole = self._piece_frame
+        if whole[number]:
+            points = _fit(
+                list(zip(sxl[number], syl[number], strict=True)), self._size[0], self._size[1]
+            )
+            if len(points) >= 3:
+                pygame.draw.polygon(self.surface, self.rgb(ink, fog), points)
+        else:
+            self._world_polygon([tuple(p) for p in self.hole_world[number].tolist()], ink, fog)
+
+    def _draw_joints_around_hole(self, k: int, strip: int) -> None:
+        """The joints of a section the mouth of the tunnel is cut out of: only outside it."""
+        if self._section_depth[k] > LINES_UNTIL:
+            return
+        left = strip == LOW_L
+        col = 0 if left else 9
+        lit = bool(self.lit_left[k]) if left else not bool(self.lit_left[k])
+        colour = self.rgb(self.inks.joint if lit else self.inks.joint_shade, 0)
+        f_lo, f_hi = self.hole_span[(k, strip)]
+        x0, y0, x1, y1 = (
+            self._ring_x[k][col], self._ring_y[k][col],
+            self._ring_x[k + 1][col], self._ring_y[k + 1][col],
+        )  # fmt: skip
+        h0, h1 = self._ring_z[k][1 if left else 8], self._ring_z[k + 1][1 if left else 8]
+
+        def line(f0: float, z0: float, f1: float, z1: float) -> None:
+            a = (x0 + (x1 - x0) * f0, y0 + (y1 - y0) * f0, z0)
+            b = (x0 + (x1 - x0) * f1, y0 + (y1 - y0) * f1, z1)
+            if min(self._depth_of(*a), self._depth_of(*b)) > NEAR:
+                pygame.draw.line(self.surface, colour, self._screen_of(*a), self._screen_of(*b))
+
+        if h0 > 0.3:  # the joint on the boundary of the section: above the opening if it is there
+            line(0.0, self.roof if f_lo <= 0.0 < f_hi else 0.0, 0.0, h0)
+        for level in COURSES:
+            if h0 > level + 0.15 and h1 > level + 0.15:
+                if level >= self.roof:
+                    line(0.0, level, 1.0, level)
+                else:
+                    if f_lo > 0.0:
+                        line(0.0, level, min(f_lo, 1.0), level)
+                    if f_hi < 1.0:
+                        line(max(f_hi, 0.0), level, 1.0, level)
+
     def _ink(self, k: int, strip: int, lit_left: bool) -> int:
+        inks = self.inks
         if strip == DECK_STRIP:
             return DECK[k % 2]
         if strip in (LINE_L, LINE_R):
-            return DECK_LINE
+            return inks.line
         if strip in (CAP_L, CAP_R):
-            return CAP
-        left = strip in (LOW_L, UP_L, INNER_R)  # the face looks to the left of the road
+            return inks.cap
+        left = strip in (LOW_L, UP_L, INNER_R, FRONT_L)  # the face looks to the left of the road
         lit = lit_left if left else not lit_left
         if strip in (UP_L, UP_R):
-            return UP_LIT if lit else UP_SHADE
+            return inks.up if lit else inks.up_shade
         if strip in (LOW_L, LOW_R):
-            return FACE_LIT if lit else FACE_SHADE
-        return INNER_LIT if lit else INNER_SHADE
+            return (inks.face if lit else inks.face_shade)[k % 2]
+        if strip in (UNDER_L, UNDER_R):
+            return inks.under
+        if strip in (FRONT_L, FRONT_R):
+            return inks.front if lit else inks.front_shade
+        if strip in (LEDGE_L, LEDGE_R):
+            return inks.ledge
+        return inks.inner if lit else inks.inner_shade
 
     def _draw_dash(self, index: int, fog: int) -> None:
         xs, ys, ok = self._dash_frame
         if not ok[index]:
             return
         pygame.draw.polygon(
-            self.surface, self.rgb(DECK_LINE, fog), list(zip(xs[index], ys[index], strict=True))
+            self.surface,
+            self.rgb(self.inks.line, fog),
+            list(zip(xs[index], ys[index], strict=True)),
         )
 
     def _setup_camera(self, pose: CameraPose, projection: Projection, lens: Lens) -> None:
@@ -669,13 +850,26 @@ class BridgeRenderer:
         )
         for (px, py), (qx, qy) in (((a2[0], a2[1]), (ax, ay)), ((bx, by), (b2[0], b2[1]))):
             self._world_polygon(
-                [(px, py, 0), (qx, qy, 0), (qx, qy, top), (px, py, top)], FACE_LIT, fog
+                [(px, py, 0), (qx, qy, 0), (qx, qy, top), (px, py, top)], LINTEL_INK, fog
             )
 
     def _draw_interior(self) -> None:
-        """Inside the tunnel: walls and roof, every polygon cut at the near plane."""
-        for quad, ink in zip(self.tunnel_quads, self.tunnel_inks, strict=True):
-            self._world_polygon([tuple(p) for p in quad.tolist()], ink)
+        """Inside the tunnel: walls and roof. They are projected together; only the quads that
+        cross the near plane are cut (one by one, in scalar math)."""
+        quads = self.tunnel_quads
+        sx, sy, depth = self._projection.project(
+            self._pose, quads[..., 0], quads[..., 1], quads[..., 2]
+        )
+        whole = (depth > NEAR).all(axis=1).tolist()
+        sxl, syl = sx.tolist(), sy.tolist()
+        width, height = self._size
+        for i, ink in enumerate(self.tunnel_inks):
+            if whole[i]:
+                points = _fit(list(zip(sxl[i], syl[i], strict=True)), width, height)
+                if len(points) >= 3:
+                    pygame.draw.polygon(self.surface, self.rgb(ink, 0), points)
+            else:
+                self._world_polygon([tuple(p) for p in quads[i].tolist()], ink)
 
 
 __all__ = ["BridgeRenderer"]

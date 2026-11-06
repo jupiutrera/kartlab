@@ -120,7 +120,7 @@ def test_the_mouth_is_a_hole_with_the_inside_and_the_far_end_seen_through_it(bri
     black = game_palette().rgb[Ink.ASPHALT_DARK]
     opening = image[70:95, 110:210]
     dark = (opening == black).all(axis=2)
-    assert dark.mean() > 0.15  # the inside is dark...
+    assert dark.mean() > 0.08  # the inside is dark...
     colours = {tuple(c) for c in opening.reshape(-1, 3).tolist()}
     assert len(colours) >= 4  # ...but it is not one flat block: walls, roof and the light beyond
 
@@ -358,3 +358,75 @@ def test_drive_starts_where_at_and_lateral_say(bridge, levels, tmp_path):
     app.reset()
     assert app.racer.level_z == pytest.approx(levels.deck_height)
     pygame.quit()
+
+
+# -- how it reads ----------------------------------------------------------------------------------
+
+
+def test_the_tunnel_floor_is_darkest_in_the_middle_and_lighter_at_the_mouths(bridge, levels, world):
+    texture = world.texture
+    cx, cy, heading = bridge.pose_at(levels.s_under)
+    dx, dy = math.cos(heading), math.sin(heading)
+
+    def dark_share(along: float) -> float:
+        values = []
+        for t in np.linspace(-0.6, 0.6, 7):
+            for lateral in np.linspace(-3.0, 3.0, 9):
+                x = cx + dx * (along + t) - dy * lateral
+                y = cy + dy * (along + t) + dx * lateral
+                values.append(texture.sample(x, y) == Ink.ASPHALT_DARK)
+        return float(np.mean(values))
+
+    assert dark_share(0.0) > dark_share(-5.5) + 0.2
+    assert dark_share(0.0) > dark_share(5.5) + 0.2
+
+
+def test_the_foot_of_the_embankment_is_in_shade(bridge, levels, world):
+    texture = world.texture
+    x0, y0, heading = bridge.pose_at(levels.s_over - 6.0)
+    nx, ny = -math.sin(heading), math.cos(heading)
+
+    def dark_grass(offset: float) -> float:
+        values = []
+        for along in np.linspace(-6.0, 6.0, 25):
+            for side in (-1.0, 1.0):
+                lateral = side * (bridge.half_width + 0.6 + offset)
+                x = x0 + math.cos(heading) * along + nx * lateral
+                y = y0 + math.sin(heading) * along + ny * lateral
+                values.append(texture.sample(x, y) == Ink.GRASS_DARK)
+        return float(np.mean(values))
+
+    assert dark_grass(0.3) > dark_grass(6.0) + 0.15
+
+
+def test_the_deck_has_a_cornice_only_where_it_clears_the_mouth(bridge, levels, world):
+    renderer = world.bridge
+    from kartlab.render.bridge import FRONT_L, UNDER_R
+
+    middle = int(np.argmin(np.abs(renderer.s - levels.s_over)))
+    assert renderer.strip_ok[middle, FRONT_L] and renderer.strip_ok[middle, UNDER_R]
+    assert not renderer.strip_ok[0, FRONT_L]  # the foot of the ramp has none
+
+
+def test_the_faces_are_blocks_of_alternating_stone_unlike_the_road(bridge, levels, world):
+    from kartlab.render.bridge import LOW_L
+
+    renderer = world.bridge
+    renderer.set_variant("day")
+    inks = {renderer._inks[k][LOW_L] for k in range(renderer.count)}
+    assert len(inks) == 2 and Ink.ASPHALT not in inks  # two tones of stone, none of asphalt
+
+
+@pytest.mark.parametrize("variant", ["sunset", "night"])
+def test_the_deck_stands_out_from_the_parapets_in_every_light(bridge, levels, world, variant):
+    from kartlab.render.bridge import CAP_L, DECK_STRIP
+
+    renderer = world.bridge
+    renderer.set_variant(variant)
+    world.set_variant(variant)
+    k = int(np.argmin(np.abs(renderer.s - levels.s_over)))
+    deck = np.array(world._bridge_rgb(renderer._inks[k][DECK_STRIP], 0), dtype=float)
+    cap = np.array(world._bridge_rgb(renderer._inks[k][CAP_L], 0), dtype=float)
+    assert np.abs(deck - cap).sum() > 150  # clearly different colours
+    renderer.set_variant("day")
+    world.set_variant("day")

@@ -28,6 +28,7 @@ EDGE_LINE = (0.15, 0.45)  # white line between these distances inside the edge (
 START_LINE = 1.0  # the chequered line spans this far each side of s = 0 (m)
 MIN_MIP_SIZE = 8
 SUN_DIRECTION = (0.55, -0.35)  # where shadows fall (world x/y), the same as the scenery's
+SHADE_FOOT = 3.0  # width of the ambient shade at the foot of the embankment (m)
 SHADOW_REACH = 0.35  # shadow length per metre of height
 STRIP_ROWS = 128  # texel rows painted (and averaged for the mipmaps) at a time
 
@@ -343,10 +344,22 @@ def _shade_bridge(
     lat_low = -(x - lx) * lsin + (y - ly) * lcos
     tunnel = (np.abs(across) <= wide) & (np.abs(along) <= levels.reach)
     tunnel &= np.abs(lat_low) <= track.half_width
-    depth = np.clip((wide - np.abs(across)) / 3.0, 0.0, 1.0)  # 0 at the mouth, 1 inside
-    dark = dither < 0.45 + 0.4 * depth
+    # Darkest in the middle, lighter towards the mouths where the daylight comes in.
+    depth = np.clip((wide - np.abs(across)) / wide, 0.0, 1.0)  # 0 at a mouth, 1 in the middle
+    dark = dither < 0.2 + 0.65 * np.sqrt(depth)
     block[tunnel & dark] = Ink.ASPHALT_DARK
     block[tunnel & ~dark] = Ink.ASPHALT
+
+    # Ambient shade at the foot of the embankment, on both sides and on the road below the
+    # mouths: the bridge darkens the ground around it, more the closer to it.
+    foot = np.abs(across) - wide  # distance beyond the face
+    near_foot = (foot >= 0.0) & (foot < SHADE_FOOT) & (np.abs(along) <= levels.reach)
+    shade_p = 0.55 * (1.0 - np.clip(foot / SHADE_FOOT, 0.0, 1.0))
+    ambient = near_foot & (dither < shade_p)
+    grass_now = (block == Ink.GRASS) | (block == Ink.GRASS_LIGHT) | (block == Ink.LEAF_LIGHT)
+    road_now = (block == Ink.ASPHALT) | (block == Ink.ASPHALT_LIGHT)
+    block[ambient & grass_now] = Ink.GRASS_DARK
+    block[ambient & road_now] = Ink.ASPHALT_DARK
 
     # Shadow of the embankment on the side away from the sun.
     sun = np.array(SUN_DIRECTION) / math.hypot(*SUN_DIRECTION)
