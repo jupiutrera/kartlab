@@ -10,8 +10,12 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from kartlab.sim.levels import Levels
 
 SAMPLE_SPACING = 1.0  # target distance between centerline samples (m)
 SMOOTHING = 4.0  # gaussian smoothing of the outline: curvature ramps in and out (m)
@@ -109,6 +113,10 @@ class Track:
         # Level crossings (empty for every procedural track). Tracks that have some use the
         # branch-following ``locate`` and ``contains``; the rest behave exactly as before.
         self.crossings: tuple[Crossing, ...] = tuple(crossings)
+        # Bridge and tunnel at one of the crossings (``None`` for every track without a
+        # ``bridge``, which behaves exactly as before). Set by ``build_track`` right after
+        # construction; with levels the kart never changes branch at the crossing.
+        self.levels: Levels | None = None
 
         seg = np.roll(pts, -1, axis=0) - pts
         self.segment_lengths = np.hypot(seg[:, 0], seg[:, 1])
@@ -177,6 +185,8 @@ class Track:
         """
         if hint is None:
             return self._project(x, y, self._nearest_index(x, y))
+        if self.levels is not None:
+            return self._locate_level(x, y, hint % self._n)
         if self.crossings:
             return self._locate_branch(x, y, hint % self._n)
         pos = self._project(x, y, self._climb(x, y, hint % self._n))
@@ -196,6 +206,17 @@ class Track:
         if self.crossings and hint is not None:
             return self.locate(x, y, hint)
         return self.locate(x, y)
+
+    @property
+    def flat_crossings(self) -> int:
+        """Level crossings where the two roads share one surface. A bridge makes one crossing
+        two levels, so the crossings of a track with levels are one fewer; what is left is
+        where the kart can turn from one road onto the other."""
+        return len(self.crossings) - (1 if self.levels is not None else 0)
+
+    def height_at(self, s: float) -> float:
+        """Height (m) of the road at arc position ``s``: 0 without a bridge."""
+        return 0.0 if self.levels is None else self.levels.height_at(s)
 
     def contains(self, x: float, y: float) -> bool:
         """True if the point is on the asphalt of any part of the track.
@@ -225,14 +246,23 @@ class Track:
         other = self._project(x, y, int(np.argmin(d2)))
         return other if abs(other.lateral) <= self.half_width else pos
 
+    def _locate_level(self, x: float, y: float, hint: int) -> TrackPosition:
+        """``locate`` for tracks with a bridge: always the branch of ``hint``. The two roads
+        are at different heights, so a point on the asphalt of the other one is no reason to
+        change branch (the kart drives under or over it)."""
+        if self._dist2(x, y, hint) > (2.0 * self.width + 10.0) ** 2:
+            return self._project(x, y, self._nearest_index(x, y))  # not a continuous move
+        return self._project(x, y, self._climb(x, y, hint))
+
     def edge_covered(self) -> tuple[np.ndarray, np.ndarray]:
         """Which left and right edge samples lie on another branch's asphalt (boolean arrays).
 
         Only crossings have any: those edge stretches are not edges at all, since the road
-        of the other branch passes over them. Always all False for tracks without crossings.
+        of the other branch passes over them. Always all False for tracks without crossings
+        and for tracks with a bridge (the roads are at different heights).
         """
         covered = [np.zeros(self._n, dtype=bool), np.zeros(self._n, dtype=bool)]
-        if not self.crossings:
+        if not self.crossings or self.levels is not None:  # a bridge covers nothing
             return covered[0], covered[1]
         idx = np.arange(self._n)
         guard = self._branch_guard()

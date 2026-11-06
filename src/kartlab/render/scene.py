@@ -15,6 +15,7 @@ import numpy as np
 import pygame
 
 from kartlab.common.paths import FONTS_DIR
+from kartlab.render.bridge import BridgeRenderer
 from kartlab.render.camera import CameraPose, Lens
 from kartlab.render.floor import FloorRenderer, Projection
 from kartlab.render.palette import FOG_COLOR, KART_RAMPS, RAY_RAMP, Ink, game_palette
@@ -43,6 +44,8 @@ MAX_PARTICLES = 220
 SPARK_GRAVITY = 9.0  # (m/s²)
 LIFT_FAINT = 0.15  # above this height the shadow turns faint (m)
 LIFT_SHRINK = 0.5  # the shadow has shrunk by a third at this height (m)
+MARKS_BELOW = 0.15  # on a road higher than this (m) tyres leave no marks on the floor texture
+HIDDEN_ABOVE = 0.5  # in a tunnel, karts on a road higher than this are hidden by the deck (m)
 
 
 @dataclass
@@ -56,6 +59,9 @@ class KartVisual:
     trail: list[tuple[float, float]] = field(default_factory=list)
     drift: DriftState | None = None  # manual sweep, if the kart has one
     lift: float = 0.0  # height over the ground (m): the sprite rises, the shadow stays
+    ground: float = (
+        0.0  # height of the road under the kart (m): a bridge, its ramps; the shadow too
+    )
 
 
 @dataclass(frozen=True)
@@ -180,10 +186,17 @@ class WorldRenderer:
         self.ray_lengths: np.ndarray | None = None
         self.ray_angles: np.ndarray | None = None
         self.ray_range = 60.0  # distance (m) that maps to the far end of the ray colour ramp
+        self.ray_ground = 0.0  # height of the road under the kart the rays come from (m)
         self.light_mode = light_mode
         self.variant = variant
         self.lens = lens
         self._pushes_seen: dict[int, int] = {}  # sweep pushes already flashed, by drift id
+        self._bridge_rgb_cache: dict[tuple[int, int], tuple[int, int, int]] = {}
+        self.bridge = (
+            BridgeRenderer(track, self.world, self._bridge_rgb, SUN) if track.levels else None
+        )
+        if self.bridge is not None:
+            self.bridge.set_variant(variant)
         self._configure()
 
     # -- configuration ------------------------------------------------------------------
@@ -206,12 +219,25 @@ class WorldRenderer:
             self.sprites.set_variant(variant)
             self._halos.clear()
             self._ink_rgb.clear()
+            self._bridge_rgb_cache.clear()
+            if self.bridge is not None:
+                self.bridge.set_variant(variant)
             self._configure()
 
     def set_light_mode(self, on: bool) -> None:
         if on != self.light_mode:
             self.light_mode = on
             self._configure()
+
+    def _bridge_rgb(self, ink: int, fog: int) -> tuple[int, int, int]:
+        """Colour of a palette ink in this variant at a fog level (0 = clear)."""
+        key = (ink, fog)
+        rgb = self._bridge_rgb_cache.get(key)
+        if rgb is None:
+            index = int(self.fog_table[fog * 64 + ink])
+            rgb = tuple(int(c) for c in self.palette.rgb[index])
+            self._bridge_rgb_cache[key] = rgb
+        return rgb
 
     # -- simulation-side effects -------------------------------------------------------
 
@@ -226,16 +252,24 @@ class WorldRenderer:
             rear = [(kart.x - c * 0.7 + side * -s * 0.5, kart.y - s * 0.7 + side * c * 0.5)
                     for side in (-1.0, 1.0)]  # fmt: skip
             grounded = v.lift <= 0.0  # in the air a kart leaves no marks and raises no dust
-            if grounded and abs(kart.lateral_speed) > SKID_SPEED and not v.on_grass and not v.ghost:
+            g = v.ground  # on a bridge everything happens that much higher
+            marks = g <= MARKS_BELOW  # the texture is the floor: nothing to mark up on a bridge
+            if (
+                grounded
+                and marks
+                and abs(kart.lateral_speed) > SKID_SPEED
+                and not v.on_grass
+                and not v.ghost
+            ):
                 for x, y in rear:
                     self.texture.stamp(x, y, 0.14, Ink.ASPHALT_DARK)
             if grounded and v.on_grass and abs(speed) > 3.0 and rng.random() < 0.6 * rate:
                 x, y = rear[int(rng.integers(2))]
-                self.particles.emit(x, y, 0.1, -c * speed * 0.2, -s * speed * 0.2, 1.2,
+                self.particles.emit(x, y, 0.1 + g, -c * speed * 0.2, -s * speed * 0.2, 1.2,
                                     0.6, Ink.BROWN)  # fmt: skip
             if grounded and v.throttle > 0.8 and 0.5 < speed < 9.0 and rng.random() < 0.35 * rate:
                 x, y = rear[int(rng.integers(2))]
-                self.particles.emit(x, y, 0.3, rng.normal(0, 0.4), rng.normal(0, 0.4), 0.8,
+                self.particles.emit(x, y, 0.3 + g, rng.normal(0, 0.4), rng.normal(0, 0.4), 0.8,
                                     0.7, Ink.MIST)  # fmt: skip
             if v.drift is not None and not v.ghost:
                 self._drift_effects(v, v.drift, rear, rng, rate, dt)
@@ -248,10 +282,12 @@ class WorldRenderer:
         flash and an exhaust flame that cools with the push after the release. Everything in
         palette inks (glowing, so the night does not dim them), nothing allocated per pixel."""
         kart = v.kart
+        g = v.ground
+        marks = g <= MARKS_BELOW
         c, s = math.cos(kart.heading), math.sin(kart.heading)
         key = id(drift)
         if drift.active and v.lift <= 0.0:
-            if abs(kart.lateral_speed) <= SKID_SPEED:  # the sweep always leaves marks
+            if marks and abs(kart.lateral_speed) <= SKID_SPEED:  # the sweep always leaves marks
                 for x, y in rear:
                     self.texture.stamp(x, y, 0.14, Ink.ASPHALT_DARK)
             charge = drift.charge
@@ -262,7 +298,7 @@ class WorldRenderer:
                 side = drift.direction * rng.uniform(-1.0, 3.0)
                 ink = blink_ink(charge, drift.time, rng.random())
                 self.particles.emit(
-                    x, y, 0.15, -c * back - s * side, -s * back + c * side,
+                    x, y, 0.15 + g, -c * back - s * side, -s * back + c * side,
                     spec.lift * rng.uniform(0.5, 1.3), spec.life * rng.uniform(0.7, 1.3),
                     emissive(ink), spec.size * rng.uniform(0.8, 1.2), SPARK_GRAVITY,
                 )  # fmt: skip
@@ -273,7 +309,7 @@ class WorldRenderer:
                 for x, y in rear:
                     for _ in range(3):
                         self.particles.emit(
-                            x, y, 0.2, -c * rng.uniform(2, 7) + rng.normal(0, 1.5),
+                            x, y, 0.2 + g, -c * rng.uniform(2, 7) + rng.normal(0, 1.5),
                             -s * rng.uniform(2, 7) + rng.normal(0, 1.5), rng.uniform(0.5, 2.0),
                             0.3, emissive(heat_ink(0.5 + 0.5 * heat, rng.random())), 0.15, 4.0,
                         )  # fmt: skip
@@ -283,7 +319,7 @@ class WorldRenderer:
                 self.particles.emit(
                     kart.x - c * back + rng.normal(0, 0.12),
                     kart.y - s * back + rng.normal(0, 0.12),
-                    0.22, -c * flame.speed, -s * flame.speed, 0.2,
+                    0.22 + g, -c * flame.speed, -s * flame.speed, 0.2,
                     flame.life * rng.uniform(0.7, 1.3),
                     emissive(heat_ink(flame.heat, rng.random())),
                     flame.size * rng.uniform(0.7, 1.1),
@@ -316,6 +352,8 @@ class WorldRenderer:
         focal = proj.focal
         width, height = self.size
         drawables: list[tuple[float, int, object]] = []  # (depth, order, callable)
+        if self.bridge is not None:
+            drawables.extend(self.bridge.prepare(pose, proj, lens))
 
         if len(self.props):
             sx, sy, depth = proj.project(pose, self._prop_xy[:, 0], self._prop_xy[:, 1])
@@ -323,19 +361,28 @@ class WorldRenderer:
             heights = self._prop_h * focal / np.maximum(depth, 1e-6)
             visible &= (heights >= 2) & (sx > -heights * 2) & (sx < width + heights * 2)
             visible &= sy > -heights
+            if self.bridge is not None and self.bridge.camera_in_tunnel:
+                visible &= depth > self.bridge.exit_depth  # only seen through the far mouth
             for i in np.flatnonzero(visible):
                 prop = self.props[i]
                 drawables.append(
                     (float(depth[i]), 0, (self._draw_prop, prop, sx[i], sy[i], heights[i]))
                 )
 
+        in_tunnel = self.bridge is not None and self.bridge.camera_in_tunnel
         for v in visuals:
             kart = v.kart
-            sx, sy, depth = proj.project(pose, kart.x, kart.y)
+            if in_tunnel and v.ground > HIDDEN_ABOVE:
+                continue  # on the deck, above the roof the camera is under
+            sx, sy, depth = proj.project(pose, kart.x, kart.y, v.ground)
             if depth <= NEAR:
                 continue
+            # A kart on the bridge goes in front of its own section, behind the next one.
+            key = float(depth)
+            if v.ground > 0.05 and self.bridge is not None:
+                key -= self.bridge.kart_bias(pose)
             drawables.append(
-                (float(depth), 2, (self._draw_kart, v, float(sx), float(sy), float(depth), pose))
+                (key, 2, (self._draw_kart, v, float(sx), float(sy), float(depth), pose))
             )
             for j, (tx, ty) in enumerate(v.trail if v.ghost else ()):
                 tsx, tsy, tdepth = proj.project(pose, tx, ty, 0.25)
@@ -371,7 +418,7 @@ class WorldRenderer:
         focal = self.projection.focal
         bearing = math.atan2(kart.y - pose.y, kart.x - pose.x)
         horizontal = math.hypot(kart.x - pose.x, kart.y - pose.y)
-        elevation = math.atan2(self.lens.height, max(horizontal, 1e-6))
+        elevation = math.atan2(self.lens.height + pose.z - v.ground, max(horizontal, 1e-6))
         scale = focal * VOXEL / depth
         if v.ghost:
             halo = self._halo(v.ramp, max(int(2.6 * focal / depth), 4))
@@ -385,7 +432,7 @@ class WorldRenderer:
             shadow, (round(sx - shadow.get_width() / 2), round(sy - shadow.get_height() / 2))
         )
         if v.lift > 0.0:  # the sprite rises on the screen; the shadow stays on the floor
-            sx, sy, _ = self.projection.project(pose, kart.x, kart.y, v.lift)
+            sx, sy, _ = self.projection.project(pose, kart.x, kart.y, v.ground + v.lift)
         surface, anchor = self.sprites.kart(v.ramp, kart.heading - bearing, elevation, scale)
         top = round(sy - anchor[1])
         self.world.blit(surface, (round(sx - anchor[0]), top))
@@ -424,7 +471,7 @@ class WorldRenderer:
                 points = []
                 for t in np.linspace(0.0, 1.0, 12):
                     px, py, d = self.projection.project(
-                        pose, x + (ex - x) * t, y + (ey - y) * t, 0.05
+                        pose, x + (ex - x) * t, y + (ey - y) * t, 0.05 + self.ray_ground
                     )
                     if d > NEAR:
                         points.append((float(px), float(py)))

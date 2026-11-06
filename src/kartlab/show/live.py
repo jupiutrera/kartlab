@@ -366,6 +366,7 @@ class LiveApp:
                 d.racer.on_grass,
                 d.throttle,
                 list(d.trail),
+                ground=d.racer.level_z,
             )
             for d in drivers
         ]

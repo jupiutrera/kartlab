@@ -101,7 +101,11 @@ def analyze(spec: TrackSpec, full: bool = True) -> Analysis:
     points, rounding = _build_points(spec)
     if points is None:
         return _result(spec, rounding, None, TrackReport(tuple(rounding)), full)
-    report = check_centerline(points, spec.width, spec.crossings) if full else _quick_report(points)
+    report = (
+        check_centerline(points, spec.width, spec.crossings, spec.bridge)
+        if full
+        else _quick_report(points)
+    )
     return _result(spec, list(report.problems), points, report, full)
 
 

@@ -254,7 +254,7 @@ class ViewerApp:
         self.ov = Overlays(self.screen, self.game)
         self._layout_widgets()
 
-        if mode == "vsai" and self.track.crossings:
+        if mode == "vsai" and self.track.flat_crossings:
             raise SystemExit("La carrera contra la IA no admite circuitos con cruces a nivel.")
         self.mode = mode or MODE_ORDER[0]
         self.title.selected = MODE_ORDER.index(self.mode) if self.mode in MODE_ORDER else 0

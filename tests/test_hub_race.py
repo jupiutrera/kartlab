@@ -45,6 +45,7 @@ def make_hub(tmp_path):
     tracks.mkdir()
     shutil.copy(TRACKS / "ejemplo.json", tracks / "ejemplo.json")
     shutil.copy(TRACKS / "ocho.json", tracks / "ocho.json")  # has a level crossing
+    shutil.copy(TRACKS / "ocho_puente.json", tracks / "ocho_puente.json")  # a bridge over a tunnel
     created = []
 
     def make(with_run: bool = True, **kwargs) -> KartLabApp:
@@ -129,9 +130,11 @@ def test_circuits_with_level_crossings_are_not_offered(make_hub, tiny_run_dir):
     open_race(app)
     keys = [option.key for option in app.current.options]
     assert "harbor" in keys and "file:tracks/ejemplo.json" in keys
-    assert "file:tracks/ocho.json" not in keys  # it has a crossing
+    assert "file:tracks/ocho.json" not in keys  # its crossing is on one level
+    assert "file:tracks/ocho_puente.json" in keys  # a bridge over a tunnel keeps the roads apart
     assert all(
-        option.track is not None and not option.track.crossings for option in app.current.options
+        option.track is not None and not option.track.flat_crossings
+        for option in app.current.options
     )
 
 

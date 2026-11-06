@@ -105,7 +105,11 @@ class DriveApp:
         records_dir: Path | None = None,
         kart_ramp: int = 0,
         race_format: bool = True,
+        start: tuple[float, float] = (0.0, 0.0),
     ) -> None:
+        self.start = start  # arc position and lateral offset where every reset puts the kart
+        self._start_track = track  # other tracks (keys 1-3, E, N) start on their line
+        self._ghost_hint: int | None = None  # centerline index of the ghost (bridges)
         self.screen = open_window(TITLE, scale, fullscreen)
         self.scale = scale
         self.fullscreen = fullscreen
@@ -146,6 +150,8 @@ class DriveApp:
     # -- tracks and views -------------------------------------------------------------
 
     def load_track(self, track: Track) -> None:
+        if track is not self._start_track:
+            self.start = (0.0, 0.0)
         self.track = track
         self.racer = Racer(track)
         self.autopilot = Autopilot(track)
@@ -177,7 +183,8 @@ class DriveApp:
         pygame.display.flip()
 
     def reset(self) -> None:
-        self.racer.reset()
+        self.racer.reset(*self.start)
+        self._ghost_hint = None
         if self.trial is not None:
             self.trial.begin(self.racer, manual=not self.autopilot_on)
         self.drift.reset()
@@ -387,6 +394,7 @@ class DriveApp:
             on_grass=racer.on_grass,
             throttle=self.controls[1],
             drift=None if self.autopilot_on else self.drift,
+            ground=racer.level_z,
         )
         visuals = [visual]
         self.ghost_visual = self.hud_trial = None
@@ -395,7 +403,9 @@ class DriveApp:
             if ghost is not None:
                 near = math.hypot(ghost.x - racer.kart.x, ghost.y - racer.kart.y) < LABEL_MIN_GAP
                 label = None if near else "Récord"  # on top of you, the tag only gets in the way
-                self.ghost_visual = KartVisual(ghost, self.ghost_ramp, label, ghost=True)
+                self.ghost_visual = KartVisual(
+                    ghost, self.ghost_ramp, label, ghost=True, ground=self.ghost_ground(ghost)
+                )
                 visuals.append(self.ghost_visual)
             self.hud_trial = self.trial_hud()
         pose = self.game.update(visuals, 0.0 if self.paused else dt)
@@ -464,6 +474,16 @@ class DriveApp:
         pose = self.trial.ghost_pose(self.racer.lap_time)
         return None if pose is None else KartState(*pose)
 
+    def ghost_ground(self, ghost: KartState) -> float:
+        """Height of the road under the ghost (a bridge): the branch it is on follows its hint."""
+        if self.track.levels is None:
+            return 0.0
+        position = self.track.locate_following(ghost.x, ghost.y, self._ghost_hint)
+        self._ghost_hint = position.index
+        if abs(position.lateral) > self.track.half_width:
+            return 0.0  # on the grass beside a ramp: on the ground
+        return self.track.height_at(position.s)
+
     def trial_hud(self) -> TrialHud:
         trial = self.trial
         record = trial.record.lap_time if trial.record else None
@@ -486,6 +506,7 @@ class DriveApp:
                 kart_color_rgb(self.kart_ramp),
                 0.0,
                 None if self.autopilot_on else self.drift,
+                racer.level_z,
             )
         ]
         self.ghost_visual = self.hud_trial = None
@@ -493,7 +514,7 @@ class DriveApp:
             ghost = self.ghost_state()
             if ghost is not None:
                 self.ghost_visual = KartVisual(ghost, self.ghost_ramp, ghost=True)
-                karts.append((ghost, GHOST_COLOR))
+                karts.append((ghost, GHOST_COLOR, 0.0, None, self.ghost_ground(ghost)))
             self.hud_trial = self.trial_hud()
         self.view.draw(self.screen, karts, self.camera, self.follow, self.trail)
         lines = [
@@ -580,6 +601,20 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--records-dir", type=Path, help="carpeta de los récords (por defecto, records/)"
     )
+    parser.add_argument(
+        "--at",
+        type=float,
+        default=0.0,
+        metavar="S",
+        help="metro del circuito donde empieza el kart",
+    )
+    parser.add_argument(
+        "--lateral",
+        type=float,
+        default=0.0,
+        metavar="L",
+        help="desplazamiento lateral inicial en metros (positivo a la izquierda)",
+    )
     parser.add_argument("--rays", action="store_true", help="muestra los sensores")
     parser.add_argument("--diagnostics", action="store_true", help="tiempos de cada parte")
     parser.add_argument(
@@ -610,6 +645,7 @@ def main(argv: list[str] | None = None) -> None:
         time_trial=args.time_trial,
         records_dir=args.records_dir,
         kart_ramp=ramp,
+        start=(args.at, args.lateral),
     )
     app.show_rays = args.rays
     if args.diagnostics:

@@ -13,6 +13,7 @@ import argparse
 import os
 import time
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 
@@ -50,6 +51,7 @@ def bench(
     frames: int,
     light: bool,
     with_drift: bool = False,
+    start: float = 0.0,
 ):
     screen = pygame.display.set_mode(size)
     track = resolve_track(track_choice)
@@ -57,7 +59,7 @@ def bench(
     view.auto_light = False
     racers = [Racer(track) for _ in range(4)]
     for k, racer in enumerate(racers):
-        racer.reset(start_s=-10.0 * k)
+        racer.reset(start_s=start - 10.0 * k)
     pilots = [Autopilot(track) for _ in racers]
     trails: list[list[tuple[float, float]]] = [[] for _ in racers]
     drift = DriftState() if with_drift else None
@@ -72,7 +74,7 @@ def bench(
             stage_drift(drift, frame)
         visuals = [
             KartVisual(r.kart, k, None if k == 0 else f"{k * 100}k pasos", k > 0, r.on_grass, 1.0,
-                       trails[k])
+                       trails[k], ground=r.level_z)
             for k, r in enumerate(racers)
         ]  # fmt: skip
         if drift is not None:
@@ -92,6 +94,12 @@ def bench(
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Mide el tiempo de cada parte del render.")
     parser.add_argument("--track", default="harbor")
+    parser.add_argument(
+        "--track-file", type=Path, help="circuito en fichero JSON (sustituye a --track)"
+    )
+    parser.add_argument(
+        "--at", type=float, default=0.0, metavar="S", help="metro donde empiezan los karts"
+    )
     parser.add_argument("--frames", type=int, default=600)
     parser.add_argument("--light", action="store_true", help="modo ligero")
     parser.add_argument(
@@ -102,7 +110,15 @@ def main(argv: list[str] | None = None) -> None:
     print(f"{'ventana':>10} {'cámara':>10}  media   p99  partes (ms)")
     for size in ((1280, 720), (1920, 1080)):
         for camera in ("chase", "broadcast", "top"):
-            parts, totals = bench(args.track, size, camera, args.frames, args.light, args.drift)
+            parts, totals = bench(
+                str(args.track_file) if args.track_file else args.track,
+                size,
+                camera,
+                args.frames,
+                args.light,
+                args.drift,
+                args.at,
+            )
             detail = "  ".join(f"{k} {v:.1f}" for k, v in parts.items())
             p99 = np.percentile(totals, 99)
             window = f"{size[0]}x{size[1]}"

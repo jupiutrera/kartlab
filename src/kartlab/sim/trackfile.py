@@ -38,6 +38,17 @@ but near-ties between equally straight stretches can resolve differently on anot
 platform, so a file that is meant to be shared should declare it. ``start`` is only
 valid in format 2.
 
+A format 2 file may also turn one of its crossings into a bridge over a tunnel::
+
+    "bridge": {"crossing": 0, "over": "second", "deck_height": 3.5, "ramp": 25.0}
+
+``crossing`` (required) is the index into ``crossings``; ``over`` says which branch, in the
+order they are driven from the start line, goes over (``"first"`` or ``"second"``, the
+default: first the tunnel, then the bridge); ``deck_height`` (2 to 6 m) and ``ramp`` (15 to
+50 m, the length of each ramp) are optional. The simulation stays two dimensional, but each
+branch keeps its own surface and the stretch has walls (see ``sim/levels.py``). A file
+without ``bridge`` loads exactly as before.
+
 Extending the format: every file declares ``format``. Unknown fields are an error, so a
 file written for a newer version is never silently loaded half-understood. Format 1
 rejects ``crossings`` with its own message.
@@ -56,6 +67,21 @@ import numpy as np
 
 from kartlab.common.io import write_text_atomic
 from kartlab.sim.kart import KartParams
+from kartlab.sim.levels import (
+    DECK_HEIGHT_RANGE,
+    DEFAULT_DECK_HEIGHT,
+    DEFAULT_OVER,
+    DEFAULT_RAMP,
+    MIN_LENGTH_RATIO,
+    OVER_CHOICES,
+    RAMP_RANGE,
+    START_CLEARANCE,
+    BridgeSpec,
+    Levels,
+    bridge_reach,
+    deck_half_length,
+    tunnel_half_length,
+)
 from kartlab.sim.showcase import SHOWCASE
 from kartlab.sim.track import (
     CROSSING_MAX_CURVATURE,
@@ -80,8 +106,9 @@ from kartlab.sim.track import (
 FORMAT_VERSION = 1  # tracks without crossings are written in this format
 CROSSINGS_FORMAT_VERSION = 2  # tracks with level crossings
 KNOWN_FIELDS = frozenset(
-    {"format", "name", "width", "decoration_seed", "corners", "crossings", "start"}
+    {"format", "name", "width", "decoration_seed", "corners", "crossings", "start", "bridge"}
 )
+BRIDGE_FIELDS = frozenset({"crossing", "over", "deck_height", "ramp"})
 START_SNAP = 3.0  # a declared start must be this close to the centerline (m)
 START_HALF_WINDOW = 30.0  # the start line sits on a straight stretch this long around it (m)
 START_MAX_CURVATURE = 1 / 100  # (1/m)
@@ -126,6 +153,7 @@ class TrackSpec:
     decoration_seed: int = 0
     crossings: tuple[tuple[float, float], ...] = ()  # approximate (x, y) of level crossings
     start: tuple[float, float] | None = None  # (x, y) of the start line (format 2 only)
+    bridge: BridgeSpec | None = None  # one crossing as a bridge over a tunnel (format 2 only)
 
 
 @dataclass(frozen=True)
@@ -227,9 +255,63 @@ def spec_from_dict(data: Any) -> TrackSpec:
             start = (float(raw[0]), float(raw[1]))
         else:
             problems.append("'start' debe ser [x, y] con dos números (metros)")
+    bridge = None
+    if "bridge" in data:
+        if version == FORMAT_VERSION:
+            problems.append(
+                f"el campo 'bridge' solo existe en el formato {CROSSINGS_FORMAT_VERSION}, el de "
+                "los circuitos con cruces"
+            )
+        else:
+            bridge = _parse_bridge(data["bridge"], len(crossings), problems)
     if problems:
         raise TrackFileError(problems)
-    return TrackSpec(str(name).strip(), float(width), tuple(parsed), int(seed), crossings, start)
+    return TrackSpec(
+        str(name).strip(), float(width), tuple(parsed), int(seed), crossings, start, bridge
+    )
+
+
+def _parse_bridge(raw: Any, crossings: int, problems: list[str]) -> BridgeSpec | None:
+    """The ``bridge`` object: structure, types, ranges and the crossing it refers to."""
+    if not isinstance(raw, dict):
+        problems.append("'bridge' debe ser un objeto { \"crossing\": N, ... }")
+        return None
+    unknown = sorted(raw.keys() - BRIDGE_FIELDS)
+    if unknown:
+        problems.append(f"'bridge': campos desconocidos: {', '.join(map(repr, unknown))}")
+    before = len(problems)
+    index = raw.get("crossing")
+    if "crossing" not in raw:
+        problems.append("'bridge' necesita 'crossing': el índice del cruce que es un puente")
+    elif not isinstance(index, int) or isinstance(index, bool) or index < 0:
+        problems.append("'bridge.crossing' debe ser un entero desde 0 (índice en 'crossings')")
+    elif not crossings:
+        problems.append("'bridge' necesita 'crossings': no hay ningún cruce que sea un puente")
+    elif index >= crossings:
+        problems.append(
+            f"'bridge.crossing' es {index} pero 'crossings' solo declara {crossings} cruce(s) "
+            f"(índices de 0 a {crossings - 1})"
+        )
+    over = raw.get("over", DEFAULT_OVER)
+    if over not in OVER_CHOICES:
+        problems.append('\'bridge.over\' debe ser "first" o "second" (la rama que va por encima)')
+    values: dict[str, float] = {}
+    for key, default, (low, high), what in (
+        ("deck_height", DEFAULT_DECK_HEIGHT, DECK_HEIGHT_RANGE, "la altura del tablero"),
+        ("ramp", DEFAULT_RAMP, RAMP_RANGE, "la longitud de cada rampa"),
+    ):
+        value = raw.get(key, default)
+        if not _number(value):
+            problems.append(f"'bridge.{key}' debe ser un número (metros)")
+        elif not low <= value <= high:
+            problems.append(
+                f"'bridge.{key}' = {value:g} fuera de rango: {what} va de {low:g} a {high:g} m"
+            )
+        else:
+            values[key] = float(value)
+    if len(problems) > before:
+        return None
+    return BridgeSpec(index, over, values["deck_height"], values["ramp"])
 
 
 def _parse_crossings(raw: Any, problems: list[str]) -> tuple[tuple[float, float], ...]:
@@ -259,6 +341,13 @@ def spec_to_dict(spec: TrackSpec) -> dict[str, Any]:
         data["crossings"] = [list(c) for c in spec.crossings]
     if spec.start is not None:
         data["start"] = list(spec.start)
+    if spec.bridge is not None and spec.crossings:
+        data["bridge"] = {
+            "crossing": spec.bridge.crossing,
+            "over": spec.bridge.over,
+            "deck_height": spec.bridge.deck_height,
+            "ramp": spec.bridge.ramp,
+        }
     return data
 
 
@@ -281,6 +370,13 @@ def spec_to_json(spec: TrackSpec) -> str:
         if spec.start is not None:
             start = ", ".join(json.dumps(_plain(v)) for v in spec.start)
             crossings += f',\n  "start": [{start}]'
+        if spec.bridge is not None:
+            b = spec.bridge
+            crossings += (
+                f',\n  "bridge": {{"crossing": {b.crossing}, "over": {json.dumps(b.over)}, '
+                f'"deck_height": {json.dumps(_plain(b.deck_height))}, '
+                f'"ramp": {json.dumps(_plain(b.ramp))}}}'
+            )
     version = CROSSINGS_FORMAT_VERSION if spec.crossings else FORMAT_VERSION
     return (
         "{\n"
@@ -585,15 +681,92 @@ def _check_crossings(
     return problems, found
 
 
+def match_declared(found: Sequence[Crossing], declared: Sequence[tuple[float, float]]) -> list[int]:
+    """For each declared crossing, the index in ``found`` of the real crossing it names
+    (the nearest one within ``CROSSING_MATCH`` metres), or -1 if there is none."""
+    matches = []
+    for dx, dy in declared:
+        dist = [math.hypot(c.x - dx, c.y - dy) for c in found]
+        best = int(np.argmin(dist)) if dist else -1
+        matches.append(best if best >= 0 and dist[best] <= CROSSING_MATCH else -1)
+    return matches
+
+
+def _check_bridge(
+    points: np.ndarray,
+    width: float,
+    found: Sequence[Crossing],
+    declared: Sequence[tuple[float, float]],
+    bridge: BridgeSpec,
+) -> list[str]:
+    """The bridge must fit: its crossing exists, the ramp stays clear of the start line, the
+    deck is straight, the track is long enough and nothing else touches the ramps."""
+    if not 0 <= bridge.crossing < len(declared):
+        return [
+            f"el puente usa el cruce {bridge.crossing} pero 'crossings' declara "
+            f"{len(declared)} cruce(s)"
+        ]
+    k = match_declared(found, declared)[bridge.crossing]
+    if k < 0:
+        return []  # the declared crossing does not exist: already reported
+    crossing = found[k]
+    where = f"({crossing.x:.0f}, {crossing.y:.0f})"
+    seg = np.roll(points, -1, axis=0) - points
+    seg_len = np.hypot(seg[:, 0], seg[:, 1])
+    length = float(seg_len.sum())
+    arc = np.concatenate([[0.0], np.cumsum(seg_len)[:-1]])
+    s_over = crossing.s_a if bridge.over == "first" else crossing.s_b
+    s_under = crossing.s_b if bridge.over == "first" else crossing.s_a
+
+    def wrap(value):
+        return (value + length / 2) % length - length / 2
+
+    problems = []
+    reach = bridge_reach(width, crossing.angle, bridge)
+    deck_half = deck_half_length(width, crossing.angle)
+    if abs(float(wrap(0.0 - s_over))) <= reach + START_CLEARANCE:
+        problems.append(
+            f"la rampa del puente en {where} llega a la línea de meta: necesita "
+            f"{reach + START_CLEARANCE:.0f} m libres desde el cruce; aleja el cruce de la meta "
+            "o acorta 'ramp'"
+        )
+    deck = np.abs(wrap(arc - s_over)) <= deck_half
+    if float(np.max(np.abs(curvature(points))[deck])) > CROSSING_MAX_CURVATURE:
+        problems.append(
+            f"el tablero del puente en {where} no es recto: debe serlo en {2 * deck_half:.0f} m "
+            "alrededor del cruce"
+        )
+    if length < MIN_LENGTH_RATIO * 2.0 * reach:
+        problems.append(
+            f"el puente en {where} mide {2 * reach:.0f} m con sus rampas y el circuito "
+            f"{length:.0f} m: debe ser al menos {MIN_LENGTH_RATIO:g} veces más largo"
+        )
+    if abs(float(wrap(s_over - s_under))) <= 2.0 * (reach + width):
+        problems.append(f"las dos ramas del cruce en {where} están demasiado juntas para un puente")
+    # No other part of the road may run through the ground under the ramps.
+    tunnel = tunnel_half_length(width, crossing.angle) + 2.0
+    others = (np.abs(wrap(arc - s_over)) > reach + width) & (np.abs(wrap(arc - s_under)) > tunnel)
+    ramp = points[np.abs(wrap(arc - s_over)) <= reach]
+    if others.any() and len(ramp):
+        d2 = ((points[others, None, :] - ramp[None, :, :]) ** 2).sum(axis=2).min(axis=1)
+        if float(d2.min()) < (width / 2 + 1.0 + 1.0) ** 2:
+            problems.append(f"otra parte del circuito pasa por la rampa del puente en {where}")
+    return problems
+
+
 def check_centerline(
-    points: np.ndarray, width: float, declared: Sequence[tuple[float, float]] = ()
+    points: np.ndarray,
+    width: float,
+    declared: Sequence[tuple[float, float]] = (),
+    bridge: BridgeSpec | None = None,
 ) -> TrackReport:
     """The checks on a finished centerline: length, tightest curve, self-crossing and
     clearance between non-adjacent sections. The same limits as the generator's, so it
     also accepts every generated and showcase track.
 
     With ``declared`` crossings (a format 2 file) the centerline may cross itself exactly
-    there, see ``_check_crossings``; without them any self-crossing is an error."""
+    there, see ``_check_crossings``; without them any self-crossing is an error. A
+    ``bridge`` adds the checks of ``_check_bridge``."""
     problems = []
     length = closed_length(points)
     kappa = float(np.max(np.abs(curvature(points))))
@@ -619,6 +792,8 @@ def check_centerline(
                 f"dos partes del circuito están demasiado cerca fuera de los cruces: quedan "
                 f"{gap:.1f} m de hierba entre ellas y se necesitan al menos {CLEARANCE:g} m"
             )
+        if bridge is not None:
+            problems += _check_bridge(points, width, found, declared, bridge)
     elif _crossing(points, stride=2) is not None:
         problems.append("la línea central se cruza a sí misma")
     else:
@@ -645,7 +820,7 @@ def _analyze(spec: TrackSpec) -> tuple[TrackReport, np.ndarray | None]:
     points, rounding = _build_points(spec)
     if points is None:
         return TrackReport(tuple(rounding)), None
-    report = check_centerline(points, spec.width, spec.crossings)
+    report = check_centerline(points, spec.width, spec.crossings, spec.bridge)
     return report, points if report.ok else None
 
 
@@ -660,14 +835,19 @@ def build_track(spec: TrackSpec) -> Track:
     report, points = _analyze(spec)
     if points is None:
         raise TrackFileError(list(report.problems))
-    return Track(
+    crossings = find_crossings(points) if spec.crossings else []
+    track = Track(
         points,
         spec.width,
         name=spec.name,
         clearance=CLEARANCE,
         decoration_seed=spec.decoration_seed,
-        crossings=find_crossings(points) if spec.crossings else (),
+        crossings=crossings,
     )
+    if spec.bridge is not None:
+        which = match_declared(crossings, spec.crossings)[spec.bridge.crossing]
+        track.levels = Levels(track, spec.bridge, crossings[which])
+    return track
 
 
 def load_track_file(path: Path | str) -> Track:

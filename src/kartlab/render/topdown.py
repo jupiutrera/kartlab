@@ -28,6 +28,11 @@ KERB_RED = (204, 62, 62)
 KERB_WHITE = (238, 238, 232)
 CENTER_MARK = (104, 109, 120)
 CHECKER_DARK = (24, 24, 28)
+BRIDGE_ASPHALT = (94, 98, 110)  # the deck of a bridge, lighter than the road on the ground
+BRIDGE_STONE = (172, 174, 182)  # parapets
+BRIDGE_STONE_EDGE = (120, 122, 134)
+BRIDGE_SHADOW = (34, 58, 46)
+UNDER_ASPHALT = (60, 64, 74)  # the road that goes under the bridge, dimmed
 KART_COLOR = (255, 156, 44)
 KART_OUTLINE = (24, 24, 30)
 TRAIL_COLOR = (255, 214, 150)
@@ -92,7 +97,14 @@ class TrackMap:
         right = self.to_px_array(track.right_edge).tolist()
         edge_px = max(1, round(0.3 * ppm))
         n = len(track)
-        if track.crossings:
+        hidden = None
+        if track.levels is not None:
+            # The bridge draws its own edges and hides the road under it: no outline there.
+            hidden = self._draw_under_bridge(track)
+            for edge in (left, right):
+                for i in np.flatnonzero(~(hidden | np.roll(hidden, -1))).tolist():
+                    pygame.draw.line(surf, EDGE, edge[i], edge[(i + 1) % n], edge_px)
+        elif track.crossings:
             # Where another branch's asphalt passes over an edge there is no edge: draw
             # the outline only along the stretches that are not covered.
             covered_left, covered_right = track.edge_covered()
@@ -113,9 +125,81 @@ class TrackMap:
         centre = self.to_px_array(track.points).tolist()
         dash = max(1, round(0.15 * ppm))
         for i in range(0, n, 6):
+            if hidden is not None and hidden[i]:
+                continue
             pygame.draw.line(surf, CENTER_MARK, centre[i], centre[(i + 3) % n], dash)
+        if track.levels is not None:
+            self._draw_bridge(track)
         self._draw_arrows(track)
         self._draw_start_line(track)
+
+    def _draw_under_bridge(self, track: Track) -> np.ndarray:
+        """Dim the road that goes under the bridge; the samples whose outline is not drawn
+        (the raised road and the lower road under its footprint)."""
+        levels = track.levels
+        surf = self.surface
+        near = np.abs(levels.wrap(track.s - levels.s_under)) <= levels.embankment_half + 14.0
+        idx = np.flatnonzero(near)
+        edge_l, edge_r = self.to_px_array(track.left_edge), self.to_px_array(track.right_edge)
+        for a, b in zip(idx[:-1].tolist(), idx[1:].tolist(), strict=True):
+            if b - a == 1:  # a flat-ended strip along the road, not discs with round ends
+                quad = [
+                    edge_l[a].tolist(),
+                    edge_l[b].tolist(),
+                    edge_r[b].tolist(),
+                    edge_r[a].tolist(),
+                ]
+                pygame.draw.polygon(surf, UNDER_ASPHALT, quad)
+        cx, cy, heading = track.pose_at(levels.s_over)
+        ux, uy = math.cos(heading), math.sin(heading)
+        dx, dy = track.points[:, 0] - cx, track.points[:, 1] - cy
+        across = np.abs(-dx * uy + dy * ux)
+        along = np.abs(dx * ux + dy * uy)
+        return levels.raised | ((across <= levels.embankment_half + 0.5) & (along <= levels.reach))
+
+    def _draw_bridge(self, track: Track) -> None:
+        """The raised road seen from above: its shadow, the parapets and the deck on top."""
+        levels = track.levels
+        surf = self.surface
+        idx = np.flatnonzero(levels.raised)
+        pts, s = track.points, track.s
+        heading = np.arctan2(track.segment_dirs[:, 1], track.segment_dirs[:, 0])
+        normal = np.stack([-np.sin(heading), np.cos(heading)], axis=1)
+        height = np.array([levels.height_at(float(v)) for v in s[idx]])
+        sun = np.array([0.55, -0.35])
+        sun /= math.hypot(*sun)
+        wide, inner = levels.embankment_half, track.half_width - 0.7
+        edge = max(1, round(0.25 * self.ppm))
+
+        def side(i: int, lateral: float, shift=(0.0, 0.0)):
+            x, y = pts[i] + normal[i] * lateral + shift
+            return self.to_px(x, y)
+
+        def strip(a: float, b: float, color, shadow: bool = False) -> None:
+            for k in range(len(idx) - 1):
+                i, j = int(idx[k]), int(idx[k + 1])
+                shift_i = sun * 0.35 * (height[k] + 0.9) * (1.0 if shadow else 0.0)
+                shift_j = sun * 0.35 * (height[k + 1] + 0.9) * (1.0 if shadow else 0.0)
+                quad = [side(i, a, shift_i), side(j, a, shift_j), side(j, b, shift_j)]
+                quad.append(side(i, b, shift_i))
+                pygame.draw.polygon(surf, color, quad)
+
+        strip(-wide, wide, BRIDGE_SHADOW, shadow=True)
+        strip(-wide, wide, BRIDGE_STONE_EDGE)
+        strip(inner, wide, BRIDGE_STONE)
+        strip(-wide, -inner, BRIDGE_STONE)
+        strip(-inner, inner, BRIDGE_ASPHALT)
+        for lateral in (-inner, inner):  # the inner face of each parapet
+            line = [side(int(i), lateral) for i in idx]
+            pygame.draw.lines(surf, BRIDGE_STONE_EDGE, False, line, edge)
+        for lateral in (-(inner - 0.45), inner - 0.45):  # painted edge lines
+            line = [side(int(i), lateral) for i in idx]
+            pygame.draw.lines(surf, EDGE, False, line, edge)
+        dash = max(1, round(0.15 * self.ppm))
+        for k in range(0, len(idx) - 3, 6):
+            pygame.draw.line(
+                surf, CENTER_MARK, side(int(idx[k]), 0.0), side(int(idx[k + 3]), 0.0), dash
+            )
 
     def _draw_arrows(self, track: Track, every: float = 80.0) -> None:
         size = 2.2
@@ -188,8 +272,13 @@ class TopDownView:
         if len(trail) > 1:
             pts = [(px + ox, py + oy) for px, py in (tmap.to_px(x, y) for x, y in trail)]
             pygame.draw.aalines(target, TRAIL_COLOR, False, pts)
-        for kart, color, *extra in karts:  # optional: height over the ground (m), sweep state
+        levels = self.track.levels
+        for kart, color, *extra in karts:
+            # Optional: height over the ground (m), sweep state, height of the road (a bridge).
             lift = extra[0] if extra else 0.0
+            road = extra[2] if len(extra) > 2 else 0.0
+            if levels is not None and road < 0.5 and levels.in_tunnel_zone(kart.x, kart.y):
+                continue  # in the tunnel: under the deck, out of sight from above
             self._draw_kart(target, tmap, kart, color, (ox, oy))
             if len(extra) > 1 and extra[1] is not None and lift <= 0.0:
                 self._draw_sparks(target, tmap, kart, extra[1], (ox, oy))
