@@ -17,9 +17,9 @@ from dataclasses import dataclass
 
 from kartlab.render.palette import Ink
 
-# Dull red, brick red, orange, amber, yellow, pale yellow, white: hotter and brighter each step.
+# Brick red, orange, amber, yellow, pale yellow, white: hotter and brighter each step. It
+# starts at brick red, not at a dull red: a dull red barely shows on the asphalt at dusk.
 HEAT_RAMP: tuple[int, ...] = (
-    Ink.RED_DARK,
     Ink.RED,
     Ink.ORANGE,
     Ink.AMBER,
@@ -84,8 +84,8 @@ def spark_spec(charge: float) -> SparkSpec:
     c = min(max(charge, 0.0), 1.0)
     full = 1.0 if c >= 1.0 else 0.0
     return SparkSpec(
-        rate=6.0 + 62.0 * c,  # barely a few sparks in the dead zone
-        size=0.05 + 0.09 * c,
+        rate=10.0 + 58.0 * c,  # a few sparks in the dead zone
+        size=0.08 + 0.06 * c,  # big enough to read at low charge too
         life=0.16 + 0.22 * c + 0.08 * full,  # at full charge they fly longer
         lift=1.2 + 2.2 * c,
         reach=2.0 + 2.5 * c + 1.5 * full,
