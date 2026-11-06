@@ -152,7 +152,7 @@ def launch_vs_ai(hub: KartLabApp, choices: dict) -> None:
         return
     choice = choices["track"]
     track = hub.resolve_track(choice)
-    if track.crossings:
+    if track.flat_crossings:
         raise ActivityError(
             "Circuito no válido", "La carrera contra la IA no admite circuitos con cruces a nivel."
         )
@@ -184,8 +184,9 @@ def launch_vs_ai(hub: KartLabApp, choices: dict) -> None:
 
 
 def no_crossings(option) -> bool:
-    """The circuits of the race against the AI: playable ones without level crossings."""
-    return option.track is not None and not option.track.crossings
+    """The circuits of the race against the AI: playable ones without flat level crossings
+    (a crossing with a bridge over a tunnel is fine: the two roads are apart)."""
+    return option.track is not None and not option.track.flat_crossings
 
 
 def launch_live(hub: KartLabApp, run) -> None:

@@ -207,6 +207,13 @@ class Track:
             return self.locate(x, y, hint)
         return self.locate(x, y)
 
+    @property
+    def flat_crossings(self) -> int:
+        """Level crossings where the two roads share one surface. A bridge makes one crossing
+        two levels, so the crossings of a track with levels are one fewer; what is left is
+        where the kart can turn from one road onto the other."""
+        return len(self.crossings) - (1 if self.levels is not None else 0)
+
     def height_at(self, s: float) -> float:
         """Height (m) of the road at arc position ``s``: 0 without a bridge."""
         return 0.0 if self.levels is None else self.levels.height_at(s)
