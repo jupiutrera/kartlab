@@ -188,7 +188,7 @@ def launch_editor(hub: KartLabApp, choices: dict) -> None:
 
 
 def launch_quit(hub: KartLabApp, choices: dict) -> None:
-    hub.running = False
+    hub.request_exit()
 
 
 ENTRIES: list[Entry] = [
@@ -386,7 +386,9 @@ class KartLabApp:
         self.mouse = (-1, -1)
         self.dialog: Dialog | None = None
         self.flow: Flow | None = None
-        self.job: TrainingJob | None = None
+        # A trainer launched by an earlier session of the menu and still running is ours again.
+        self.job: TrainingJob | None = TrainingJob.adopt(self.logs_dir, self.runs_dir)
+        self._exit_when_stopped = False  # "Parar y salir": leave once the trainer has saved
         self._job_ended_at: float | None = None
         self._jobs: list[tuple[str | None, Callable[[], None]]] = []
         self.busy_text: str | None = None
@@ -499,6 +501,30 @@ class KartLabApp:
 
     def training_alive(self) -> bool:
         return (self.job is not None and self.job.running) or self.live_training() is not None
+
+    def request_exit(self) -> None:
+        """Leave the menu. With a training of ours running, ask what to do with it first."""
+        job = self.job
+        if job is None or not job.running or self._exit_when_stopped:
+            self.running = False
+            return
+        self.dialog = Dialog(
+            "Hay un entrenamiento en marcha",
+            f"{job.status_line()}\n¿Qué hacemos con él al salir?",
+            choices=[
+                ("Parar y salir", self._stop_and_exit),
+                ("Dejar corriendo", self._leave_running),
+                ("Cancelar", None),
+            ],
+        )
+
+    def _stop_and_exit(self) -> None:
+        self.job.request_stop()
+        self._exit_when_stopped = True  # ``update`` closes the menu when the trainer has saved
+
+    def _leave_running(self) -> None:
+        print(STILL_TRAINING, file=sys.stderr)
+        self.running = False
 
     def status_line(self) -> str:
         job = self.job
@@ -642,7 +668,7 @@ class KartLabApp:
             if close is not None:
                 close()
             if getattr(app, "quit_requested", False):
-                self.running = False  # the window was closed inside the activity
+                self.request_exit()  # the window was closed inside the activity
             self.restore_window()
 
     # -- deferred work ---------------------------------------------------------------------------
@@ -669,7 +695,7 @@ class KartLabApp:
 
     def handle_event(self, event: pygame.event.Event) -> None:
         if event.type == pygame.QUIT:
-            self.running = False
+            self.request_exit()
         elif self.busy_text:
             return  # something is loading: input waits
         elif self.dialog is not None:
@@ -677,6 +703,8 @@ class KartLabApp:
                 self.dialog.on_key(self, event.key)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 self.dialog.on_click(self, event.pos)
+            elif event.type == pygame.MOUSEMOTION:
+                self.dialog.on_motion(event.pos)
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_F11:
                 self.toggle_fullscreen()
@@ -701,6 +729,8 @@ class KartLabApp:
                 self.invalidate()  # a finished run has checkpoints to show
             elif job.running:
                 self._job_ended_at = None
+        if self._exit_when_stopped and (job is None or not job.running):
+            self.running = False  # it stopped and saved: now the menu can go
         self.backdrop.update(dt)
         self.current.update(dt)
 
@@ -710,10 +740,27 @@ class KartLabApp:
             screen.fill((14, 14, 22))
         self.ui.draw_veil(screen, self.current.dim)
         self.current.draw(screen)
+        if self.current.show_status:
+            self._draw_status(screen)
         if self.busy_text:
             self._draw_loading(screen)
         if self.dialog is not None:
             self.dialog.draw(screen, self.ui)
+
+    def _draw_status(self, screen: pygame.Surface) -> None:
+        """The training line in the top-right corner, whatever screen the player is on."""
+        status = self.status_line()
+        if self._exit_when_stopped:
+            status = "Saliendo en cuanto termine de guardar…"
+        if not status:
+            return
+        ui = self.ui
+        text = ui.mono.get(status, ACCENT)
+        pad = ui.unit // 2
+        w, h = text.get_width() + 2 * pad, text.get_height() + pad
+        x = screen.get_width() - w - ui.unit
+        screen.blit(ui.panel(w, h, 220), (x, ui.unit))
+        screen.blit(text, (x + pad, ui.unit + pad // 2))
 
     def _draw_loading(self, screen: pygame.Surface) -> None:
         ui = self.ui

@@ -41,6 +41,7 @@ IGNORED_KEYS = {
     pygame.K_RALT,
     pygame.K_CAPSLOCK,
 }
+ESC_SECONDS = 2.0  # Esc in the main menu: press it again within this time to leave
 CONFIRM_KEYS = (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE)
 LIGHT_NAMES = {"day": "Día", "sunset": "Atardecer", "night": "Noche"}
 CAMERA_NAMES = {
@@ -168,6 +169,7 @@ class Screen:
 
     hint = ""
     dim = 0  # extra darkness (0-255) over the backdrop, for screens with a lot to read
+    show_status = True  # the training line («Entrenando X · N/M · 3:12») in the top corner
 
     def __init__(self, hub: KartLabApp) -> None:
         self.hub = hub
@@ -218,7 +220,9 @@ class Screen:
 
 
 class Dialog:
-    """A message (any key closes it) or a question (Intro = yes, Esc = no) over everything."""
+    """A message (any key closes it), a question (Intro = yes, Esc = no) or a choice between
+    several buttons (``choices``: label and what to do; ← → select, Intro accepts, Esc closes
+    without doing anything) over everything."""
 
     def __init__(
         self,
@@ -226,13 +230,21 @@ class Dialog:
         text: str,
         on_yes: Callable[[], None] | None = None,
         footer: str | None = None,
+        choices: list[tuple[str, Callable[[], None] | None]] | None = None,
     ) -> None:
         self.title = title
         self.text = text
         self.on_yes = on_yes
+        self.choices = choices or []
+        self.selected = 0
         self.footer = footer or (
-            "Intro = sí · Esc = no" if on_yes is not None else "Pulsa una tecla para seguir"
+            "← → elegir · Intro aceptar · Esc cancelar"
+            if self.choices
+            else "Intro = sí · Esc = no"
+            if on_yes is not None
+            else "Pulsa una tecla para seguir"
         )
+        self.buttons: list[pygame.Rect] = []
         self._surface: pygame.Surface | None = None
         self._size: tuple[int, int] | None = None
 
@@ -241,18 +253,47 @@ class Dialog:
         if yes and self.on_yes is not None:
             self.on_yes()
 
+    def choose(self, hub: KartLabApp, index: int) -> None:
+        hub.dialog = None
+        action = self.choices[index][1]
+        if action is not None:
+            action()
+
+    def select(self, delta: int) -> None:
+        self.selected = (self.selected + delta) % len(self.choices)
+        self._surface = None  # the highlight moved
+
     def on_key(self, hub: KartLabApp, key: int) -> None:
         if key in IGNORED_KEYS:
             return
-        if self.on_yes is None:
+        if self.choices:
+            if key in (pygame.K_LEFT, pygame.K_UP, pygame.K_a, pygame.K_w):
+                self.select(-1)
+            elif key in (pygame.K_RIGHT, pygame.K_DOWN, pygame.K_d, pygame.K_s, pygame.K_TAB):
+                self.select(1)
+            elif key in CONFIRM_KEYS:
+                self.choose(hub, self.selected)
+            elif key == pygame.K_ESCAPE:
+                self.close_with(hub, False)
+        elif self.on_yes is None:
             self.close_with(hub, False)
         elif key in CONFIRM_KEYS:
             self.close_with(hub, True)
         elif key == pygame.K_ESCAPE:
             self.close_with(hub, False)
 
+    def on_motion(self, pos) -> None:
+        for i, rect in enumerate(self.buttons):
+            if rect.collidepoint(pos) and i != self.selected:
+                self.selected = i
+                self._surface = None
+
     def on_click(self, hub: KartLabApp, pos) -> None:
-        if self.on_yes is None:
+        if self.choices:
+            for i, rect in enumerate(self.buttons):
+                if rect.collidepoint(pos):
+                    self.choose(hub, i)
+        elif self.on_yes is None:
             self.close_with(hub, False)
 
     def draw(self, screen: pygame.Surface, ui: Ui) -> None:
@@ -264,12 +305,16 @@ class Dialog:
         u = ui.unit
         body = pygame.font.Font(SANS_REGULAR, u)
         longest = max(body.size(line)[0] for line in self.text.split("\n"))
-        width = min(max(longest + 3 * u, u * 22), size[0] - 4 * u, u * 44)
+        labels = [ui.name.get(label, DARK) for label, _ in self.choices]
+        buttons_w = sum(t.get_width() + 3 * u for t in labels) + len(labels) * u // 2 + 3 * u
+        width = min(max(longest + 3 * u, u * 22, buttons_w), size[0] - 2 * u, u * 60)
         lines = wrap_text(body, self.text, width - 3 * u)
         line_h = body.get_height()
         heading = ui.name.get(self.title, ACCENT)
         foot = ui.small.get(self.footer, DIM)
+        button_h = round(u * 2.2) if self.choices else 0
         height = u * 2 + heading.get_height() + u + len(lines) * line_h + u + foot.get_height() + u
+        height += button_h + (u if self.choices else 0)
         height = min(height, size[1] - 2 * u)
         surface = pygame.Surface(size, pygame.SRCALPHA)
         surface.fill((6, 8, 16, 170))
@@ -282,6 +327,17 @@ class Dialog:
         for line in lines:
             surface.blit(body.render(line, True, WHITE), (box.x + 1.5 * u, y))
             y += line_h
+        if self.choices:
+            x = box.x + 1.5 * u
+            self.buttons = []
+            for i, text in enumerate(labels):
+                rect = pygame.Rect(x, y + u // 2, text.get_width() + 3 * u, button_h)
+                self.buttons.append(rect)
+                chosen = i == self.selected
+                pygame.draw.rect(surface, ACCENT if chosen else (40, 42, 58), rect)
+                label = ui.name.get(self.choices[i][0], DARK if chosen else WHITE)
+                surface.blit(label, label.get_rect(center=rect.center))
+                x += rect.w + u // 2
         surface.blit(foot, (box.x + 1.5 * u, box.bottom - foot.get_height() - u))
         return surface
 
@@ -298,6 +354,7 @@ class MenuScreen(Screen):
         super().__init__(hub)
         self.entries = entries
         self.selected = 0
+        self.esc_until = -1.0  # a second Esc before this time leaves
         self._rows: list[tuple[str, Entry | str, pygame.Rect]] = []
         self.rects: dict[int, pygame.Rect] = {}  # entry index -> its row
         self._mark: pygame.Surface | None = None
@@ -365,7 +422,10 @@ class MenuScreen(Screen):
     def on_key(self, key: int) -> None:
         hub = self.hub
         if key == pygame.K_ESCAPE:
-            hub.running = False
+            if hub.t < self.esc_until:  # the second Esc: leave
+                hub.request_exit()
+            else:
+                self.esc_until = hub.t + ESC_SECONDS
         elif key in (pygame.K_UP, pygame.K_w):
             self.move(-1)
         elif key in (pygame.K_DOWN, pygame.K_s):
@@ -434,7 +494,7 @@ class MenuScreen(Screen):
                     ),
                 )
         self._draw_description(screen)
-        self._draw_footer(screen)
+        self._draw_esc_notice(screen)
         self.draw_hint(screen)
 
     def _draw_description(self, screen: pygame.Surface) -> None:
@@ -451,15 +511,18 @@ class MenuScreen(Screen):
         screen.blit(ui.panel(box_w, box_h, 190), (x, self.desc_y))
         screen.blit(surface, (x + u, self.desc_y + u // 2))
 
-    def _draw_footer(self, screen: pygame.Surface) -> None:
+    def _draw_esc_notice(self, screen: pygame.Surface) -> None:
+        """«Pulsa Esc otra vez para salir» after the first Esc, for a couple of seconds."""
         hub = self.hub
-        ui = hub.ui
-        status = hub.status_line()
-        if not status:
+        if hub.t >= self.esc_until:
             return
-        surface = ui.mono.get(status, ACCENT)
-        y = self.desc_y + round(ui.unit * 2.5)  # under the description box
-        screen.blit(surface, ((ui.size[0] - surface.get_width()) // 2, y))
+        ui = hub.ui
+        surface = ui.desc.get("Pulsa Esc otra vez para salir", DARK)
+        w, h = surface.get_width() + 2 * ui.unit, surface.get_height() + ui.unit
+        x = (ui.size[0] - w) // 2
+        y = self.desc_y + round(ui.unit * 2.5)
+        pygame.draw.rect(screen, ACCENT, (x, y, w, h))
+        screen.blit(surface, (x + ui.unit, y + ui.unit // 2))
 
 
 # -- options ---------------------------------------------------------------------------------
@@ -593,6 +656,7 @@ class TrainScreen(Screen):
     """Pick a config, launch it, watch it live, stop it. Nothing starts without a keypress."""
 
     dim = 90
+    show_status = False  # it has its own panel
     hint = "↑ ↓ elegir · Intro lanzar · V ver en directo · P parar · O abrir carpeta · Esc volver"
 
     def __init__(self, hub: KartLabApp, flow: Flow) -> None:

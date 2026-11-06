@@ -237,16 +237,154 @@ def test_the_wheel_moves_the_selection(make_hub):
     assert app.entries[app.main_screen.selected].key == "conduccion"
 
 
-def test_escape_in_the_main_menu_and_the_exit_entry_close_it(make_hub):
+def test_escape_in_the_main_menu_asks_for_a_second_press_within_two_seconds(make_hub):
     app = make_hub()
     app.run(1)
+    app.running = True
+    key(app, pygame.K_ESCAPE)
+    assert app.running  # the first Esc only warns
+    assert app.t < app.main_screen.esc_until
+    app.run(2)  # the notice draws
+    key(app, pygame.K_ESCAPE)
+    assert app.running is False  # the second one leaves
+
+
+def test_a_slow_second_escape_only_warns_again(make_hub):
+    app = make_hub()
+    app.running = True
+    key(app, pygame.K_ESCAPE)
+    app.t += 2.5  # more than two seconds later
+    key(app, pygame.K_ESCAPE)
+    assert app.running
     key(app, pygame.K_ESCAPE)
     assert app.running is False
+
+
+def test_the_exit_entry_and_the_window_button_close_the_menu_directly(make_hub):
     other = make_hub()
     other.running = True
     select(other, "salir")
     key(other, pygame.K_RETURN)
     assert other.running is False
+    closing = make_hub()
+    closing.running = True
+    closing.handle_event(pygame.event.Event(pygame.QUIT))
+    assert closing.running is False
+
+
+def start_training(app, tmp_path, steps=50_000):
+    write_config(tmp_path / "configs", "mini", steps)
+    open_training(app)
+    key(app, pygame.K_RETURN)
+    assert app.job is not None and app.job.running
+    key(app, pygame.K_ESCAPE)  # back to the main menu
+
+
+def test_leaving_with_a_live_training_asks_what_to_do(make_hub, tmp_path, capsys):
+    spawn = FakeSpawn()
+    app = make_hub(spawn=spawn)
+    start_training(app, tmp_path)
+    app.running = True
+    select(app, "salir")
+    key(app, pygame.K_RETURN)
+    dialog = app.dialog
+    assert dialog is not None and [c[0] for c in dialog.choices] == [
+        "Parar y salir",
+        "Dejar corriendo",
+        "Cancelar",
+    ]
+    assert "Entrenando mini" in dialog.text
+    app.run(2)  # the box draws with its buttons
+    key(app, pygame.K_ESCAPE)  # cancel
+    assert app.dialog is None and app.running and not app.job.stopping
+    app.handle_event(pygame.event.Event(pygame.QUIT))  # the X asks too
+    assert app.dialog is not None
+    key(app, pygame.K_RIGHT)  # Dejar corriendo
+    key(app, pygame.K_RETURN)
+    assert app.running is False and not app.job.stopping and spawn.process.code is None
+    assert "sigue en marcha" in capsys.readouterr().err
+
+
+def test_stop_and_leave_waits_for_the_trainer_to_save(make_hub, tmp_path):
+    spawn = FakeSpawn()
+    app = make_hub(spawn=spawn)
+    start_training(app, tmp_path)
+    app.running = True
+    app.handle_event(pygame.event.Event(pygame.QUIT))
+    key(app, pygame.K_RETURN)  # the first button: Parar y salir
+    assert app.job.stop_path.exists() and app.running  # not yet: it is saving
+    app.update(0.1)
+    assert app.running
+    app.run(2)  # the "saliendo" notice draws
+    spawn.process.code = 0  # the trainer finished its checkpoint and summary
+    app.update(0.1)
+    assert app.running is False
+
+
+def test_the_dialog_buttons_work_with_the_mouse(make_hub, tmp_path):
+    spawn = FakeSpawn()
+    app = make_hub(spawn=spawn)
+    start_training(app, tmp_path)
+    app.running = True
+    app.handle_event(pygame.event.Event(pygame.QUIT))
+    app.run(1)
+    keep = app.dialog.buttons[1]
+    motion(app, keep.center)
+    assert app.dialog.selected == 1
+    click(app, keep.center)
+    assert app.dialog is None and app.running is False
+
+
+def test_a_new_session_adopts_the_training_and_can_stop_it(make_hub, tmp_path):
+    from kartlab.show.training_job import JOB_FILE_NAME, process_started_at
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    stop = logs / "train-previo.stop"
+    (logs / JOB_FILE_NAME).write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "pid": os.getpid(),  # "alive": this very process
+                "started_at": process_started_at(os.getpid()) or time.time(),
+                "name": "previo",
+                "total_steps": 400_000,
+                "config": str(tmp_path / "configs" / "previo.yaml"),
+                "log": str(logs / "train-previo.log"),
+                "stop": str(stop),
+                "runs_dir": str(tmp_path / "runs"),
+                "run": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_config(tmp_path / "configs", "otra", 1000)
+    app = make_hub()
+    assert app.job is not None and app.job.running
+    assert "Entrenando previo" in app.status_line()
+    screen = open_training(app)
+    assert screen.button_states()["launch"][1]  # no second launch while it runs
+    key(app, pygame.K_p)  # Parar writes the stop file of the adopted job
+    assert stop.exists() and app.job.stopping
+    assert "Parando previo" in app.status_line()
+
+
+def test_the_training_line_shows_on_every_screen_but_the_training_one(make_hub, tmp_path):
+    app = make_hub(spawn=FakeSpawn())
+    start_training(app, tmp_path)
+    drawn = []
+    original = app._draw_status
+    app._draw_status = lambda screen: (drawn.append(type(app.current).__name__), original(screen))
+    app.run(1)  # the main menu
+    select(app, "contrarreloj")
+    key(app, pygame.K_RETURN)  # the kart screen
+    app.run(2)
+    key(app, pygame.K_ESCAPE)
+    select(app, "entrenar")
+    key(app, pygame.K_RETURN)
+    app.run(2)
+    assert "KartScreen" in drawn and "MenuScreen" in drawn
+    assert "TrainScreen" not in drawn  # it has its own panel
 
 
 def test_entries_without_a_run_explain_why_instead_of_opening(make_hub):
