@@ -62,7 +62,8 @@ HELP = (
     "Mayús: brinco; aterriza con el volante girado y Mayús pulsado para barrer",
     "Suelta Mayús para el impulso: cuanto más largo el barrido, más impulso",
     "K: contrarreloj (récord y fantasma) · F: fantasma",
-    "P: pausa · F3: diagnóstico · L: modo ligero · F11: pantalla completa · H: ayuda · Esc: salir",
+    "P: pausa · F3: diagnóstico · L: modo ligero · F11: pantalla completa · H: ayuda",
+    "Esc: salir (si vienes del menú principal, vuelve a él)",
 )
 
 

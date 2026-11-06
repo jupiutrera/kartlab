@@ -138,7 +138,7 @@ HELP_ROWS: tuple[tuple[str, str], ...] = (
     ("Ctrl + Mayús + S", "guardar como… (nombre o ruta)"),
     ("F5 o T", "probar el circuito conduciendo"),
     ("H", "esta ayuda"),
-    ("Esc", "salir (pide confirmar si hay cambios)"),
+    ("Esc", "salir o volver al menú (pide confirmar si hay cambios)"),
 )
 
 

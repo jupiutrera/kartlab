@@ -101,7 +101,7 @@ HELP_SECTIONS = (
         "Modos",
         (
             ("M", "cambiar de modo (ver · carrera · progresión)"),
-            ("Esc", "volver al título; en el título, salir"),
+            ("Esc", "volver al título (al menú, si vienes de él); en el título, salir"),
         ),
     ),
     (
