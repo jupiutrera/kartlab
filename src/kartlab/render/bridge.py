@@ -60,7 +60,6 @@ UP_LIT, UP_SHADE = Ink.STONE_LIGHT, Ink.STONE
 CAP = Ink.MIST
 INNER_LIT, INNER_SHADE = Ink.STONE, 5
 LINTEL_INK = Ink.STONE_LIGHT
-OPENING = Ink.ASPHALT_DARK
 WALL_INKS = (Ink.ASPHALT_DARK, Ink.ASPHALT)
 ROOF_INK, LAMP_INK = Ink.ASPHALT_DARK, Ink.ASPHALT_LIGHT
 
@@ -341,6 +340,49 @@ class BridgeRenderer:
                 and self._section_along(k, ux, uy, ox, oy)[0] <= hi
             ]
             self.portal_sections.append(touched)
+        self._build_holes(ux, uy, ox, oy)
+
+    def _build_holes(self, ux: float, uy: float, ox: float, oy: float) -> None:
+        """The face of the embankment with the mouth of the tunnel cut out of it.
+
+        For every section that the opening touches, the strip of face is replaced by up to
+        three polygons: what is left of the opening, what is right of it and what is above it.
+        What is behind the hole (the inside of the tunnel, the world through its far mouth)
+        then shows, instead of a flat dark block that hides it (and the kart) when the camera
+        is close.
+        """
+        roof = self.roof
+        self.holes: dict[tuple[int, int], list[list[tuple[float, float, float]]]] = {}
+        for tau, a, b in self.portals:
+            strip, col = (LOW_L, 0) if tau > 0 else (LOW_R, 9)
+            lo = min((p[0] - ox) * ux + (p[1] - oy) * uy for p in (a, b))
+            hi = max((p[0] - ox) * ux + (p[1] - oy) * uy for p in (a, b))
+            for k in range(self.count):
+                x0, y0, x1, y1 = (
+                    self.ring_x[k, col], self.ring_y[k, col],
+                    self.ring_x[k + 1, col], self.ring_y[k + 1, col],
+                )  # fmt: skip
+                h0, h1 = self.height[k], self.height[k + 1]
+                a0 = (x0 - ox) * ux + (y0 - oy) * uy
+                a1 = (x1 - ox) * ux + (y1 - oy) * uy
+                if abs(a1 - a0) < 1e-9 or max(a0, a1) <= lo or min(a0, a1) >= hi:
+                    continue
+
+                def at(f, z=None, x0=x0, y0=y0, x1=x1, y1=y1, h0=h0, h1=h1):
+                    height = h0 + (h1 - h0) * f
+                    return (x0 + (x1 - x0) * f, y0 + (y1 - y0) * f, height if z is None else z)
+
+                f_lo, f_hi = sorted(((lo - a0) / (a1 - a0), (hi - a0) / (a1 - a0)))
+                pieces = []
+                if f_lo > 0.0:  # beside the opening, full height
+                    pieces.append([at(0.0, 0.0), at(f_lo, 0.0), at(f_lo), at(0.0)])
+                if f_hi < 1.0:
+                    pieces.append([at(f_hi, 0.0), at(1.0, 0.0), at(1.0), at(f_hi)])
+                f0, f1 = max(f_lo, 0.0), min(f_hi, 1.0)
+                top = [max(h0 + (h1 - h0) * f, roof) for f in (f0, f1)]
+                if max(top) > roof + 1e-6:  # above the opening
+                    pieces.append([at(f0, roof), at(f1, roof), at(f1, top[1]), at(f0, top[0])])
+                self.holes[(k, strip)] = pieces
 
     def _section_along(self, k: int, ux: float, uy: float, ox: float, oy: float):
         """Range of the section's centre along the upper road's axis at the crossing."""
@@ -387,6 +429,14 @@ class BridgeRenderer:
             drawables.append((self.exit_depth, 0, (self._draw_interior,)))
             return drawables
 
+        if any(tau * lat_u > self.wide for tau, _, _ in self.portals):
+            # Facing a mouth: the inside shows through the hole in the face. It is drawn after
+            # what is beyond the far mouth and before the face and the karts in the tunnel.
+            middles = [((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) for _, a, b in self.portals]
+            self.exit_depth = max(
+                float(projection.project(pose, mx, my, self.roof / 2)[2]) for mx, my in middles
+            )
+            drawables.append((self.exit_depth, 0, (self._draw_interior,)))
         sx, sy, depth = projection.project(pose, self.ring_x, self.ring_y, self.ring_z)
         x0, x1 = self._span(sx)
         y0, y1 = self._span(sy)
@@ -513,6 +563,10 @@ class BridgeRenderer:
         for strip in order:
             if not show[strip]:
                 continue
+            if (k, strip) in self.holes and not frame["pair"][k]:
+                for piece in self.holes[(k, strip)]:
+                    self._world_polygon(piece, inks[strip], fog)
+                continue
             if frame["partial"][k][strip]:
                 points = self._clipped(k, strip)
                 if len(points) < 3:
@@ -600,7 +654,7 @@ class BridgeRenderer:
             pygame.draw.polygon(self.surface, self.rgb(ink, fog), points)
 
     def _draw_portal(self, number: int) -> None:
-        """The mouth of the tunnel seen from outside: a dark opening with lintel and jambs."""
+        """The mouth of the tunnel seen from outside: lintel and jambs around the opening."""
         tau, (ax, ay), (bx, by) = self.portals[number]
         roof = self.roof
         span = math.hypot(bx - ax, by - ay)
@@ -608,9 +662,6 @@ class BridgeRenderer:
         a2, b2 = (ax - dx * JAMB, ay - dy * JAMB), (bx + dx * JAMB, by + dy * JAMB)
         top = roof + LINTEL
         fog = self._fog(self._depth_of((ax + bx) / 2, (ay + by) / 2, roof / 2))
-        self._world_polygon(
-            [(ax, ay, 0), (bx, by, 0), (bx, by, roof), (ax, ay, roof)], OPENING, fog
-        )
         self._world_polygon(
             [(a2[0], a2[1], roof), (b2[0], b2[1], roof), (b2[0], b2[1], top), (a2[0], a2[1], top)],
             LINTEL_INK,

@@ -115,11 +115,34 @@ def test_the_viewpoints_look_different_and_nothing_is_nan(bridge, levels, world)
         assert image.shape == (180, 320, 3) and image.dtype == np.uint8
 
 
-def test_the_mouth_is_a_dark_opening_seen_from_the_lower_road(bridge, levels, world):
+def test_the_mouth_is_a_hole_with_the_inside_and_the_far_end_seen_through_it(bridge, levels, world):
     image = render(world, pose_at(bridge, levels.s_under - 20.0))
     black = game_palette().rgb[Ink.ASPHALT_DARK]
-    dark = (image == black).all(axis=2)
-    assert dark[70:95, 100:220].mean() > 0.5  # the opening fills the middle of the view
+    opening = image[70:95, 110:210]
+    dark = (opening == black).all(axis=2)
+    assert dark.mean() > 0.15  # the inside is dark...
+    colours = {tuple(c) for c in opening.reshape(-1, 3).tolist()}
+    assert len(colours) >= 4  # ...but it is not one flat block: walls, roof and the light beyond
+
+
+def test_the_view_through_the_mouth_has_no_black_flash_and_keeps_the_kart(bridge, levels, world):
+    """Driving into the tunnel the dark share grows gradually and the kart is always there."""
+    from kartlab.render.camera import ChaseCamera
+
+    camera, previous, dark, jumps = ChaseCamera(), None, [], []
+    black = game_palette().rgb[Ink.ASPHALT_DARK]
+    for k in range(60):
+        s = levels.s_under - 20.0 + 0.4 * k
+        kart = kart_at(bridge, s)
+        pose = camera.update(kart, 1 / 60, bridge)
+        image = render(world, pose, [KartVisual(kart, 0)])
+        share = float((image == black).all(axis=2).mean())
+        dark.append(share)
+        if previous is not None:
+            jumps.append(abs(share - previous))
+        previous = share
+    assert max(jumps) < 0.06  # no frame goes black at once
+    assert max(dark) < 0.8
 
 
 def test_inside_the_tunnel_the_roof_covers_the_sky(bridge, levels, world):
@@ -183,13 +206,19 @@ def test_a_kart_on_the_deck_is_drawn_and_one_in_the_tunnel_is_hidden_from_above(
     assert np.array_equal(one, two)
 
 
-def test_a_kart_before_the_mouth_is_seen_and_one_inside_it_is_not(bridge, levels, world):
+def test_a_kart_before_the_mouth_and_one_seen_through_it_are_drawn_one_on_the_deck_is_not(
+    bridge, levels, world
+):
     pose = pose_at(bridge, levels.s_under - 24.0)
     nothing = render(world, pose)
     before = KartVisual(kart_at(bridge, levels.s_under - 12.0), 1)
     inside = KartVisual(kart_at(bridge, levels.s_under + 1.0), 2)
+    above = KartVisual(
+        kart_at(bridge, levels.s_over - 3.0), 3, ground=bridge.height_at(levels.s_over - 3.0)
+    )
     assert not np.array_equal(nothing, render(world, pose, [before]))
-    assert np.array_equal(nothing, render(world, pose, [inside]))
+    assert not np.array_equal(nothing, render(world, pose, [inside]))  # through the opening
+    assert np.array_equal(nothing, render(world, pose, [above]))  # behind the face of the bridge
 
 
 def test_karts_on_the_deck_vanish_when_the_camera_is_in_the_tunnel(bridge, levels, world):
