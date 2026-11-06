@@ -20,6 +20,7 @@ from kartlab.render.camera import (
 )
 from kartlab.render.palette import Ink, game_palette
 from kartlab.render.scene import KartVisual, WorldRenderer, place_props
+from kartlab.render.sprites import SpriteBank
 from kartlab.render.topdown import TopDownView
 from kartlab.show.drive import DriveApp, main
 from kartlab.sim.kart import KartState
@@ -28,6 +29,15 @@ from kartlab.sim.trackfile import load_track_file
 ROOT = Path(__file__).resolve().parents[1]
 BRIDGE = ROOT / "tracks" / "ocho_puente.json"
 PLAIN = ROOT / "tracks" / "ocho.json"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def unlimited_sprite_budget():
+    """The sprite bank draws new sprites within a time budget per frame: on a busy machine a
+    sprite could be missing from a frame. Tests compare frames, so the budget is lifted."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SpriteBank, "BUDGET_MS", math.inf)
+        yield
 
 
 @pytest.fixture(scope="module")
@@ -49,8 +59,7 @@ def world(bridge):
 def render(world, pose, visuals=(), lens=CHASE, variant="day") -> np.ndarray:
     world.set_variant(variant)
     world.set_lens(lens)
-    for _ in range(3):  # the sprite bank builds new sprites within a time budget per frame
-        world.render(pose, list(visuals), 1.0)
+    world.render(pose, list(visuals), 1.0)
     return world.world_array()
 
 

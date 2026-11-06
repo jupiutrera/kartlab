@@ -13,6 +13,7 @@ from kartlab.render import bridge as bridge_module
 from kartlab.render.bridge import _fit
 from kartlab.render.camera import BROADCAST, CHASE, CameraPose
 from kartlab.render.scene import KartVisual, WorldRenderer
+from kartlab.render.sprites import SpriteBank
 from kartlab.sim.kart import KartState
 from kartlab.sim.trackfile import load_track_file
 
@@ -37,6 +38,15 @@ def test_a_polygon_wholly_off_screen_vanishes():
     assert _fit(far, 320, 180) == []
 
 
+@pytest.fixture(scope="module", autouse=True)
+def unlimited_sprite_budget():
+    """The sprite bank draws new sprites within a time budget per frame: on a busy machine a
+    sprite could be missing from a frame. Tests compare frames, so the budget is lifted."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SpriteBank, "BUDGET_MS", math.inf)
+        yield
+
+
 @pytest.fixture(scope="module")
 def world():
     pygame.init()
@@ -46,8 +56,7 @@ def world():
 
 def frame(world, pose, lens, visuals=()):
     world.set_lens(lens)
-    for _ in range(3):
-        world.render(pose, list(visuals), 1.0)
+    world.render(pose, list(visuals), 1.0)
     return world.world_array()
 
 
