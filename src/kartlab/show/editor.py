@@ -556,6 +556,7 @@ class EditorApp:
         self.prompt: TextPrompt | None = None
         self.toasts: list[Toast] = []
         self.quit_armed_until = -math.inf
+        self._armed_from_window = False  # the pending "unsaved changes" warning came from the X
         self.process: subprocess.Popen | None = None
         self.temp_dir: tempfile.TemporaryDirectory | None = None
         self._drag: dict | None = None
@@ -1036,8 +1037,7 @@ class EditorApp:
     def handle_event(self, event: pygame.event.Event) -> None:
         kind = event.type
         if kind == pygame.QUIT:
-            self.request_quit()
-            self.quit_requested = not self.running  # unsaved changes: it asks first
+            self.request_quit(from_window=True)
         elif kind == pygame.KEYDOWN:
             if event.key == pygame.K_SPACE and self.prompt is None:
                 self.space_down = True
@@ -1058,14 +1058,22 @@ class EditorApp:
         elif kind in (pygame.VIDEORESIZE, pygame.WINDOWRESIZED, pygame.WINDOWEXPOSED):
             self._redraw = True
 
-    def request_quit(self) -> None:
+    def request_quit(self, from_window: bool = False) -> None:
+        """Esc or the window's close button. With unsaved changes the first request only warns;
+        the second one (within a few seconds) leaves. ``quit_requested`` (the main menu closes
+        too) is set when the player asked with the window's button, also if the second request
+        that discarded the changes was an Esc."""
         now = time.perf_counter()
         if self.model.dirty and now > self.quit_armed_until:
             self.quit_armed_until = now + 4.0
+            self._armed_from_window = from_window
             self.say(
                 "Hay cambios sin guardar: pulsa Esc otra vez para salir sin guardar", "warn", 4.0
             )
             return
+        armed = self._armed_from_window and self.model.dirty and now <= self.quit_armed_until
+        if from_window or armed:
+            self.quit_requested = True
         self.running = False
 
     # -- prompts ------------------------------------------------------------------------------

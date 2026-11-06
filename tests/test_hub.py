@@ -816,6 +816,51 @@ def test_f11_and_the_options_keep_the_scale_of_the_session(make_hub):
     assert app.scale == 2 and app.screen.get_size() == (640, 360)
 
 
+@pytest.fixture
+def dirty_editor():
+    from kartlab.show.editor import NEW_SPEC, EditorApp
+
+    app = EditorApp(NEW_SPEC, None, new=True, size=(1280, 800), background=False)
+    assert app.model.dirty  # a circuit that was never saved
+    yield app
+    app.close()
+    pygame.quit()
+
+
+def test_closing_the_window_with_unsaved_changes_closes_the_menu_only_if_discarded(dirty_editor):
+    editor = dirty_editor
+    editor.running = True
+    editor.handle_event(pygame.event.Event(pygame.QUIT))  # the X: it asks first
+    assert editor.running and not editor.quit_requested
+    editor.on_key(pygame.K_ESCAPE, 0)  # Esc discards the changes
+    assert editor.running is False and editor.quit_requested  # the X was the player's intent
+
+
+def test_closing_the_window_and_staying_in_the_editor_keeps_the_menu_open(dirty_editor):
+    editor = dirty_editor
+    editor.running = True
+    editor.handle_event(pygame.event.Event(pygame.QUIT))
+    assert editor.running and not editor.quit_requested  # the warning, nothing closed
+    editor.quit_armed_until = 0.0  # the player did something else and the warning timed out
+    editor.on_key(pygame.K_ESCAPE, 0)
+    assert editor.running and not editor.quit_requested  # a new warning, from Esc
+    editor.on_key(pygame.K_ESCAPE, 0)
+    assert not editor.running and not editor.quit_requested  # back to the menu, which stays
+
+
+def test_the_window_button_in_a_clean_editor_closes_everything(make_hub):
+    from kartlab.show.editor import NEW_SPEC, EditorApp
+
+    editor = EditorApp(NEW_SPEC, None, new=False, size=(1280, 800), background=False)
+    try:
+        assert not editor.model.dirty
+        editor.running = True
+        editor.handle_event(pygame.event.Event(pygame.QUIT))
+        assert not editor.running and editor.quit_requested
+    finally:
+        editor.close()
+
+
 def test_a_deeply_nested_settings_file_is_ignored(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
