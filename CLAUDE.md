@@ -15,6 +15,7 @@ uv run ruff format                   # formato
 uv run pre-commit run --all-files    # todos los hooks
 uv add <paquete>                     # dependencia (uv add --dev para desarrollo)
 uv run python scripts/drive.py       # conducir a mano (vista cenital)
+uv run python scripts/drive.py --time-trial   # contrarreloj: récord y fantasma (K y F en el juego)
 uv run python scripts/track_gallery.py --showcase --out galeria.png
 uv run python scripts/benchmark_env.py   # pasos/s: 1 entorno y DummyVecEnv/SubprocVecEnv
 uv run python scripts/benchmark_train.py # pasos/s entrenando con PPO
@@ -54,6 +55,7 @@ Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames
 - Circuitos en fichero: JSON en `tracks/` (`sim/trackfile.py`). `load_track_file` (y `resolve_track` con una ruta `*.json`) valida siempre y construye por el mismo camino que el generador; la IA nunca recibe un circuito sin validar. `tests/test_track_pins.py` fija el hash de los circuitos de evaluación, de 10 semillas de entrenamiento y de los escaparates: no lo cambies para que un cambio pase.
 - Cruces a nivel (`tracks/ocho.json`, formato 2 con `crossings` y `start`): `Track.crossings` vacío en todo circuito procedural, que sigue por el camino de siempre. Con cruces, `locate` sigue la rama del hint, `Racer.on_grass` pregunta a todo el circuito y una vuelta exige pasar por todo el trazado. Nunca llames a `locate` sin hint desde algo que se mueve (usa `locate_following`). Solo exhibición: no se entrena ni se evalúa con él.
 - El barrido (`sim/drift.py`) es solo de conducción manual: `step_kart(..., drift=None)` ejecuta la física de siempre y el entorno nunca pasa un `DriftState`. `tests/test_drift.py` compara con `==` contra una copia literal de `step_kart`; no toques esa ruta.
+- Si cambias cómo se mueve el kart (`sim/kart.py`, `sim/drift.py`, `DT`, el conteo de vueltas), sube `PHYSICS_VERSION` en `sim/version.py`: invalida los récords de contrarreloj guardados en `records/` (ignorado por git). `test_physics_fingerprint` en `tests/test_time_trial.py` falla si lo olvidas; actualiza ahí también los valores fijados.
 - Entorno: `env/kart_env.py` (`KartEnv`, `EnvConfig`). Cualquier cambio de la recompensa necesita su test en `tests/test_env.py` (ir y volver sobre la meta y dar vueltas en círculo nunca deben sumar).
 
 ## Nada de GPU (no negociable)

@@ -41,6 +41,7 @@ from kartlab.render.view import (
 )
 from kartlab.show.brain import BrainPanel
 from kartlab.show.charts import MetricsReader, RewardChart
+from kartlab.show.cli import existing_run_or_exit, resolve_track_or_exit
 from kartlab.show.drivers import PolicyDriver, format_steps
 from kartlab.show.overlays import Overlays, ease_in_out
 from kartlab.show.scenes import SCENES, AttractScene, Scene, WatchScene
@@ -48,7 +49,6 @@ from kartlab.show.title import MenuEntry, TitleScreen
 from kartlab.show.versions import VersionLibrary
 from kartlab.sim.kart import DT, KartState
 from kartlab.sim.track import Track
-from kartlab.sim.trackfile import TrackFileError, load_track_file
 from kartlab.sim.tracksets import (
     EVAL_SEEDS,
     eval_track,
@@ -550,6 +550,8 @@ class ViewerApp:
 
     def _housekeeping(self, dt: float) -> None:
         self.library.poll()
+        while self.library.notices:
+            self.notify(self.library.notices.pop(0))
         if self.library.refresh(dt):
             self.notify("Hay versiones nuevas en el entrenamiento")
         if self.realtime:
@@ -752,19 +754,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--screenshot", type=Path, help="guarda el último fotograma en este PNG")
     args = parser.parse_args(argv)
 
-    run = RunPaths(args.run) if args.run else latest_run_with_checkpoints()
+    run = existing_run_or_exit(args.run) if args.run else latest_run_with_checkpoints()
     if run is None:
         raise SystemExit(
             "No hay ningún run con checkpoints en runs/. Lanza antes scripts/train.py."
         )
-    if not run.config.exists():
-        raise SystemExit(f"{run.root} no tiene config.yaml")
     if not run.list_checkpoints():
         raise SystemExit(f"{run.root} no tiene checkpoints")
-    try:
-        track = load_track_file(args.track_file) if args.track_file else None
-    except TrackFileError as error:
-        raise SystemExit(f"Circuito no válido:\n{error}") from None
+    if args.track_file:
+        track = resolve_track_or_exit(str(args.track_file))
+    else:
+        track = None
+        resolve_track_or_exit(args.track)  # fail now, with a clear message
     app = ViewerApp(
         run,
         args.track,
