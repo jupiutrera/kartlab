@@ -112,7 +112,7 @@ def result_lines(entrants: list[Entrant]) -> list[tuple[str, bool]]:
         if e.finished:
             total = format_time(e.finish_time)
         else:
-            total = f"a {max(e.length * e.laps - e.distance, 0.0):.0f} m"
-        best = format_time(e.best_lap) if e.best_lap is not None else "-:--.--"
-        rows.append((f"{i}º {e.name:<6} {total:>9}   mejor {best}", e.human))
+            total = f"faltan {max(e.length * e.laps - e.distance, 0.0):.0f} m"
+        best = format_time(e.best_lap) if e.best_lap is not None else "-:--,--"
+        rows.append((f"{i}º  {e.name}  {total}  mejor {best}", e.human))
     return rows

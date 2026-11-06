@@ -22,41 +22,34 @@ from pathlib import Path
 import numpy as np
 import pygame
 
-from kartlab.render.display import open_window
+from kartlab.render import pixelui as ui
+from kartlab.render.display import open_window, present
+from kartlab.render.palette import KART_RAMPS
 from kartlab.render.scene import KartVisual
-from kartlab.render.topdown import (
-    ACCENT,
-    KART_COLOR,
-    PANEL,
-    TEXT,
-    TEXT_DIM,
-    WARNING,
-    TextCache,
-    TopDownView,
-    format_time,
-    load_fonts,
-)
-from kartlab.render.view import GameView, HudInfo, unit_for
+from kartlab.render.topdown import TopDownView, format_time
+from kartlab.render.view import GameView, HudInfo
 from kartlab.show.brain import BrainPanel
 from kartlab.show.charts import MetricsReader, RewardChart
 from kartlab.show.cli import existing_run_or_exit, resolve_track_or_exit
 from kartlab.show.drivers import PolicyDriver, Version, format_steps, load_version
+from kartlab.show.overlays import run_title
 from kartlab.sim.kart import DT
 from kartlab.sim.track import Track
 from kartlab.sim.tracksets import resolve_track
 from kartlab.train.config import TrainConfig
 from kartlab.train.run import Checkpoint, RunPaths, latest_run
 
-TITLE = "KART LAB · entrenamiento en directo"
-GHOST_COLORS = ((110, 170, 255), (190, 140, 255), (120, 220, 190))
+TITLE = "KART LAB: entrenamiento en directo"
 POLL_SECONDS = 1.0
 METRICS_POLL_SECONDS = 2.0
 NOTICE_SECONDS = 3.0
-PANEL_FRACTION = 0.32  # share of the window width used by the side panel
+CANVAS_W, CANVAS_H = ui.CANVAS_SIZE
+PANEL_W = 96  # the side panel of the top-down view, in canvas pixels
+MINIMAP_GAP = 3  # canvas pixels kept free above the minimap of the 3D view
 LIGHT_MODE_FPS = 50.0  # below this (averaged over 2 s) the viewer drops to 30 fps
 
 
-def ease_out(t: float) -> float:
+def ui_ease(t: float) -> float:
     t = min(max(t, 0.0), 1.0)
     return 1.0 - (1.0 - t) ** 3
 
@@ -141,26 +134,18 @@ class LiveApp:
         self._metrics_checked = -math.inf
         self.running = False
         self.quit_requested = False  # the window was closed (the main menu closes too)
+        self.canvas = pygame.Surface(ui.CANVAS_SIZE)  # the top-down view and its panels
         self._layout()
 
     # -- layout and versions ----------------------------------------------------------
 
     def _layout(self) -> None:
         width, height = self.screen.get_size()
-        panel_w = int(width * PANEL_FRACTION)
-        self.view_rect = pygame.Rect(0, 0, width - panel_w, height)
-        self.panel_rect = pygame.Rect(width - panel_w, 0, panel_w, height)
-        self.view = TopDownView(self.track, self.view_rect.size)
-        regular, bold = load_fonts(height)
-        self.text = TextCache(regular)
-        self.title = TextCache(bold)
-        pad = max(8, height // 60)
-        self.pad = pad
-        chart_h = int(height * 0.34)
-        self.chart = RewardChart((panel_w - 2 * pad, chart_h), regular)
-        self.brain_panel = None  # rebuilt for the new size on the next frame
-        self.panel_bg = pygame.Surface(self.panel_rect.size, pygame.SRCALPHA)
-        self.panel_bg.fill(PANEL)
+        self.view_rect = pygame.Rect(0, 0, CANVAS_W - PANEL_W, CANVAS_H)
+        self.panel_rect = pygame.Rect(CANVAS_W - PANEL_W, 0, PANEL_W, CANVAS_H)
+        self.view = TopDownView(self.track, self.view_rect.size, pixel=True)
+        self.chart = RewardChart((PANEL_W - 8, 54))
+        self.brain_panel = None  # rebuilt on the next frame
         if self.view_mode == "3d" and self.game is None:
             self.game = GameView(
                 self.track,
@@ -170,18 +155,27 @@ class LiveApp:
                 seed=self.track.decoration_seed,
                 ramps=(0, 1, 2, 3),
             )
-            self.chart3d = RewardChart((int(width * 0.26), int(height * 0.2)), regular)
+            self.chart3d = RewardChart((88, 40))
 
     def _install(self, version: Version) -> None:
-        driver = PolicyDriver(version, self.track, self.env_config, KART_COLOR)
+        driver = PolicyDriver(version, self.track, self.env_config, ui.rgb(self._ink_of_ramp(0)))
         if self.current is not None and self.max_ghosts > 0:
-            self.current.color = GHOST_COLORS[len(self.ghosts) % len(GHOST_COLORS)]
-            self.current.ramp = 1 + len(self.ghosts) % 3
+            self._demote(self.current)
             self.ghosts.append(self.current)
         self.current = driver
         self.notice = (f"Nueva versión: {version.label}", time.perf_counter())
         if self.game is not None:
             self.game.notify(self.notice[0])
+
+    @staticmethod
+    def _ink_of_ramp(ramp: int) -> int:
+        """The palette ink of a kart: the main colour of its ramp."""
+        return KART_RAMPS[ramp % len(KART_RAMPS)][1]
+
+    def _demote(self, driver: PolicyDriver, count: int | None = None) -> None:
+        """Make ``driver`` a ghost: blue, purple or teal, one per earlier version."""
+        driver.ramp = 1 + (len(self.ghosts) if count is None else count) % 3
+        driver.color = ui.rgb(self._ink_of_ramp(driver.ramp))
 
     def preload_ghosts(self) -> None:
         """Start with earlier versions as ghosts, spaced on a log scale before the latest
@@ -197,9 +191,8 @@ class LiveApp:
             if best not in picks:
                 picks.append(best)
         for checkpoint in sorted(picks, key=lambda c: c.steps):
-            color = GHOST_COLORS[len(self.ghosts) % len(GHOST_COLORS)]
-            driver = PolicyDriver(load_version(checkpoint), self.track, self.env_config, color)
-            driver.ramp = 1 + len(self.ghosts) % 3
+            driver = PolicyDriver(load_version(checkpoint), self.track, self.env_config, (0, 0, 0))
+            self._demote(driver)
             self.ghosts.append(driver)
 
     def _take_new_versions(self) -> None:
@@ -295,7 +288,9 @@ class LiveApp:
                 wanted.set_tracking(True)
             self._brain_target = wanted
 
-    def _draw_brain(self, area: pygame.Rect, top: int, bottom: int, unit: int, now: float) -> None:
+    def _draw_brain(
+        self, target: pygame.Surface, area: pygame.Rect, top: int, bottom: int, now: float
+    ) -> None:
         if not self.brain or self.current is None:
             return
         t0 = time.perf_counter()
@@ -303,14 +298,13 @@ class LiveApp:
         if panel is None:
             config = self.env_config
             panel = self.brain_panel = BrainPanel(
-                unit, config.ray_count, config.ray_fov_deg, config.ray_range
+                config.ray_count, config.ray_fov_deg, config.ray_range
             )
             panel.open(now)
+        panel.reserve = self.game.hud.reserve if self.game is not None else None
         pos = panel.position(area, "left", top, bottom, now)
-        panel.draw(self.screen, pos, self.current)
+        panel.draw(target, pos, self.current)
         self._brain_ms = self._brain_ms * 0.9 + (time.perf_counter() - t0) * 1000 * 0.1
-        if self.game is not None:
-            self.game.timings["cerebro"] = self._brain_ms
 
     def _watch_fps(self) -> None:
         if not self.realtime or self.view_mode == "3d":
@@ -325,9 +319,12 @@ class LiveApp:
     def draw(self) -> None:
         if self.view_mode == "3d":
             self._draw_3d()
-            return
-        screen = self.screen
-        view_surface = screen.subsurface(self.view_rect)
+        else:
+            self._draw_topdown()
+
+    def _draw_topdown(self) -> None:
+        canvas = self.canvas
+        view_surface = canvas.subsurface(self.view_rect)
         karts = [(g.racer.kart, g.color) for g in self.ghosts]
         if self.current is not None:
             karts.append((self.current.racer.kart, self.current.color))
@@ -336,26 +333,34 @@ class LiveApp:
         placed: list[pygame.Rect] = []
         for driver in reversed(drivers):  # the current version keeps its spot
             kart = driver.racer.kart
-            label = self.text.get(driver.version.label, driver.color)
+            label = driver.version.label
             x, y = self.view.to_screen(kart.x, kart.y)
-            rect = label.get_rect(midbottom=(round(x), round(y) - 18))
+            rect = pygame.Rect(0, 0, ui.measure(label), 9)
+            rect.midbottom = (round(x), round(y) - 5)
             while rect.collidelist(placed) != -1:  # karts side by side: stack the labels
                 rect.move_ip(0, -rect.height)
             placed.append(rect)
-            view_surface.blit(label, rect)
-        height = self.screen.get_height()
-        unit = unit_for(self.screen.get_size())
-        self._draw_brain(self.view_rect, unit, height - unit, unit, time.perf_counter())
-        self._draw_panel()
-        self._draw_notice()
+            ink = self._ink_of_ramp(driver.ramp)
+            ui.text(view_surface, label, rect.x, rect.y + 2, ink, outline=ui.NIGHT)
+        self._draw_brain(canvas, self.view_rect, 3, CANVAS_H - 3, time.perf_counter())
+        self._draw_panel(canvas)
+        self._draw_notice(canvas)
+        present(self.canvas, self.screen)
 
     def _draw_3d(self) -> None:
         game = self.game
         drivers = [*self.ghosts, self.current] if self.current else []
         if not drivers:
-            self.screen.fill((14, 14, 22))
-            label = self.title.get("Esperando el primer checkpoint…", WARNING)
-            self.screen.blit(label, label.get_rect(center=self.screen.get_rect().center))
+            self.canvas.fill(ui.rgb(ui.NIGHT))
+            ui.text(
+                self.canvas,
+                "Esperando la primera versión…",
+                CANVAS_W // 2,
+                CANVAS_H // 2 - 3,
+                ui.ORANGE,
+                align="center",
+            )
+            present(self.canvas, self.screen)
             return
         visuals = [
             KartVisual(
@@ -374,14 +379,12 @@ class LiveApp:
         game.set_rays(visuals[-1] if self.rays else None)
         rows = self.metrics.rows
         last = rows[-1] if rows else None
-        extra = [self.run_paths.root.name, self._status()[0]]
+        extra = [run_title(self.run_paths), self._status()[0]]
         if last is not None:
-            extra.append(
-                f"{format_steps(int(last['steps']))} pasos · {format_time(last['time_s'])}"
-                f" · {last['steps_per_s']:.0f} pasos/s"
-            )
+            extra.append(f"{format_steps(int(last['steps']))} pasos, {format_time(last['time_s'])}")
+            extra.append(f"{ui.fmt_count(round(last['steps_per_s']))} pasos/s")
         if self.pending is not None:
-            extra.append(f"Siguiente: {self.pending.label} (al acabar la vuelta)")
+            extra.append(f"Siguiente: {self.pending.label}")
         racer = self.current.racer
         best = min((d.best_lap for d in drivers if d.best_lap), default=None)
         info = HudInfo(
@@ -393,91 +396,109 @@ class LiveApp:
             extra=extra,
         )
         fps = self.clock.get_fps() if self.realtime else None
-        game.draw(self.screen, pose, visuals, info, self._dt, fps)
-        chart = self.chart3d.draw(rows, self.metrics.version, self.current.version.steps)
-        pad = self.pad
-        x = game.world_rect.right - chart.get_width() - pad
-        y = game.world_rect.centery - chart.get_height() // 2
-        size = (chart.get_width() + 2 * pad, chart.get_height() + 2 * pad)
-        background = pygame.Surface(size, pygame.SRCALPHA)
-        background.fill(PANEL)
-        self.screen.blit(background, (x - pad, y - pad))
-        self.screen.blit(chart, (x, y))
+        game.draw(
+            self.screen,
+            pose,
+            visuals,
+            info,
+            self._dt,
+            fps,
+            pixel_ui=lambda surface: self._pixel_ui_3d(surface, game),
+        )
         if self.brain:
-            top = game.world_rect.y + round(game.unit * 5.8)
-            bottom = game.world_rect.bottom - game._minimap[0].get_height() - game.unit
-            self._draw_brain(game.world_rect, top, bottom, game.unit, game.now())
+            game.timings["cerebro"] = self._brain_ms
         else:
             game.timings.pop("cerebro", None)
 
-    def _status(self) -> tuple[str, tuple[int, int, int]]:
-        if self.current is None:
-            return "Esperando el primer checkpoint…", WARNING
-        if self.run_paths.summary.exists():
-            return "Entrenamiento terminado", ACCENT
-        return "Entrenando", ACCENT
+    def _pixel_ui_3d(self, surface: pygame.Surface, game: GameView) -> None:
+        """The interface of the 3D view, on the 320x180 world before it is magnified."""
+        steps = self.current.version.steps
+        chart = self.chart3d.draw(self.metrics.rows, self.metrics.version, steps)
+        x, y = CANVAS_W - chart.get_width() - 4, (CANVAS_H - chart.get_height()) // 2
+        game.hud.reserve((x, y, *chart.get_size()))
+        surface.blit(chart, (x, y))
+        if self.brain:
+            top = 47  # under the lap panel
+            bottom = CANVAS_H - game.hud.minimap_size[1] - MINIMAP_GAP
+            self._draw_brain(surface, surface.get_rect(), top, bottom, game.now())
 
-    def _draw_panel(self) -> None:
-        screen, pad = self.screen, self.pad
-        screen.blit(self.panel_bg, self.panel_rect.topleft)
-        x = self.panel_rect.x + pad
-        y = pad
+    def _status(self) -> tuple[str, str]:
+        """What the run is doing, as a word and the icon that goes with it."""
+        if self.current is None:
+            return "Esperando la primera versión…", "ring"
+        if self.run_paths.summary.exists():
+            return "Entrenamiento terminado", "check"
+        return "Entrenando", "play"
+
+    def _draw_panel(self, canvas: pygame.Surface) -> None:
+        rect = self.panel_rect
+        ui.plate(canvas, rect, ui.SLATE)
+        x, right = rect.x + 4, rect.right - 4
+        inner = right - x
+        y = 4
         rows = self.metrics.rows
         last = rows[-1] if rows else None
-        finished = self.run_paths.summary.exists()
-        if self.current is None:
-            status, color = "Esperando el primer checkpoint…", WARNING
-        elif finished:
-            status, color = "Entrenamiento terminado", ACCENT
-        else:
-            status, color = "Entrenando", ACCENT
-        title = self.title.get(self.run_paths.root.name, TEXT)
-        screen.blit(title, (x, y))
-        y += title.get_height() + 2
-        lines = [(status, color), (f"Circuito: {self.track.name}", TEXT_DIM)]
+        for line in ui.wrap(run_title(self.run_paths), inner)[:2]:  # the name, on two lines if long
+            ui.text(canvas, line, x, y, ui.TEXT)
+            y += 9
+        y += 1
+        status, symbol = self._status()
+        short = {"Entrenamiento terminado": "TERMINADO", "Entrenando": "ENTRENANDO"}.get(
+            status, "ESPERANDO"
+        )
+        ink = ui.GREEN if symbol == "check" else ui.YELLOW if symbol == "play" else ui.ORANGE
+        ui.icon(canvas, symbol, x, y + 1, ink)
+        ui.text(canvas, short, x + 8, y + 1, ink)
+        y += 11
+        ui.hline(canvas, x, y - 2, inner, ui.NIGHT)
+        ui.text(canvas, "CIRCUITO", x, y, ui.STONE_LIGHT)
+        y += 9
+        ui.text(canvas, ui.ellipsize(self.track.name, inner), x, y, ui.TEXT)
+        y += 11
+
+        def row(label: str, value: str, ink_value: int = ui.TEXT) -> None:
+            nonlocal y
+            ui.text(canvas, label, x, y, ui.STONE_LIGHT)
+            ui.text(canvas, value, right, y, ink_value, align="right")
+            y += 9
+
         if last is not None:
-            lines += [
-                (f"Pasos: {format_steps(int(last['steps']))}", TEXT),
-                (f"Tiempo: {format_time(last['time_s'])}", TEXT),
-                (f"{last['steps_per_s']:.0f} pasos/s", TEXT_DIM),
-            ]
+            row("PASOS", format_steps(int(last["steps"])))
+            row("TIEMPO", ui.fmt_clock(last["time_s"], 0))
+            row("PASOS/S", ui.fmt_count(round(last["steps_per_s"])))
+        y += 2
         if self.current is not None:
             drivers = [self.current, *self.ghosts]
             best = min((d.best_lap for d in drivers if d.best_lap), default=None)
-            lines += [
-                (f"Versión: {self.current.version.label}", KART_COLOR),
-                (f"Vuelta: {format_time(self.current.racer.lap_time)}", TEXT),
-                (f"Mejor vuelta: {format_time(best)}", TEXT),
-            ]
+            row("VERSIÓN", format_steps(self.current.version.steps), ui.ORANGE)
+            row("VUELTA", ui.fmt_clock(self.current.racer.lap_time))
+            row("MEJOR", ui.fmt_clock(best), ui.YELLOW if best is not None else ui.STONE)
             if self.pending is not None:
-                lines.append((f"Siguiente: {self.pending.label} (al acabar la vuelta)", TEXT_DIM))
+                row("SIGUIENTE", format_steps(self.pending.steps))
         if self.target_fps == 30:
-            lines.append(("Modo ligero (30 fps)", WARNING))
-        for text, color in lines:
-            surface = self.text.get(text, color)
-            screen.blit(surface, (x, y))
-            y += surface.get_height() + 2
+            ui.icon(canvas, "warn", x, y + 1, ui.ORANGE)
+            ui.text(canvas, "MODO LIGERO: SÍ", x + 8, y + 1, ui.ORANGE)
         marker = self.current.version.steps if self.current else None
         chart = self.chart.draw(rows, self.metrics.version, marker)
-        screen.blit(chart, (x, self.panel_rect.bottom - pad - chart.get_height()))
+        canvas.blit(chart, (x - 1, rect.bottom - 4 - chart.get_height()))
 
-    def _draw_notice(self) -> None:
+    def _draw_notice(self, canvas: pygame.Surface) -> None:
+        """The toast: a plate that slides down from the top edge, stays, and slides back up."""
         if self.notice is None:
             return
-        text, start = self.notice
+        value, start = self.notice
         age = time.perf_counter() - start
         if age > NOTICE_SECONDS:
             self.notice = None
             return
-        alpha = ease_out(age / 0.4) if age < NOTICE_SECONDS - 0.6 else (NOTICE_SECONDS - age) / 0.6
-        label = self.title.get(text, ACCENT)
-        box = pygame.Surface((label.get_width() + 2 * self.pad, label.get_height() + self.pad))
-        box.fill((14, 16, 22))
-        box.blit(label, (self.pad, self.pad // 2))
-        box.set_alpha(round(255 * max(0.0, min(alpha, 1.0))))
-        slide = round((1.0 - ease_out(age / 0.4)) * -box.get_height())
-        cx = self.view_rect.centerx - box.get_width() // 2
-        self.screen.blit(box, (cx, self.pad + slide))
+        height = 13
+        enter = ui_ease(age / 0.4)
+        leave = ui_ease((NOTICE_SECONDS - age) / 0.4)
+        slide = round((1.0 - min(enter, leave)) * -(height + 1))
+        width = ui.measure(value) + 10
+        rect = pygame.Rect(self.view_rect.centerx - width // 2, 3 + slide, width, height)
+        ui.plate(canvas, rect, ui.NAVY)
+        ui.text(canvas, value, rect.centerx, rect.y + 3, ui.YELLOW, align="center")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -508,7 +529,7 @@ def main(argv: list[str] | None = None) -> None:
 
     run = existing_run_or_exit(args.run) if args.run else latest_run()
     if run is None:
-        raise SystemExit("No hay ningún run en runs/. Lanza antes scripts/train.py.")
+        raise SystemExit("No hay ninguna IA entrenada en runs/. Lanza antes scripts/train.py.")
     if not run.config.exists():
         raise SystemExit(f"{run.root} no tiene config.yaml")
     track = None

@@ -4,12 +4,17 @@ An ``Entry`` is one line of the menu. It names the *steps* the player goes throu
 runs (``("kart", "track")``: pick a colour, pick a circuit, then play) and a ``launch``
 function. The steps are screens registered in ``hub.STEPS``; adding a mode, or a step to a
 mode, is one line in ``hub.ENTRIES`` / ``hub.STEPS`` and does not touch the flow logic.
+
+Every screen is drawn on the 320x180 canvas of the world, with the pixel font and palette
+inks (``render/pixelui.py``); the window magnifies the canvas by a whole number. Positions
+are canvas pixels, also the rectangles that the mouse hits (the hub translates the mouse).
 """
 
 from __future__ import annotations
 
 import math
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -19,19 +24,20 @@ from typing import TYPE_CHECKING
 
 import pygame
 
-from kartlab.render.topdown import ACCENT, TextCache
-from kartlab.render.view import DIM, MONO, SANS, SANS_REGULAR, WHITE, scale_for, unit_for
-from kartlab.show.overlays import ease_out
+from kartlab.render import pixelui as ui
+from kartlab.show.overlays import run_title
 from kartlab.show.settings import CAMERAS, LIGHTS, SCALES
-from kartlab.show.title import PixelText
+from kartlab.show.title import ease_out
 from kartlab.show.training_job import ConfigInfo, TrainingError, TrainingJob, list_configs
 
 if TYPE_CHECKING:
     from kartlab.show.hub import KartLabApp
 
-DARK = (14, 14, 22)
-WARN = (255, 128, 96)
-OK = (140, 220, 140)
+W, H = ui.CANVAS_SIZE
+STATUS_H = 10  # the strip at the top where the training line goes (headings start below it)
+HEADING_Y = 14  # top of the capitals of a screen's heading (scale 2)
+HINT_Y = 171  # top of the capitals of the key hints line
+ROW_H = 11  # a list row: a plate with room for the accents (2 rows) and the capitals (7)
 IGNORED_KEYS = {
     pygame.K_LSHIFT,
     pygame.K_RSHIFT,
@@ -52,6 +58,15 @@ CAMERA_NAMES = {
 }
 
 
+def readable_log(lines: list[str]) -> list[str]:
+    """The lines of a trainer's log that say something to a player: those that carry a path
+    or a ``Run:`` line (folders, files) are left out."""
+    path = re.compile(
+        r"(^run\b|[A-Za-z]:[\\/]|[\\/][\w.-]+[\\/]|\.(yaml|csv|zip|pkl|json)\b)", re.I
+    )
+    return [line for line in lines if not path.search(line)]
+
+
 # -- entries and flows ---------------------------------------------------------------------
 
 
@@ -62,7 +77,7 @@ class Entry:
     key: str  # what ``--open`` takes
     label: str
     description: str
-    group: str | None  # header it sits under; None: the closing lines (Opciones, Salir)
+    group: str | None  # block of the list (a gap separates blocks); None: the closing lines
     steps: tuple[str, ...] = ()  # screens before ``launch`` (see ``hub.STEPS``)
     launch: Callable[[KartLabApp, dict], None] | None = None
     needs_run: bool = False  # needs a run with checkpoints (otherwise: "Entrena antes a la IA")
@@ -85,83 +100,59 @@ class Flow:
 # -- shared drawing -------------------------------------------------------------------------
 
 
-def wrap_text(font: pygame.font.Font, text: str, width: int) -> list[str]:
-    lines: list[str] = []
-    for paragraph in text.split("\n"):
-        line = ""
-        for word in paragraph.split(" "):
-            trial = f"{line} {word}".strip()
-            if line and font.size(trial)[0] > width:
-                lines.append(line)
-                line = word
-            else:
-                line = trial
-        lines.append(line)
-    return lines
+def heading(canvas: pygame.Surface, text: str, age: float = 9.0, y: int = HEADING_Y) -> int:
+    """The screen's title: scale 2, outlined, with a hard shadow, sliding in. Returns the y
+    just below it."""
+    slide = round((1.0 - ease_out(age / 0.35)) * -20)
+    ui.text(
+        canvas,
+        text,
+        W // 2,
+        y + slide,
+        ui.YELLOW,
+        2,
+        outline=ui.NIGHT,
+        shadow=ui.NIGHT,
+        align="center",
+    )
+    return y + 2 * 7 + 3
 
 
-class Ui:
-    """Fonts, sizes and cached panels for one window size."""
+def row(
+    canvas: pygame.Surface,
+    rect: pygame.Rect,
+    chosen: bool,
+    label: str,
+    value: str | None = None,
+    arrows: bool = False,
+    dim: bool = False,
+) -> None:
+    """A list row: a flat plate, the label on the left and an optional value on the right.
+    The chosen row is yellow with dark text and, with ``arrows``, wraps its value in arrows."""
+    ui.plate(canvas, rect, ui.YELLOW if chosen else ui.SLATE)
+    ink = ui.NIGHT if chosen else (ui.STONE if dim else ui.TEXT)
+    ui.text(canvas, label, rect.x + 5, rect.y + 3, ink)
+    if value is not None:
+        shown = f"← {value} →" if arrows and chosen else value
+        ui.text(
+            canvas,
+            shown,
+            rect.right - 5,
+            rect.y + 3,
+            ui.NIGHT if chosen else ui.YELLOW,
+            align="right",
+        )
 
-    def __init__(self, size: tuple[int, int]) -> None:
-        self.size = size
-        self.scale = scale_for(size)
-        self.unit = u = unit_for(size)
-        self.heading = PixelText(8 * max(1, round(self.scale * 0.75)))
-        self.label = PixelText(8 * max(1, self.scale // 2))
-        self.name = TextCache(pygame.font.Font(SANS, round(u * 1.3)))
-        self.big = TextCache(pygame.font.Font(SANS, round(u * 2.0)))
-        self.desc = TextCache(pygame.font.Font(SANS_REGULAR, round(u * 1.0)))
-        self.small = TextCache(pygame.font.Font(SANS_REGULAR, max(round(u * 0.85), 10)))
-        self.mono = TextCache(pygame.font.Font(MONO, max(round(u * 0.85), 10)))
-        self._panels: dict[tuple, pygame.Surface] = {}
-        self._veil = self._build_veil(size)
 
-    @staticmethod
-    def _build_veil(size: tuple[int, int]) -> pygame.Surface:
-        """Dark all over (the text must read), a little lighter in the middle."""
-        w, h = size
-        veil = pygame.Surface((1, h), pygame.SRCALPHA)
-        for y in range(h):
-            edge = abs(y / max(h - 1, 1) - 0.5) * 2
-            veil.set_at((0, y), (6, 8, 16, round(120 + 90 * edge**2)))
-        return pygame.transform.scale(veil, (w, h))
-
-    def draw_veil(self, screen: pygame.Surface, extra: int = 0) -> None:
-        screen.blit(self._veil, (0, 0))
-        if extra:
-            screen.blit(self.panel(*self.size, extra, edge=False), (0, 0))
-
-    def panel(
-        self, w: int, h: int, alpha: int = 200, accent: bool = False, edge: bool = True
-    ) -> pygame.Surface:
-        key = (w, h, alpha, accent, edge)
-        panel = self._panels.get(key)
-        if panel is None:
-            panel = pygame.Surface((max(w, 1), max(h, 1)), pygame.SRCALPHA)
-            panel.fill((*DARK, alpha))
-            if accent:
-                pygame.draw.rect(panel, ACCENT, (0, 0, w, max(self.unit // 6, 2)))
-            elif edge:
-                pygame.draw.rect(panel, (255, 255, 255, 60), (0, 0, w, h), 1)
-            self._panels[key] = panel
-        return panel
-
-    def heading_text(self, screen: pygame.Surface, text: str, y: int, age: float = 9.0) -> int:
-        """The screen's title in the pixel font, centred, with a hard shadow. Returns its bottom."""
-        width = screen.get_width()
-        shadow = self.heading.get(text, (6, 8, 16))
-        face = self.heading.get(text, ACCENT)
-        slide = round((1.0 - ease_out(age / 0.35)) * -self.unit * 2)
-        x = (width - face.get_width()) // 2
-        off = max(self.scale // 2, 1) * 2
-        screen.blit(shadow, (x + off, y + off + slide))
-        screen.blit(face, (x, y + slide))
-        return y + face.get_height() + off
-
-    def centered(self, screen, surface, y: int, x: int | None = None) -> None:
-        cx = screen.get_width() // 2 if x is None else x
-        screen.blit(surface, (cx - surface.get_width() // 2, y))
+def button(
+    canvas: pygame.Surface, rect: pygame.Rect, label: str, off: bool = False, chosen: bool = False
+) -> None:
+    """A button: a plate with the label centred; a lit base line when it can be pressed."""
+    ui.plate(canvas, rect, ui.YELLOW if chosen and not off else ui.SLATE)
+    ink = ui.STONE if off else (ui.NIGHT if chosen else ui.TEXT)
+    ui.text(canvas, label, rect.centerx, rect.y + (rect.h - 7) // 2 + 1, ink, align="center")
+    if not off and not chosen:
+        ui.hline(canvas, rect.x + 1, rect.bottom - 2, rect.w - 2, ui.YELLOW)
 
 
 class Screen:
@@ -170,7 +161,7 @@ class Screen:
     hint = ""
     dim = 0  # extra darkness (0-255) over the backdrop, for screens with a lot to read
     hide_backdrop_kart = False  # the autopilot kart of the 3D backdrop is not drawn
-    show_status = True  # the training line («Entrenando X · N/M · 3:12») in the top corner
+    show_status = True  # the training line («Entrenando X · N/M · 3:12») in the top strip
 
     def __init__(self, hub: KartLabApp) -> None:
         self.hub = hub
@@ -181,7 +172,7 @@ class Screen:
         self.layout()
 
     def layout(self) -> None:
-        """(Re)compute everything that depends on the window size."""
+        """(Re)compute the rectangles of the screen."""
 
     def update(self, dt: float) -> None:
         pass
@@ -198,23 +189,24 @@ class Screen:
     def on_wheel(self, dy: int) -> None:
         pass
 
-    def draw(self, screen: pygame.Surface) -> None:
+    def draw(self, canvas: pygame.Surface) -> None:
         pass
 
     @property
     def age(self) -> float:
         return self.hub.t - self.opened_at
 
-    def draw_hint(self, screen: pygame.Surface) -> None:
-        ui = self.hub.ui
-        hint = ui.small.get(self.hint, DIM)
-        screen.blit(
-            hint,
-            (
-                (screen.get_width() - hint.get_width()) // 2,
-                screen.get_height() - hint.get_height() - ui.unit // 2,
-            ),
-        )
+    def draw_hint(
+        self, canvas: pygame.Surface, text: str | None = None, ink: int = ui.STONE_LIGHT
+    ) -> None:
+        shown = ui.ellipsize(self.hint if text is None else text, W - 6)
+        ui.caption(canvas, shown, W // 2, HINT_Y, ink)
+
+    def draw_reason(self, canvas: pygame.Surface, reason: str) -> None:
+        """Why a button is off, in the place of the hint: a warning icon and the words."""
+        shown = ui.ellipsize(reason, W - 20)
+        box = ui.caption(canvas, shown, W // 2 + 4, HINT_Y, ui.ORANGE)
+        ui.icon(canvas, "warn", box.x - 7, HINT_Y + 1, ui.ORANGE, outline=ui.NIGHT)
 
 
 # -- dialogs --------------------------------------------------------------------------------
@@ -224,6 +216,9 @@ class Dialog:
     """A message (any key closes it), a question (Intro = yes, Esc = no) or a choice between
     several buttons (``choices``: label and what to do; ← → select, Intro accepts, Esc closes
     without doing anything) over everything."""
+
+    MAX_W = 280
+    BUTTON_H = 13
 
     def __init__(
         self,
@@ -239,15 +234,35 @@ class Dialog:
         self.choices = choices or []
         self.selected = 0
         self.footer = footer or (
-            "← → elegir · Intro aceptar · Esc cancelar"
+            "←→ elegir, Intro aceptar, Esc cancelar"
             if self.choices
-            else "Intro = sí · Esc = no"
+            else "Intro sí, Esc no"
             if on_yes is not None
-            else "Pulsa una tecla para seguir"
+            else "Pulsa una tecla"
         )
         self.buttons: list[pygame.Rect] = []
-        self._surface: pygame.Surface | None = None
-        self._size: tuple[int, int] | None = None
+        self._layout()
+
+    def _layout(self) -> None:
+        labels = [label for label, _ in self.choices]
+        buttons_w = sum(ui.measure(label) + 16 for label in labels) + 4 * max(len(labels) - 1, 0)
+        longest = max(
+            ui.measure(line) for line in [*self.text.split("\n"), self.title, self.footer]
+        )
+        self.width = min(max(longest + 16, 150, buttons_w + 16), self.MAX_W)
+        self.lines = ui.wrap(self.text, self.width - 16)[:9]
+        body = len(self.lines) * ui.LINE
+        buttons = self.BUTTON_H + 6 if self.choices else 0
+        self.height = 15 + 4 + body + buttons + 4 + 9 + 4
+        self.box = pygame.Rect(0, 0, self.width, self.height)
+        self.box.center = (W // 2, H // 2)
+        y = self.box.y + 15 + 4 + body + 3
+        x = self.box.x + 8
+        self.buttons = []
+        for label in labels:
+            rect = pygame.Rect(x, y, ui.measure(label) + 16, self.BUTTON_H)
+            self.buttons.append(rect)
+            x = rect.right + 4
 
     def close_with(self, hub: KartLabApp, yes: bool) -> None:
         hub.dialog = None
@@ -262,7 +277,6 @@ class Dialog:
 
     def select(self, delta: int) -> None:
         self.selected = (self.selected + delta) % len(self.choices)
-        self._surface = None  # the highlight moved
 
     def on_key(self, hub: KartLabApp, key: int) -> None:
         if key in IGNORED_KEYS:
@@ -287,7 +301,6 @@ class Dialog:
         for i, rect in enumerate(self.buttons):
             if rect.collidepoint(pos) and i != self.selected:
                 self.selected = i
-                self._surface = None
 
     def on_click(self, hub: KartLabApp, pos) -> None:
         if self.choices:
@@ -297,59 +310,31 @@ class Dialog:
         elif self.on_yes is None:
             self.close_with(hub, False)
 
-    def draw(self, screen: pygame.Surface, ui: Ui) -> None:
-        if self._surface is None or self._size != screen.get_size():
-            self._surface, self._size = self._build(screen.get_size(), ui), screen.get_size()
-        screen.blit(self._surface, (0, 0))
-
-    def _build(self, size: tuple[int, int], ui: Ui) -> pygame.Surface:
-        u = ui.unit
-        body = pygame.font.Font(SANS_REGULAR, u)
-        longest = max(body.size(line)[0] for line in self.text.split("\n"))
-        labels = [ui.name.get(label, DARK) for label, _ in self.choices]
-        buttons_w = sum(t.get_width() + 3 * u for t in labels) + len(labels) * u // 2 + 3 * u
-        width = min(max(longest + 3 * u, u * 22, buttons_w), size[0] - 2 * u, u * 60)
-        lines = wrap_text(body, self.text, width - 3 * u)
-        line_h = body.get_height()
-        heading = ui.name.get(self.title, ACCENT)
-        foot = ui.small.get(self.footer, DIM)
-        button_h = round(u * 2.2) if self.choices else 0
-        height = u * 2 + heading.get_height() + u + len(lines) * line_h + u + foot.get_height() + u
-        height += button_h + (u if self.choices else 0)
-        height = min(height, size[1] - 2 * u)
-        surface = pygame.Surface(size, pygame.SRCALPHA)
-        surface.fill((6, 8, 16, 170))
-        box = pygame.Rect(0, 0, width, height)
-        box.center = (size[0] // 2, size[1] // 2)
-        surface.blit(ui.panel(box.w, box.h, 245, accent=True), box.topleft)
-        y = box.y + u * 2
-        surface.blit(heading, (box.x + 1.5 * u, y))
-        y += heading.get_height() + u
-        for line in lines:
-            surface.blit(body.render(line, True, WHITE), (box.x + 1.5 * u, y))
-            y += line_h
-        if self.choices:
-            x = box.x + 1.5 * u
-            self.buttons = []
-            for i, text in enumerate(labels):
-                rect = pygame.Rect(x, y + u // 2, text.get_width() + 3 * u, button_h)
-                self.buttons.append(rect)
-                chosen = i == self.selected
-                pygame.draw.rect(surface, ACCENT if chosen else (40, 42, 58), rect)
-                label = ui.name.get(self.choices[i][0], DARK if chosen else WHITE)
-                surface.blit(label, label.get_rect(center=rect.center))
-                x += rect.w + u // 2
-        surface.blit(foot, (box.x + 1.5 * u, box.bottom - foot.get_height() - u))
-        return surface
+    def draw(self, canvas: pygame.Surface) -> None:
+        ui.dither(canvas, canvas.get_rect(), 3)
+        box = self.box
+        ui.plate(canvas, box, ui.SLATE)
+        ui.plate(canvas, (box.x, box.y, box.w, 15), ui.NAVY)
+        ui.text(canvas, ui.ellipsize(self.title, box.w - 16), box.x + 8, box.y + 4, ui.YELLOW)
+        y = box.y + 15 + 4
+        for line in self.lines:
+            ui.text(canvas, line, box.x + 8, y + 2, ui.TEXT)
+            y += ui.LINE
+        for i, rect in enumerate(self.buttons):
+            button(canvas, rect, self.choices[i][0], chosen=i == self.selected)
+        ui.text(canvas, self.footer, box.x + 8, box.bottom - 11, ui.STONE_LIGHT)
 
 
 # -- the main list ---------------------------------------------------------------------------
 
 
 class MenuScreen(Screen):
-    """The title and the list of entries, grouped under headers."""
+    """The title and the list of entries, in blocks, in one or two columns."""
 
-    hint = "↑ ↓ elegir · Intro aceptar · o con el ratón · F11 pantalla completa · Esc salir"
+    hint = "↑↓ elegir, Intro aceptar, Esc salir"
+    COLUMN_W = 152
+    HEAD_H = 10
+    GAP_H = 3
 
     def __init__(self, hub: KartLabApp, entries: list[Entry]) -> None:
         super().__init__(hub)
@@ -361,62 +346,51 @@ class MenuScreen(Screen):
         self.esc_until = -1.0  # a second Esc before this time leaves
         self._rows: list[tuple[str, Entry | str, pygame.Rect]] = []
         self.rects: dict[int, pygame.Rect] = {}  # entry index -> its row
-        self._mark: pygame.Surface | None = None
-        self._strip: pygame.Surface | None = None
+        self.mark_y = 13
 
     # -- layout --------------------------------------------------------------------------
 
+    def _blocks(self) -> list[tuple[str | None, list[int]]]:
+        """The entries by header: consecutive entries of one group are a block."""
+        blocks: list[tuple[str | None, list[int]]] = []
+        for index, entry in enumerate(self.entries):
+            if blocks and blocks[-1][0] == entry.group:
+                blocks[-1][1].append(index)
+            else:
+                blocks.append((entry.group, [index]))
+        return blocks
+
+    def _block_h(self, block: tuple[str | None, list[int]]) -> int:
+        return self.GAP_H + len(block[1]) * (ROW_H + 1)
+
     def layout(self) -> None:
-        hub = self.hub
-        ui = hub.ui
-        w, h = ui.size
-        u = ui.unit
-        mark = hub.wordmark
-        k = max(1, min(ui.scale, int(w * 0.40) // mark.get_width()))
-        self.k = k
-        self._mark = pygame.transform.scale(mark, (mark.get_width() * k, mark.get_height() * k))
-        self._mark_y = round(h * 0.05)
-        top = self._mark_y + self._mark.get_height() + round(u * 2.2)
-        reserved = round(u * 6.2)  # description box, status line and key hints
-        available = h - top - reserved
-        headers = len({e.group for e in self.entries if e.group})
-        gap = round(u * 0.8) if any(e.group is None for e in self.entries) else 0
-        row = u * 1.9
-        head = u * 1.6
-        need = len(self.entries) * row + headers * head + gap
-        f = min(1.0, available / need)
-        self.row_h = max(round(row * f), 12)
-        head_h = max(round(head * f), 10)
-        self.f = f
-        self.name = TextCache(pygame.font.Font(SANS, max(round(u * 1.3 * f), 10)))
-        self.group = PixelText(8 * max(1, int(ui.scale * f) // 2))
-        self.width = min(round(w * 0.5), u * 30)
-        x = (w - self.width) // 2
-        y = top
+        blocks = self._blocks()
+        sizes = [self._block_h(b) for b in blocks]
+        # Two columns when there is enough to fill them: split where the heights are closest.
+        split = len(blocks)
+        if len(blocks) > 2:
+            split = min(range(1, len(blocks)), key=lambda k: abs(sum(sizes[:k]) - sum(sizes[k:])))
+        columns = [blocks[:split], blocks[split:]] if split < len(blocks) else [blocks]
+        mark_h = self.hub.wordmark.get_height()
+        top = self.mark_y + mark_h + 3
+        gap = 8
+        total = len(columns) * self.COLUMN_W + (len(columns) - 1) * gap
+        left = (W - total) // 2
         self._rows = []
         self.rects = {}
-        last_group: str | None = "__none__"
-        for index, entry in enumerate(self.entries):
-            if entry.group != last_group:
-                if entry.group is None:
-                    y += gap
-                else:
-                    self._rows.append(
-                        ("header", entry.group, pygame.Rect(x, y, self.width, head_h))
-                    )
-                    y += head_h
-                last_group = entry.group
-            rect = pygame.Rect(x, y, self.width, self.row_h - max(u // 8, 2))
-            self._rows.append(("entry", entry, rect))
-            self.rects[index] = rect
-            y += self.row_h
-        self.list_bottom = y
-        self.desc_y = h - round(u * 6.0)
-        self._chip = ui.panel(self.width, self.row_h - max(u // 8, 2), 175)
-        sel = pygame.Surface(self._chip.get_size(), pygame.SRCALPHA)
-        sel.fill((*ACCENT, 255))
-        pygame.draw.rect(sel, (255, 255, 255, 255), (0, 0, sel.get_width(), max(u // 8, 2)))
-        self._selected_chip = sel
+        self.list_bottom = top
+        for c, column in enumerate(columns):
+            x = left + c * (self.COLUMN_W + gap)
+            y = top
+            for _group, indices in column:
+                y += self.GAP_H
+                for index in indices:
+                    rect = pygame.Rect(x, y, self.COLUMN_W, ROW_H)
+                    self._rows.append(("entry", self.entries[index], rect))
+                    self.rects[index] = rect
+                    y += ROW_H + 1
+            self.list_bottom = max(self.list_bottom, y)
+        self.desc_y = self.list_bottom + 3
 
     # -- input ---------------------------------------------------------------------------
 
@@ -463,70 +437,52 @@ class MenuScreen(Screen):
 
     # -- drawing -------------------------------------------------------------------------
 
-    def draw(self, screen: pygame.Surface) -> None:
+    def draw(self, canvas: pygame.Surface) -> None:
         hub = self.hub
-        ui = hub.ui
-        w, h = ui.size
-        u = ui.unit
         age = self.age
-        mark = self._mark
-        drop = (1.0 - ease_out(age / 0.7)) * -h * 0.2
-        bob = round(math.sin(hub.t * 1.7)) * self.k
-        screen.blit(mark, ((w - mark.get_width()) // 2, round(self._mark_y + drop) + bob))
+        mark = hub.wordmark
+        drop = round((1.0 - ease_out(age / 0.7)) * -36)
+        bob = round(math.sin(hub.t * 1.7))
+        canvas.blit(mark, ((W - mark.get_width()) // 2, self.mark_y + drop + bob))
         appear = ease_out((age - 0.25) / 0.45)
-        slide = round((1.0 - appear) * u)
-        for kind, value, rect in self._rows:
-            if kind == "header":
-                text = self.group.get(value, ACCENT)
-                screen.blit(text, (rect.x + u // 2, rect.bottom - text.get_height() + slide))
-                continue
-            index = self.entries.index(value)
-            chosen = index == self.selected
-            disabled = hub.disabled_reason(value) is not None
+        slide = round((1.0 - appear) * 6)
+        for _kind, value, rect in self._rows:
             moved = rect.move(0, slide)
-            screen.blit(self._selected_chip if chosen else self._chip, moved.topleft)
-            colour = DARK if chosen else (DIM if disabled else WHITE)
-            label = self.name.get(value.label, colour)
-            screen.blit(label, (moved.x + u, moved.centery - label.get_height() // 2))
-            if disabled and not chosen:
-                reason = ui.small.get("sin runs", DIM)
-                screen.blit(
-                    reason,
-                    (
-                        moved.right - reason.get_width() - u,
-                        moved.centery - reason.get_height() // 2,
-                    ),
-                )
-        self._draw_description(screen)
-        self._draw_esc_notice(screen)
-        self.draw_hint(screen)
+            index = self.entries.index(value)
+            disabled = hub.disabled_reason(value) is not None
+            row(canvas, moved, index == self.selected, value.label, dim=disabled)
+            if disabled:  # a cross and the dimmed label: the reason is in the description
+                ui.icon(canvas, "cross", moved.right - 10, moved.y + 3, ui.STONE)
+        self._draw_description(canvas)
+        self._draw_esc_notice(canvas)
+        self.draw_hint(canvas)
 
-    def _draw_description(self, screen: pygame.Surface) -> None:
+    def _draw_description(self, canvas: pygame.Surface) -> None:
         hub = self.hub
-        ui = hub.ui
-        u = ui.unit
         entry = self.entries[self.selected]
         reason = hub.disabled_reason(entry)
-        text = reason or entry.description
-        surface = ui.desc.get(text, WARN if reason else WHITE)
-        box_w = surface.get_width() + 2 * u
-        box_h = surface.get_height() + u
-        x = (ui.size[0] - box_w) // 2
-        screen.blit(ui.panel(box_w, box_h, 190), (x, self.desc_y))
-        screen.blit(surface, (x + u, self.desc_y + u // 2))
+        lines = ui.wrap(reason or entry.description, 290)[:2]
+        width = max(ui.measure(line) for line in lines) + 12
+        rect = pygame.Rect((W - width) // 2, self.desc_y, width, len(lines) * ui.LINE + 3)
+        ui.plate(canvas, rect, ui.NAVY)
+        for k, line in enumerate(lines):
+            ui.text(
+                canvas,
+                line,
+                rect.centerx,
+                rect.y + 3 + k * ui.LINE,
+                ui.ORANGE if reason else ui.TEXT,
+                align="center",
+            )
 
-    def _draw_esc_notice(self, screen: pygame.Surface) -> None:
+    def _draw_esc_notice(self, canvas: pygame.Surface) -> None:
         """«Pulsa Esc otra vez para salir» after the first Esc, for a couple of seconds."""
-        hub = self.hub
-        if hub.t >= self.esc_until:
+        if self.hub.t >= self.esc_until:
             return
-        ui = hub.ui
-        surface = ui.desc.get("Pulsa Esc otra vez para salir", DARK)
-        w, h = surface.get_width() + 2 * ui.unit, surface.get_height() + ui.unit
-        x = (ui.size[0] - w) // 2
-        y = self.desc_y + round(ui.unit * 2.5)
-        pygame.draw.rect(screen, ACCENT, (x, y, w, h))
-        screen.blit(surface, (x + ui.unit, y + ui.unit // 2))
+        text = "Esc otra vez para salir"
+        rect = pygame.Rect((W - ui.measure(text) - 12) // 2, HINT_Y - 14, ui.measure(text) + 12, 11)
+        ui.plate(canvas, rect, ui.YELLOW)
+        ui.text(canvas, text, rect.centerx, rect.y + 3, ui.NIGHT, align="center")
 
 
 # -- options ---------------------------------------------------------------------------------
@@ -534,7 +490,8 @@ class MenuScreen(Screen):
 
 class OptionsScreen(Screen):
     dim = 90
-    hint = "↑ ↓ elegir · ← → cambiar · Esc volver"
+    hint = "↑↓ elegir, ←→ cambiar, Esc volver"
+    ROW = 15
 
     def __init__(self, hub: KartLabApp, flow: Flow) -> None:
         super().__init__(hub)
@@ -571,13 +528,13 @@ class OptionsScreen(Screen):
         scale = (
             "Automática" if s.scale is None else f"{s.scale}×  ({320 * s.scale}×{180 * s.scale})"
         )
-        run = s.last_run if s.last_run and s.last_run in runs else "la más reciente"
+        run = run_title(s.last_run) if s.last_run and s.last_run in runs else "La última"
         rows = [
-            ("Tamaño de la ventana", scale, cycle_scale),
+            ("Ventana", scale, cycle_scale),
             ("Pantalla completa", "Sí" if s.fullscreen else "No", cycle_fullscreen),
             ("Luz", LIGHT_NAMES[s.light], cycle_light),
             ("Cámara", CAMERA_NAMES[s.camera], cycle_camera),
-            ("IA que se muestra", run if runs else "(no hay runs)", cycle_run),
+            ("IA", run if runs else "Ninguna", cycle_run),
         ]
         return rows
 
@@ -586,16 +543,9 @@ class OptionsScreen(Screen):
         self.hub.save_settings()
 
     def layout(self) -> None:
-        ui = self.hub.ui
-        w, h = ui.size
-        u = ui.unit
-        width = min(round(w * 0.62), u * 40)
-        self.rect = pygame.Rect((w - width) // 2, round(h * 0.26), width, 0)
-        self.row_h = round(u * 2.3)
-        self.rects = [
-            pygame.Rect(self.rect.x, self.rect.y + i * self.row_h, width, self.row_h - u // 4)
-            for i in range(5)
-        ]
+        width = 260
+        x = (W - width) // 2
+        self.rects = [pygame.Rect(x, 36 + i * self.ROW, width, self.ROW - 2) for i in range(5)]
 
     def on_key(self, key: int) -> None:
         if key == pygame.K_ESCAPE:
@@ -616,41 +566,26 @@ class OptionsScreen(Screen):
         return None
 
     def on_motion(self, pos) -> None:
-        row = self._row_at(pos)
-        if row is not None:
-            self.selected = row
+        row_index = self._row_at(pos)
+        if row_index is not None:
+            self.selected = row_index
 
     def on_click(self, pos) -> None:
-        row = self._row_at(pos)
-        if row is not None:
-            self.selected = row
+        row_index = self._row_at(pos)
+        if row_index is not None:
+            self.selected = row_index
             # the left third goes back, the rest forward
-            self.change(-1 if pos[0] < self.rects[row].x + self.rects[row].w // 3 else 1)
+            rect = self.rects[row_index]
+            self.change(-1 if pos[0] < rect.x + rect.w // 3 else 1)
 
     def on_wheel(self, dy: int) -> None:
         self.change(1 if dy > 0 else -1)
 
-    def draw(self, screen: pygame.Surface) -> None:
-        ui = self.hub.ui
-        u = ui.unit
-        ui.heading_text(screen, "OPCIONES", round(ui.size[1] * 0.08), self.age)
+    def draw(self, canvas: pygame.Surface) -> None:
+        heading(canvas, "OPCIONES", self.age)
         for i, (label, value, _) in enumerate(self.rows()):
-            rect = self.rects[i]
-            chosen = i == self.selected
-            if chosen:
-                pygame.draw.rect(screen, ACCENT, rect)
-                pygame.draw.rect(screen, (255, 255, 255), (rect.x, rect.y, rect.w, max(u // 8, 2)))
-            else:
-                screen.blit(ui.panel(rect.w, rect.h, 175), rect.topleft)
-            name = ui.name.get(label, DARK if chosen else WHITE)
-            screen.blit(name, (rect.x + u, rect.centery - name.get_height() // 2))
-            text = ui.name.get(f"←  {value}  →" if chosen else value, DARK if chosen else ACCENT)
-            screen.blit(
-                text, (rect.right - text.get_width() - u, rect.centery - text.get_height() // 2)
-            )
-        note = ui.small.get("Los cambios se guardan solos en settings.json", DIM)
-        screen.blit(note, ((ui.size[0] - note.get_width()) // 2, self.rects[-1].bottom + u))
-        self.draw_hint(screen)
+            row(canvas, self.rects[i], i == self.selected, label, value, arrows=True)
+        self.draw_hint(canvas)
 
 
 # -- training --------------------------------------------------------------------------------
@@ -661,7 +596,10 @@ class TrainScreen(Screen):
 
     dim = 90
     show_status = False  # it has its own panel
-    hint = "↑ ↓ elegir · Intro lanzar · V ver en directo · P parar · O abrir carpeta · Esc volver"
+    hint = "Intro lanzar, V ver, P parar, O carpeta"
+    ROW = 23
+    PANEL_H = 43
+    BUTTON_H = 13
 
     def __init__(self, hub: KartLabApp, flow: Flow) -> None:
         super().__init__(hub)
@@ -686,7 +624,7 @@ class TrainScreen(Screen):
         if job is not None and job.running:
             return "Ya hay un entrenamiento en marcha"
         if self.hub.live_training() is not None:
-            return "Ya hay un entrenamiento en marcha (lanzado desde otra parte)"
+            return "Ya hay un entrenamiento en marcha"
         return None
 
     def run_for_live(self):
@@ -702,16 +640,16 @@ class TrainScreen(Screen):
         config = self.configs[self.selected] if self.configs else None
         launch_off = self.busy_reason()
         if launch_off is None and (config is None or config.error):
-            launch_off = "Esta configuración no es válida"  # the box says why
+            launch_off = "Configuración no válida"  # the box says why
         run = self.run_for_live()
         return {
-            "launch": ("Lanzar  Intro", launch_off),
-            "live": ("Ver en directo  V", None if run else "Aún no hay ningún run"),
+            "launch": ("Lanzar", launch_off),
+            "live": ("Ver", None if run else "Aún no hay entrenamientos"),
             "stop": (
-                "Parar  P",
+                "Parar",
                 None if job is not None and job.running and not job.stopping else "Nada que parar",
             ),
-            "folder": ("Abrir carpeta  O", None if run else "Aún no hay ningún run"),
+            "folder": ("Carpeta", None if run else "Aún no hay entrenamientos"),
         }
 
     # -- actions -------------------------------------------------------------------------
@@ -728,7 +666,7 @@ class TrainScreen(Screen):
         if config.is_long:
             hub.dialog = Dialog(
                 "Entrenamiento largo",
-                f"«{config.name}» durará más de {30} min ({config.estimate}).\n¿Lanzar?",
+                f"«{config.name}» tarda {config.estimate}. ¿Lanzar?",
                 on_yes=lambda: self._start(config),
             )
         else:
@@ -747,56 +685,46 @@ class TrainScreen(Screen):
     def stop(self) -> None:
         job = self.hub.job
         if job is None or not job.running or job.stopping:
-            self.hub.message(
-                "Nada que parar", "No hay ningún entrenamiento lanzado desde este menú."
-            )
+            self.hub.message("Nada que parar", "No hay nada que parar.")
             return
         job.request_stop()
 
     def live(self) -> None:
         run = self.run_for_live()
         if run is None:
-            self.hub.message("Aún no hay ningún run", "Lanza un entrenamiento primero.")
+            self.hub.message("Aún no hay entrenamientos", "Lanza un entrenamiento primero.")
             return
         self.hub.open_live(run)
 
     def folder(self) -> None:
         run = self.run_for_live()
         if run is None:
-            self.hub.message("Aún no hay ningún run", "Lanza un entrenamiento primero.")
+            self.hub.message("Aún no hay entrenamientos", "Lanza un entrenamiento primero.")
             return
         self.hub.open_folder(run.root)
 
     # -- layout and input ----------------------------------------------------------------
 
     def layout(self) -> None:
-        ui = self.hub.ui
-        w, h = ui.size
-        u = ui.unit
-        self.width = min(round(w * 0.72), u * 52)
-        self.x = (w - self.width) // 2
-        top = round(h * 0.2)
-        self.row_h = round(u * 3.4)
-        panel_h, button_h = round(u * 6.5), round(u * 2.4)
-        below = panel_h + u + u // 2 + button_h + round(u * 3.2)  # panel, buttons, hover note, hint
-        self.visible = max(1, min(len(self.configs) or 1, (h - top - below) // self.row_h))
+        self.width = 280
+        self.x = (W - self.width) // 2
+        self.top = 30
+        buttons_y = HINT_Y - 6 - self.BUTTON_H - 2
+        panel_y = buttons_y - 3 - self.PANEL_H
+        self.visible = max(1, min(len(self.configs) or 1, (panel_y - 4 - self.top) // self.ROW))
         self._laid_out_for = len(self.configs)
-        self.top = top
         self._place()
-        rows_bottom = top + self.visible * self.row_h
-        self.panel_rect = pygame.Rect(self.x, rows_bottom + u, self.width, panel_h)
+        self.panel_rect = pygame.Rect(self.x, panel_y, self.width, self.PANEL_H)
         names = ("launch", "live", "stop", "folder")
-        gap = u // 2
+        gap = 4
         bw = (self.width - gap * (len(names) - 1)) // len(names)
-        by = self.panel_rect.bottom + u // 2
         self.buttons = {
-            name: pygame.Rect(self.x + i * (bw + gap), by, bw, button_h)
+            name: pygame.Rect(self.x + i * (bw + gap), buttons_y, bw, self.BUTTON_H)
             for i, name in enumerate(names)
         }
 
     def _place(self) -> None:
         """Rows of the configs in view; the selected one always is."""
-        u = self.hub.ui.unit
         last = max(len(self.configs) - self.visible, 0)
         if self.selected < self.scroll:
             self.scroll = self.selected
@@ -805,7 +733,7 @@ class TrainScreen(Screen):
         self.scroll = min(max(self.scroll, 0), last)
         shown = range(self.scroll, min(self.scroll + self.visible, len(self.configs)))
         self.rects = {
-            i: pygame.Rect(self.x, self.top + n * self.row_h, self.width, self.row_h - u // 4)
+            i: pygame.Rect(self.x, self.top + n * self.ROW, self.width, self.ROW - 2)
             for n, i in enumerate(shown)
         }
 
@@ -859,95 +787,94 @@ class TrainScreen(Screen):
 
     # -- drawing -------------------------------------------------------------------------
 
-    def draw(self, screen: pygame.Surface) -> None:
-        hub = self.hub
-        ui = hub.ui
-        u = ui.unit
-        ui.heading_text(screen, "ENTRENAR A LA IA", round(ui.size[1] * 0.07), self.age)
+    def draw(self, canvas: pygame.Surface) -> None:
+        heading(canvas, "ENTRENAR A LA IA", self.age)
         if not self.configs:
-            text = ui.desc.get("No hay ningún fichero en configs/", WARN)
-            screen.blit(text, ((ui.size[0] - text.get_width()) // 2, self.top))
+            ui.icon(canvas, "warn", self.x, self.top + 1, ui.ORANGE, outline=ui.NIGHT)
+            ui.text(
+                canvas,
+                "No hay configuraciones",
+                self.x + 8,
+                self.top,
+                ui.ORANGE,
+                outline=ui.NIGHT,
+            )
         for i, rect in self.rects.items():
             config = self.configs[i]
             chosen = i == self.selected
-            if chosen:
-                pygame.draw.rect(screen, ACCENT, rect)
-                pygame.draw.rect(screen, (255, 255, 255), (rect.x, rect.y, rect.w, max(u // 8, 2)))
-            else:
-                screen.blit(ui.panel(rect.w, rect.h, 175), rect.topleft)
-            ink = DARK if chosen else WHITE
-            sub = DARK if chosen else DIM
+            ui.plate(canvas, rect, ui.YELLOW if chosen else ui.SLATE)
+            ink = ui.NIGHT if chosen else ui.TEXT
+            sub = ui.NIGHT if chosen else ui.STONE_LIGHT
+            inner = rect.w - 12
             if config.error:
-                title = ui.name.get(f"{config.path.name}  (no válido)", DARK if chosen else WARN)
-                reason = config.error.splitlines()[-1]
-                detail = ui.small.get(self._fit(ui.small, reason, rect.w - 2 * u), sub)
+                name = f"{config.path.name}, no válido"
+                title_ink = ui.NIGHT if chosen else ui.ORANGE
+                if not chosen:
+                    ui.icon(canvas, "warn", rect.right - 9, rect.y + 3, ui.ORANGE)
+                detail = ui.ellipsize(config.error.splitlines()[-1], inner)
             else:
-                title = ui.name.get(config.name, ink)
+                name, title_ink = config.name, ink
                 steps = f"{config.total_steps:,}".replace(",", ".")
-                detail_text = f"{steps} pasos · {config.estimate}"
-                if config.comment:
-                    detail_text += f" · {config.comment}"
-                detail = ui.small.get(self._fit(ui.small, detail_text, rect.w - 2 * u), sub)
-            screen.blit(title, (rect.x + u, rect.y + u // 3))
-            screen.blit(detail, (rect.x + u, rect.bottom - detail.get_height() - u // 3))
+                detail = f"{steps} pasos, {config.estimate}"
+                with_comment = f"{detail}. {config.comment}" if config.comment else detail
+                if ui.measure(with_comment) <= inner:  # a comment is shown whole or not at all
+                    detail = with_comment
+            ui.text(canvas, ui.ellipsize(name, inner - 10), rect.x + 5, rect.y + 4, title_ink)
+            ui.text(canvas, ui.ellipsize(detail, inner), rect.x + 5, rect.y + 13, sub)
         if len(self.configs) > self.visible:  # more configs than rows: where we are
-            more = ui.small.get(
-                f"{self.scroll + 1}-{self.scroll + len(self.rects)} de {len(self.configs)}  ↑ ↓",
-                DIM,
+            shown = f"{self.scroll + 1}-{self.scroll + len(self.rects)} de {len(self.configs)} ↑ ↓"
+            ui.text(
+                canvas,
+                shown,
+                self.x + self.width,
+                self.top - 9,
+                ui.STONE_LIGHT,
+                outline=ui.NIGHT,
+                align="right",
             )
-            screen.blit(
-                more, (self.x + self.width - more.get_width(), self.top - more.get_height())
-            )
-        self._draw_job_panel(screen)
-        self._draw_buttons(screen)
-        self.draw_hint(screen)
-
-    @staticmethod
-    def _fit(cache: TextCache, text: str, width: int) -> str:
-        while cache.font.size(text)[0] > width and len(text) > 4:
-            text = text[:-2].rstrip() + "…"
-        return text
-
-    def _draw_job_panel(self, screen: pygame.Surface) -> None:
-        hub = self.hub
-        ui = hub.ui
-        u = ui.unit
-        rect = self.panel_rect
-        screen.blit(ui.panel(rect.w, rect.h, 200, accent=True), rect.topleft)
-        status = hub.status_line()
-        lines = []
-        if status:
-            lines.append((status, ACCENT, ui.name))
+        self._draw_job_panel(canvas)
+        hover = self._draw_buttons(canvas)
+        if hover:
+            self.draw_reason(canvas, hover)
         else:
-            lines.append(("No hay ningún entrenamiento en marcha", DIM, ui.name))
+            self.draw_hint(canvas)
+
+    def _draw_job_panel(self, canvas: pygame.Surface) -> None:
+        hub = self.hub
+        rect = self.panel_rect
+        inside = ui.plate(canvas, rect, ui.SLATE)
+        ui.hline(canvas, rect.x + 1, rect.y + 1, rect.w - 2, ui.YELLOW)
+        status = hub.status_line()
+        if status:
+            ui.icon(canvas, "play", inside.x + 3, inside.y + 4, ui.YELLOW)
+            ui.text(
+                canvas, ui.ellipsize(status, inside.w - 16), inside.x + 11, inside.y + 4, ui.YELLOW
+            )
+        else:
+            ui.text(
+                canvas,
+                "Sin entrenamiento en marcha",
+                inside.x + 4,
+                inside.y + 4,
+                ui.STONE_LIGHT,
+            )
         job = hub.job
         if job is not None:
-            for line in job.log_tail(3):
-                lines.append((self._fit(ui.mono, line, rect.w - 2 * u), DIM, ui.mono))
-        y = rect.y + u
-        for text, colour, cache in lines:
-            surface = cache.get(text, colour)
-            screen.blit(surface, (rect.x + u, y))
-            y += surface.get_height() + u // 4
+            y = inside.y + 15
+            for line in readable_log(job.log_tail(12))[-3:]:
+                ui.text(canvas, ui.ellipsize(line, inside.w - 8), inside.x + 4, y, ui.STONE_LIGHT)
+                y += 9
 
-    def _draw_buttons(self, screen: pygame.Surface) -> None:
-        ui = self.hub.ui
-        u = ui.unit
+    def _draw_buttons(self, canvas: pygame.Surface) -> str | None:
+        """The four buttons; returns the reason of the disabled one under the mouse, if any."""
+        hover = None
         for name, (label, reason) in self.button_states().items():
             rect = self.buttons[name]
             off = reason is not None
-            screen.blit(ui.panel(rect.w, rect.h, 150 if off else 215), rect.topleft)
-            if not off:
-                pygame.draw.rect(
-                    screen, ACCENT, (rect.x, rect.bottom - max(u // 6, 2), rect.w, max(u // 6, 2))
-                )
-            text = ui.small.get(label, DIM if off else WHITE)
-            screen.blit(
-                text, (rect.centerx - text.get_width() // 2, rect.centery - text.get_height() // 2)
-            )
+            button(canvas, rect, label, off)
             if off and reason and self._hover(rect):
-                note = ui.small.get(reason, WARN)
-                screen.blit(note, (rect.x, rect.bottom + u // 4))
+                hover = reason
+        return hover
 
     def _hover(self, rect: pygame.Rect) -> bool:
         return rect.collidepoint(self.hub.mouse)

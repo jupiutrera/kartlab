@@ -33,13 +33,13 @@ def test_results_say_every_lap_the_total_and_the_record():
         session.on_lap(lap, lap == 38.5, True)
     rows = session.result_lines(38.5)
     texts = [text for text, _ in rows]
-    assert texts[0].startswith("Vuelta 1") and "0:38.50" in texts[1] and "mejor" in texts[1]
-    assert any("Total" in text and "1:57.50" in text for text in texts)
-    assert rows[-1][1] == "record" and "NUEVO RÉCORD" in rows[-1][0]
+    assert texts[0].startswith("Vuelta 1") and "0:38,50" in texts[1] and "mejor" in texts[1]
+    assert any("Total" in text and "1:57,50" in text for text in texts)
+    assert rows[-1][1] == "record" and "Nuevo récord" in rows[-1][0]
     lost = TrialSession()
     for lap in (40.0, 41.0, 42.0):
         lost.on_lap(lap, False, True)
-    assert "Récord de vuelta 0:39.00" in lost.result_lines(39.0)[-1][0]
+    assert "Récord 0:39,00" in lost.result_lines(39.0)[-1][0]
     assert "Sin récord" in lost.result_lines(None)[-1][0]
     piloted = TrialSession()
     for lap in (40.0, 41.0, 42.0):
@@ -85,13 +85,13 @@ def test_the_controls_are_frozen_during_the_countdown(make, monkeypatch):
 def test_trial_hud_hides_the_lap_panel_and_the_mode_panel_after_the_countdown(make):
     app = make()
     shown = []
-    real_draw = app.game.draw
+    real_draw = app.game.render_canvas
 
-    def spy(screen, pose, visuals, info, *args, **kwargs):
+    def spy(pose, visuals, info, *args, **kwargs):
         shown.append((info.lap_panel, info.label_panel))
-        return real_draw(screen, pose, visuals, info, *args, **kwargs)
+        return real_draw(pose, visuals, info, *args, **kwargs)
 
-    app.game.draw = spy
+    app.game.render_canvas = spy
     app.run(max_frames=10)
     assert shown[-1] == (False, True)  # counting down
     app.run(max_frames=COUNTDOWN_FRAMES)
@@ -100,7 +100,7 @@ def test_trial_hud_hides_the_lap_panel_and_the_mode_panel_after_the_countdown(ma
     app.run(max_frames=2)
     assert shown[-1] == (False, True)
     plain = make(time_trial=False)
-    plain.game.draw = spy
+    plain.game.render_canvas = spy
     plain.run(max_frames=3)
     assert shown[-1] == (True, True)  # free driving keeps its panels
 

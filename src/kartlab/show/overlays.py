@@ -1,23 +1,28 @@
-"""Panels, cards and counters drawn over a ``GameView`` frame.
+"""Panels, cards and counters drawn over a ``GameView`` frame, on the 320x180 canvas.
 
-Shared by the offline videos (1080p, written to ffmpeg) and the exhibition viewer (window
-resolution). Everything is drawn at screen resolution, sharp, and cached: text goes
-through ``TextCache`` and panels are built once per size.
+Shared by the offline videos (1920x1080 = the canvas x 6, written to ffmpeg) and the
+exhibition viewer. Everything is drawn with the pixel interface kit on the canvas of the
+``GameView`` (``game.canvas``), before the canvas is magnified, so a pixel of a panel is a
+pixel of the world.
 """
 
 from __future__ import annotations
 
-import math
+import re
 
 import pygame
 
-from kartlab.render.palette import KART_RAMPS, game_palette
+from kartlab.render import bigtext
+from kartlab.render import pixelui as ui
+from kartlab.render.hud import kart_ink
+from kartlab.render.palette import KART_RAMPS
 from kartlab.render.scene import KartVisual
-from kartlab.render.topdown import ACCENT, TextCache
-from kartlab.render.view import DIM, MONO, PANEL, SANS, SANS_REGULAR, WHITE, GameView
+from kartlab.render.view import GameView
 from kartlab.show.drivers import PolicyDriver, format_steps
 
 CARD_SECONDS = 2.0  # how long a card stays up by default
+CANVAS_W, CANVAS_H = ui.CANVAS_SIZE
+MONTHS = ("ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic")
 
 
 def ease_out(t: float) -> float:
@@ -36,7 +41,23 @@ def version_name(steps: int) -> str:
 
 def count_steps(steps: int) -> str:
     """Exact step counter with Spanish thousands separators: 1.503.232."""
-    return f"{steps:,}".replace(",", ".")
+    return ui.fmt_count(steps)
+
+
+def toggle_text(name: str, value: bool) -> str:
+    """A setting notice, always in the same form: ``Sensores: Sí``."""
+    return f"{name}: {'Sí' if value else 'No'}"
+
+
+def run_title(run) -> str:
+    """A training as the player knows it: ``random-tracks, 4 nov`` for the folder
+    ``2026-11-04_2159_random-tracks``. The folder name itself never goes on screen."""
+    name = run.root.name if hasattr(run, "root") else str(run)
+    found = re.match(r"^(\d{4})-(\d{2})-(\d{2})_\d{4}_(.+)$", name)
+    if not found:
+        return name
+    _, month, day, label = found.groups()
+    return f"{label}, {int(day)} {MONTHS[int(month) - 1]}"
 
 
 def visual_of(driver: PolicyDriver, ramp: int, label=None, ghost=False) -> KartVisual:
@@ -53,198 +74,149 @@ def visual_of(driver: PolicyDriver, ramp: int, label=None, ghost=False) -> KartV
     )
 
 
-def ramp_color(ramp: int) -> tuple[int, int, int]:
-    rgb = game_palette().rgb[KART_RAMPS[ramp % len(KART_RAMPS)][1]]
-    return tuple(int(c) for c in rgb)
-
-
-def u_off(unit: int) -> int:
-    return max(unit // 6, 3)
+def ramp_ink(ramp: int) -> int:
+    return KART_RAMPS[ramp % len(KART_RAMPS)][1]
 
 
 class Overlays:
-    """Drawing helpers over ``self.screen``; ``self.game`` provides fonts and the unit size."""
+    """Drawing helpers over the canvas of ``self.game``."""
 
-    def __init__(self, screen: pygame.Surface, game: GameView) -> None:
-        pygame.font.init()
-        self.screen = screen
+    def __init__(self, game: GameView) -> None:
         self.game = game
-        self._panels: dict[tuple[int, int], pygame.Surface] = {}
-        self._black = pygame.Surface(screen.get_size())
-        self._black.fill((0, 0, 0))
-        self.setup_fonts()
+        self.last_card: pygame.Rect | None = None
+
+    @property
+    def canvas(self) -> pygame.Surface:
+        return self.game.canvas
 
     @property
     def size(self) -> tuple[int, int]:
-        return self.screen.get_size()
-
-    @property
-    def unit(self) -> int:
-        return self.game.unit
-
-    def setup_fonts(self) -> None:
-        """(Re)build the text caches; call after the window or the view changes size."""
-        unit = self.game.unit
-        self.kicker = TextCache(pygame.font.Font(SANS, round(unit * 1.1)))
-        self.title = TextCache(pygame.font.Font(SANS, round(unit * 3.4)))
-        self.body = TextCache(pygame.font.Font(SANS_REGULAR, round(unit * 1.2)))
-        self.countdown_font = TextCache(pygame.font.Font(MONO, unit * 8))
-
-    def set_screen(self, screen: pygame.Surface, game: GameView | None = None) -> None:
-        self.screen = screen
-        if game is not None:
-            self.game = game
-        self._panels.clear()
-        self._black = pygame.Surface(screen.get_size())
-        self._black.fill((0, 0, 0))
-        self.setup_fonts()
+        return ui.CANVAS_SIZE
 
     # -- building blocks --------------------------------------------------------------------
 
-    def panel(self, w: int, h: int) -> pygame.Surface:
-        panel = self._panels.get((w, h))
-        if panel is None:
-            panel = pygame.Surface((w, h), pygame.SRCALPHA)
-            panel.fill(PANEL)
-            self._panels[(w, h)] = panel
-        return panel
-
     def dim(self, amount: float) -> None:
-        """Cover the frame with black: 0 leaves it as it is, 1 is fully black."""
+        """Cover the frame with dark ink in dither steps: 0 leaves it as it is, 1 is black."""
         if amount > 0.003:
-            self._black.set_alpha(round(255 * min(amount, 1.0)))
-            self.screen.blit(self._black, (0, 0))
+            ui.dither(self.canvas, self.canvas.get_rect(), round(min(amount, 1.0) * 4))
 
     def card(
-        self,
-        kicker: str,
-        title: str,
-        lines: list[str] = (),
-        age: float = 0.0,
-        life: float = CARD_SECONDS,
+        self, title: str, lines: list[str] = (), age: float = 0.0, life: float = CARD_SECONDS
     ) -> None:
-        """A centred title card that slides up and fades in/out with easing."""
+        """A centred title card that steps up while it comes in and goes out."""
         fade_in, fade_out = 0.45, 0.4
         alpha = ease_out(age / fade_in) * min(1.0, max(0.0, (life - age) / fade_out))
         if alpha <= 0.003:
             return
-        u = self.unit
-        texts = [
-            self.kicker.get(kicker.upper(), ACCENT),
-            self.title.get(title, WHITE),
-            *(self.body.get(line, DIM) for line in lines),
+        title = ui.ellipsize(title, CANVAS_W - 40, 2)
+        body = [ui.ellipsize(line, CANVAS_W - 40) for line in lines]
+        w = max(ui.measure(title, 2), *(ui.measure(line) for line in body), 0) + 22
+        h = 8 + 14 + 6 + 9 * len(body) + 4
+        hud = self.game.hud
+        spots = [
+            ((CANVAS_W - w) // 2 + dx, 64 - h // 2 + dy)
+            for dy in (0, 28, 56)
+            for dx in (0, -30, -60, -90, -120, 30, 60)
         ]
-        pad = round(u * 1.4)
-        w = max(t.get_width() for t in texts) + 2 * pad + u // 2
-        h = sum(t.get_height() for t in texts) + 2 * pad
-        card = pygame.Surface((w, h), pygame.SRCALPHA)
-        card.fill((14, 14, 22, 235))
-        pygame.draw.rect(card, ACCENT, (0, 0, max(u // 4, 4), h))
-        y = pad
-        for text in texts:
-            card.blit(text, (pad + u // 2, y))
-            y += text.get_height()
-        card.set_alpha(round(255 * alpha))
-        slide = round((1.0 - ease_out(age / fade_in)) * u * 2)
-        cx, cy = self.size[0] // 2, round(self.size[1] * 0.42)
-        self.screen.blit(card, (cx - w // 2, cy - h // 2 + slide))
-
-    def big_number(self, text: str, alpha: float) -> None:
-        label = self.countdown_font.get(text, WHITE)
-        shade = self.countdown_font.get(text, (14, 14, 22))
-        for surface, offset in ((shade, u_off(self.unit)), (label, 0)):
-            surface.set_alpha(round(255 * alpha))
-            rect = surface.get_rect(
-                center=(self.size[0] // 2 + offset, self.size[1] * 0.4 + offset)
-            )
-            self.screen.blit(surface, rect)
+        rect = hud.reserve(hud.free_rect(w, h, spots))  # where no panel is
+        self.last_card = rect
+        x, y = rect.x, rect.y + round((1.0 - alpha) * 12)
+        ui.plate(self.canvas, (x, y, w, h), ui.NAVY)
+        self.canvas.fill(ui.rgb(ui.YELLOW), (x + 1, y + 1, 3, h - 2))
+        ui.text(self.canvas, title, x + 12, y + 8, ui.WHITE, 2)
+        for k, line in enumerate(body):
+            ui.text(self.canvas, line, x + 12, y + 28 + 9 * k, ui.STONE_LIGHT)
 
     def counter(self, steps: int, subtitle: str) -> None:
-        """Top-centre panel with the (rolling) training step counter."""
-        u = self.unit
-        number = self.game.big.get(count_steps(steps), WHITE)
-        sub = self.game.small.get(subtitle, DIM)
-        w = max(number.get_width(), sub.get_width()) + 3 * u
-        h = number.get_height() + sub.get_height() + u // 2
-        x, y = (self.size[0] - w) // 2, u // 2
-        self.screen.blit(self.panel(w, h), (x, y))
-        self.screen.blit(number, (x + (w - number.get_width()) // 2, y + u // 5))
-        self.screen.blit(sub, (x + (w - sub.get_width()) // 2, y + u // 5 + number.get_height()))
+        """Top-centre panel with the training step counter."""
+        number = count_steps(steps)
+        w = max(ui.measure(number, 2, True), ui.measure(subtitle)) + 16
+        x = (CANVAS_W - w) // 2
+        ui.plate(self.canvas, self.game.hud.reserve((x, 3, w, 33)), ui.SLATE)
+        ui.text(self.canvas, number, CANVAS_W // 2, 7, ui.WHITE, 2, align="center", tabular=True)
+        ui.text(self.canvas, subtitle, CANVAS_W // 2, 24, ui.STONE_LIGHT, align="center")
 
     def standings(
-        self, rows: list[tuple[int, str, str]], at: tuple[int, int], focus: int | None = None
+        self,
+        rows: list[tuple[int, str, str]],
+        at: tuple[int, int] = (3, 3),
+        focus: int | None = None,
     ) -> None:
         """Ranking panel: rows of (ramp, label, note), first row first. ``focus`` is the
-        index of the row to highlight (the kart the camera follows)."""
-        u = self.unit
-        pad = u // 2
-        texts = [
-            (
-                ramp,
-                self.game.text.get(label, ACCENT if i == focus else WHITE),
-                self.game.small.get(note, DIM),
-            )
-            for i, (ramp, label, note) in enumerate(rows)
-        ]
-        line = max(t[1].get_height() for t in texts)
-        w = max(t[1].get_width() + t[2].get_width() for t in texts) + 5 * u
-        h = line * len(texts) + pad * 2
-        self.screen.blit(self.panel(w, h), at)
-        for i, (ramp, label, note) in enumerate(texts):
-            y = at[1] + pad + i * line
-            self.screen.blit(self.game.small.get(str(i + 1), DIM), (at[0] + pad, y + u // 5))
-            cx, cy = at[0] + pad + round(u * 1.4), y + line // 2
-            pygame.draw.circle(self.screen, (10, 10, 16), (cx, cy), u // 3 + 1)
-            pygame.draw.circle(self.screen, ramp_color(ramp), (cx, cy), u // 3)
-            self.screen.blit(label, (at[0] + pad + round(u * 2.2), y))
-            self.screen.blit(note, (at[0] + w - pad - note.get_width(), y + u // 5))
+        index of the row to highlight (the kart the camera follows or the player)."""
+        label_w = max(ui.measure(label) for _, label, _ in rows)
+        note_w = max(ui.measure(note) for _, _, note in rows)
+        w = 4 + 7 + 9 + label_w + 10 + note_w + 4
+        h = 9 * len(rows) + 5
+        ui.plate(self.canvas, self.game.hud.reserve((*at, w, h)), ui.SLATE)
+        for i, (ramp, label, note) in enumerate(rows):
+            y = at[1] + 3 + 9 * i
+            ink = ui.YELLOW if i == focus else ui.TEXT
+            if i == focus:  # a marker besides the colour
+                ui.icon(self.canvas, "right", at[0] + 1, y + 1, ui.YELLOW)
+            ui.text(self.canvas, str(i + 1), at[0] + 8, y, ui.STONE_LIGHT)
+            ui.icon(self.canvas, "dot", at[0] + 15, y + 1, kart_ink(ramp), outline=ui.NIGHT)
+            ui.text(self.canvas, label, at[0] + 24, y, ink)
+            ui.text(self.canvas, note, at[0] + w - 4, y, ui.STONE_LIGHT, align="right")
 
     def chart_panel(self, chart, metrics, marker: int) -> None:
-        """The reward chart in a panel, centred on the right edge."""
+        """The reward chart, centred on the right edge."""
         surface = chart.draw(metrics.rows, metrics.version, marker)
-        pad = self.unit // 2
         w, h = surface.get_size()
-        x = self.size[0] - pad - w - 2 * pad
-        y = (self.size[1] - h) // 2 - pad
-        self.screen.blit(self.panel(w + 2 * pad, h + 2 * pad), (x, y))
-        self.screen.blit(surface, (x + pad, y + pad))
+        at = (CANVAS_W - 3 - w, (CANVAS_H - h) // 2)
+        self.game.hud.reserve((*at, w, h))
+        self.canvas.blit(surface, at)
 
     def timeline(self, names: list[str], current: int) -> None:
         """Bottom strip with every version on the way; the current one is highlighted."""
-        u = self.unit
-        pad = u // 2
-        items = []
+        gap = 8
+        widths = [ui.measure(name) for name in names]
+        while sum(widths) + gap * (len(names) - 1) > CANVAS_W - 20 and gap > 3:
+            gap -= 1
+        total = sum(widths) + gap * (len(names) - 1)
+        w, h = min(total, CANVAS_W - 8) + 10, 15
+        x, y = (CANVAS_W - w) // 2, CANVAS_H - 3 - h
+        ui.plate(self.canvas, self.game.hud.reserve((x, y, w, h)), ui.SLATE)
+        cursor = x + 5
         for i, name in enumerate(names):
-            colour = ACCENT if i == current else (WHITE if i < current else DIM)
-            items.append(
-                self.game.text.get(name, colour)
-                if i == current
-                else self.game.small.get(name, colour)
-            )
-        gap = u
-        w = sum(t.get_width() for t in items) + gap * (len(items) - 1) + 2 * pad
-        h = max(t.get_height() for t in items) + pad
-        x = (self.size[0] - w) // 2
-        y = self.size[1] - pad - h
-        self.screen.blit(self.panel(w, h), (x, y))
-        cursor = x + pad
-        for i, text in enumerate(items):
+            ink = ui.YELLOW if i == current else ui.TEXT if i < current else ui.STONE
+            ui.text(self.canvas, name, cursor, y + 3, ink)
             if i == current:
-                pygame.draw.rect(
-                    self.screen, ACCENT, (cursor, y + h - u // 6 - 2, text.get_width(), u // 6)
-                )
-            self.screen.blit(text, (cursor, y + (h - text.get_height()) // 2 - u // 10))
-            cursor += text.get_width() + gap
+                ui.hline(self.canvas, cursor, y + 11, widths[i], ui.YELLOW)
+            cursor += widths[i] + gap
 
     def countdown(self, frame: int, start_frames: int, fps: int) -> None:
-        """3, 2, 1 before ``start_frames`` and a fading "¡YA!" right after."""
-        if frame >= start_frames + round(0.8 * fps):
-            return
-        if frame < start_frames:
-            remaining = (start_frames - frame) / fps
-            text, phase = str(math.ceil(remaining)), remaining % 1.0
-            alpha = ease_out(1.0 - phase * 0.6) if phase else 1.0
-        else:
-            age = (frame - start_frames) / fps
-            text, alpha = "¡YA!", 1.0 - ease_in_out(age / 0.8)
-        self.big_number(text, min(alpha, 1.0))
+        """3, 2, 1 before ``start_frames`` and "¡YA!" right after, in big letters."""
+        bigtext.countdown(self.canvas, frame, start_frames, fps)
+
+
+def build_help(title: str | None, columns: list[list[tuple[str, str, bool]]]) -> pygame.Surface:
+    """A help plate: ``columns`` of (key, action, is_heading) rows, side by side, each with
+    the width its own rows need."""
+    key_ws = [max((ui.measure(k) for k, _, h in col if not h), default=0) + 6 for col in columns]
+    col_ws = [
+        key_w + max((ui.measure(v) for _, v, _ in col), default=0)
+        for key_w, col in zip(key_ws, columns, strict=True)
+    ]
+    gap = 8
+    lines = max(len(c) for c in columns)
+    width = min(sum(col_ws) + gap * (len(columns) - 1) + 16, CANVAS_W - 4)
+    top = 26 if title else 9
+    height = top + lines * 9 + 6
+    panel = pygame.Surface((width, height))
+    ui.plate(panel, (0, 0, width, height), ui.NAVY)
+    panel.fill(ui.rgb(ui.YELLOW), (1, 1, width - 2, 2))
+    if title:
+        ui.text(panel, title, 8, 8, ui.WHITE, 2)
+    x = 8
+    for column, key_w, col_w in zip(columns, key_ws, col_ws, strict=True):
+        y = top
+        for key, value, is_head in column:
+            if is_head:
+                ui.text(panel, key, x, y, ui.YELLOW)
+            elif key or value:
+                ui.text(panel, key, x, y, ui.WHITE)
+                ui.text(panel, value, x + key_w, y, ui.STONE_LIGHT)
+            y += 9
+        x += col_w + gap
+    return panel

@@ -11,16 +11,14 @@ from typing import TYPE_CHECKING
 
 import pygame
 
-from kartlab.render.topdown import ACCENT
-from kartlab.render.view import DIM, WHITE
 from kartlab.show.humanrace import DIFFICULTIES, difficulty_of
-from kartlab.show.menu import CONFIRM_KEYS, DARK, Flow, Screen
+from kartlab.show.menu import CONFIRM_KEYS, Flow, Screen, W, button, heading, row
 from kartlab.show.settings import RACE_LAPS, RACE_RIVALS
 
 if TYPE_CHECKING:
     from kartlab.show.hub import KartLabApp
 
-START_ROW = 4  # the "¡A correr!" button under the four values
+START_ROW = 4  # the "Empezar" button under the four values
 
 
 def race_choices(settings) -> dict:
@@ -35,7 +33,7 @@ def race_choices(settings) -> dict:
 
 class RaceOptionsScreen(Screen):
     dim = 90
-    hint = "↑ ↓ elegir · ← → cambiar · Intro empezar · Esc volver"
+    hint = "←→ cambiar, Intro empezar, Esc volver"
 
     def __init__(self, hub: KartLabApp, flow: Flow) -> None:
         super().__init__(hub)
@@ -64,8 +62,8 @@ class RaceOptionsScreen(Screen):
             ("Dificultad", difficulty_of(s.race_difficulty).label, cycle_difficulty),
             ("Rivales", str(s.race_rivals), cycle_rivals),
             ("Vueltas", str(s.race_laps), cycle_laps),
-            ("Choques", "Sí, suaves" if s.race_collisions else "No", toggle_collisions),
-            ("¡A correr!", "", lambda d: None),
+            ("Colisiones", "Sí" if s.race_collisions else "No", toggle_collisions),
+            ("Empezar", "", lambda d: None),
         ]
 
     def change(self, delta: int) -> None:
@@ -78,18 +76,12 @@ class RaceOptionsScreen(Screen):
         self.hub.advance(race_choices(self.hub.settings))
 
     def layout(self) -> None:
-        ui = self.hub.ui
-        w, h = ui.size
-        u = ui.unit
-        width = min(round(w * 0.62), u * 40)
-        self.row_h = round(u * 2.3)
-        x, y = (w - width) // 2, round(h * 0.26)
+        width = 260
+        x = (W - width) // 2
         self.rects = [
-            pygame.Rect(x, y + i * self.row_h + (u if i == START_ROW else 0), width, self.row_h)
+            pygame.Rect(x, 34 + i * 16 + (6 if i == START_ROW else 0), width, 14)
             for i in range(START_ROW + 1)
         ]
-        for rect in self.rects:
-            rect.height -= u // 4
 
     def on_key(self, key: int) -> None:
         if key == pygame.K_ESCAPE:
@@ -130,40 +122,13 @@ class RaceOptionsScreen(Screen):
     def on_wheel(self, dy: int) -> None:
         self.change(1 if dy > 0 else -1)
 
-    def draw(self, screen: pygame.Surface) -> None:
-        ui = self.hub.ui
-        u = ui.unit
-        ui.heading_text(screen, "CARRERA CONTRA LA IA", round(ui.size[1] * 0.08), self.age)
+    def draw(self, canvas: pygame.Surface) -> None:
+        heading(canvas, "CARRERA CONTRA LA IA", self.age)
         for i, (label, value, _) in enumerate(self.rows()):
             rect = self.rects[i]
             chosen = i == self.selected
-            if chosen:
-                pygame.draw.rect(screen, ACCENT, rect)
-                pygame.draw.rect(screen, (255, 255, 255), (rect.x, rect.y, rect.w, max(u // 8, 2)))
-            else:
-                screen.blit(ui.panel(rect.w, rect.h, 175), rect.topleft)
-            name = ui.name.get(label, DARK if chosen else WHITE)
             if i == START_ROW:
-                screen.blit(
-                    name,
-                    (rect.centerx - name.get_width() // 2, rect.centery - name.get_height() // 2),
-                )
-                continue
-            screen.blit(name, (rect.x + u, rect.centery - name.get_height() // 2))
-            text = ui.name.get(f"←  {value}  →" if chosen else value, DARK if chosen else ACCENT)
-            screen.blit(
-                text, (rect.right - text.get_width() - u, rect.centery - text.get_height() // 2)
-            )
-        run = self.hub.opponent_run()
-        rival = run.root.name if run is not None else "(sin IA)"
-        s = self.hub.settings
-        notes = [
-            f"Rival: {rival}",
-            f"{s.race_laps} vueltas con cuenta atrás. La IA no ve karts: choques suaves.",
-        ]
-        y = self.rects[-1].bottom + u
-        for note in notes:
-            text = ui.small.get(note, DIM)
-            screen.blit(text, ((ui.size[0] - text.get_width()) // 2, y))
-            y += text.get_height()
-        self.draw_hint(screen)
+                button(canvas, rect, label.upper(), chosen=chosen)
+            else:
+                row(canvas, rect, chosen, label, value, arrows=True)
+        self.draw_hint(canvas)

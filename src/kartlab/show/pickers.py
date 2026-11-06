@@ -1,10 +1,9 @@
-"""The two pick-a-thing screens that come before a game: "ELIGE TU KART" and "ELIGE CIRCUITO".
+"""The two pick-a-thing screens that come before a game: "ELIGE KART" and "ELIGE CIRCUITO".
 
 Both are steps of an ``Entry`` (see ``menu.py``): the first stores the kart colour (an index
 of ``KART_RAMPS``), the second the circuit (``harbor``, ``file:tracks/x.json``, ``random``,
 ``eval:7``...). The kart is drawn with the world's own ``SpriteBank`` (sprite stacking), at
-the size it is shown, and then enlarged by the same whole number as the rest of the pixel
-art; the circuit cards draw the centerline in small.
+the size it is shown on the 320x180 canvas; the circuit cards draw the centerline in small.
 """
 
 from __future__ import annotations
@@ -18,11 +17,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pygame
 
+from kartlab.render import pixelui as ui
+from kartlab.render.palette import KART_RAMPS
 from kartlab.render.sprites import ELEVATIONS, SCALE_STEPS, bucket_scale, scale_bucket
-from kartlab.render.topdown import ACCENT
-from kartlab.render.view import DIM, WHITE
-from kartlab.show.cli import KART_COLOR_NAMES, kart_color_rgb
-from kartlab.show.menu import CONFIRM_KEYS, DARK, WARN, Flow, Screen
+from kartlab.show.cli import KART_COLOR_NAMES
+from kartlab.show.menu import CONFIRM_KEYS, Flow, Screen, W, button, heading
 from kartlab.sim.showcase import SHOWCASE
 from kartlab.sim.track import Track
 from kartlab.sim.trackfile import TrackFileError, load_spec, load_track_file
@@ -34,6 +33,8 @@ if TYPE_CHECKING:
 PREVIEW_ELEVATION = ELEVATIONS[2]  # 35 degrees: the kart seen from above and behind
 RANDOM_CACHE = 16  # random circuits kept (each "R" makes a new one)
 SPIN_SECONDS = 7.0  # one turn of the kart on its turntable
+SWATCH = 14  # side of a colour swatch (px)
+SWATCH_GAP = 6
 
 
 # -- ELIGE TU KART ----------------------------------------------------------------------------
@@ -42,37 +43,31 @@ SPIN_SECONDS = 7.0  # one turn of the kart on its turntable
 class KartScreen(Screen):
     dim = 110
     hide_backdrop_kart = True  # the autopilot's kart would get in the way of the big one
-    hint = "← → o clic: elegir color · Intro, segundo clic o Aceptar: confirmar · Esc volver"
+    hint = "←→ elegir, Intro aceptar, Esc volver"
 
     def __init__(self, hub: KartLabApp, flow: Flow) -> None:
         super().__init__(hub)
         self.flow = flow
         self.selected = hub.settings.kart_ramp
-        self._scaled: dict[int, tuple[pygame.Surface, pygame.Surface]] = {}
         self.swatches: list[pygame.Rect] = []
 
     def layout(self) -> None:
-        ui = self.hub.ui
-        w, h = ui.size
-        u = ui.unit
-        self._scaled.clear()
-        self.k = ui.scale
         # Pixels per voxel so the kart is about 40 % of the height, never past the finest size.
-        wanted = (h * 0.40) / (self.k * 30.6)
+        wanted = (ui.CANVAS_SIZE[1] * 0.40) / 30.6
         self.ppv = bucket_scale(min(scale_bucket(wanted), SCALE_STEPS - 1))
-        side = round(u * 2.6)
-        gap = round(u * 0.7)
-        total = 8 * side + 7 * gap
-        x = (w - total) // 2
-        y = round(h * 0.77)
-        self.swatches = [pygame.Rect(x + i * (side + gap), y, side, side) for i in range(8)]
-        self.accept = pygame.Rect(0, 0, round(u * 9), round(u * 2.3))
-        self.accept.midtop = (w // 2, y + side + round(u * 0.9))
-        self.ground = (w // 2, round(h * 0.53))
-        self.arrow_left = pygame.Rect(0, 0, round(u * 4), round(u * 6))
-        self.arrow_left.center = (round(w * 0.24), self.ground[1] - round(h * 0.08))
+        total = 8 * SWATCH + 7 * SWATCH_GAP
+        x = (W - total) // 2
+        y = 133
+        self.swatches = [
+            pygame.Rect(x + i * (SWATCH + SWATCH_GAP), y, SWATCH, SWATCH) for i in range(8)
+        ]
+        self.accept = pygame.Rect(0, 0, 56, 13)
+        self.accept.midtop = (W // 2, y + SWATCH + 6)
+        self.ground = (W // 2, 92)
+        self.arrow_left = pygame.Rect(0, 0, 14, 22)
+        self.arrow_left.center = (W // 4 - 4, self.ground[1] - 14)
         self.arrow_right = self.arrow_left.copy()
-        self.arrow_right.centerx = w - self.arrow_left.centerx
+        self.arrow_right.centerx = W - self.arrow_left.centerx
 
     # -- input ---------------------------------------------------------------------------
 
@@ -107,7 +102,7 @@ class KartScreen(Screen):
             self.confirm()
         else:
             for i, rect in enumerate(self.swatches):
-                if rect.collidepoint(pos):
+                if rect.inflate(SWATCH_GAP, SWATCH_GAP).collidepoint(pos):
                     if i == self.selected:
                         self.confirm()
                     else:
@@ -119,70 +114,58 @@ class KartScreen(Screen):
 
     # -- drawing -------------------------------------------------------------------------
 
-    def _kart_surface(self, angle: float) -> tuple[pygame.Surface, tuple[float, float]]:
-        bank = self.hub.sprites
-        surface, anchor = bank.kart(self.selected, angle, PREVIEW_ELEVATION, self.ppv)
-        cached = self._scaled.get(id(surface))
-        if cached is None:
-            big = pygame.transform.scale(
-                surface, (surface.get_width() * self.k, surface.get_height() * self.k)
-            )
-            cached = self._scaled[id(surface)] = (surface, big)  # keeps ``surface`` alive
-        return cached[1], (anchor[0] * self.k, anchor[1] * self.k)
-
-    def draw(self, screen: pygame.Surface) -> None:
+    def draw(self, canvas: pygame.Surface) -> None:
         hub = self.hub
-        ui = hub.ui
-        w, h = ui.size
-        u = ui.unit
-        ui.heading_text(screen, "ELIGE TU KART", round(h * 0.06), self.age)
+        heading(canvas, "ELIGE KART", self.age)
 
-        # Turntable: a dark ellipse with an accent rim, and the kart spinning on it.
+        # Turntable: a dark ellipse with a rim in the kart's colour, and the kart spinning on it.
         cx, ground_y = self.ground
-        plate_w = round(w * 0.30)
-        plate = pygame.Rect(0, 0, plate_w, round(plate_w * 0.30))
+        ink = KART_RAMPS[self.selected][1]
+        plate = pygame.Rect(0, 0, 96, 28)
         plate.center = (cx, ground_y)
-        colour = kart_color_rgb(self.selected)
-        pygame.draw.ellipse(screen, (10, 10, 18), plate.move(0, u // 2))
-        pygame.draw.ellipse(screen, (28, 30, 44), plate)
-        pygame.draw.ellipse(screen, colour, plate, max(u // 4, 2))
+        pygame.draw.ellipse(canvas, ui.rgb(ui.NIGHT), plate.move(0, 3))
+        pygame.draw.ellipse(canvas, ui.rgb(ui.SLATE), plate)
+        pygame.draw.ellipse(canvas, ui.rgb(ink), plate, 2)
 
         hub.sprites.begin_frame()
         angle = hub.t * math.tau / SPIN_SECONDS
-        sprite, (ax, ay) = self._kart_surface(angle)
-        bob = round(math.sin(hub.t * 2.4) * u * 0.15)
-        screen.blit(sprite, (cx - ax, ground_y - ay + bob))
+        sprite, (ax, ay) = hub.sprites.kart(self.selected, angle, PREVIEW_ELEVATION, self.ppv)
+        bob = round(math.sin(hub.t * 2.4) * 0.6)
+        canvas.blit(sprite, (round(cx - ax), round(ground_y - ay) + bob))
 
         name = KART_COLOR_NAMES[self.selected].upper()
-        label = ui.heading.get(name, colour)
-        shadow = ui.heading.get(name, (6, 8, 16))
-        ly = ground_y + plate.h // 2 + round(u * 1.2)
-        screen.blit(shadow, (cx - label.get_width() // 2 + 3, ly + 3))
-        screen.blit(label, (cx - label.get_width() // 2, ly))
+        ui.text(
+            canvas,
+            name,
+            cx,
+            ground_y + 20,
+            ink,
+            2,
+            outline=ui.NIGHT,
+            shadow=ui.NIGHT,
+            align="center",
+        )
 
         for rect, direction in ((self.arrow_left, -1), (self.arrow_right, 1)):
-            half = rect.h // 5
-            tip = rect.centerx + direction * half // 2
-            back = rect.centerx - direction * half // 2
-            top, bottom = rect.centery - half, rect.centery + half
-            outline = [(tip, rect.centery), (back, top), (back, bottom)]
-            pygame.draw.polygon(screen, ACCENT, outline)
-            pygame.draw.polygon(screen, (255, 255, 255), outline, max(u // 6, 2))
+            tip = rect.centerx + direction * rect.w // 2
+            back = rect.centerx - direction * rect.w // 2
+            outline = [(tip, rect.centery), (back, rect.y), (back, rect.bottom - 1)]
+            pygame.draw.polygon(canvas, ui.rgb(ui.YELLOW), outline)
+            pygame.draw.polygon(canvas, ui.rgb(ui.NIGHT), outline, 1)
 
         for i, rect in enumerate(self.swatches):
-            chosen = i == self.selected
-            if chosen:
-                pygame.draw.rect(screen, ACCENT, rect.inflate(u, u))
-            pygame.draw.rect(screen, (6, 8, 16), rect.inflate(u // 3, u // 3))
-            pygame.draw.rect(screen, kart_color_rgb(i), rect)
-            pygame.draw.rect(screen, (255, 255, 255), (rect.x, rect.y, rect.w, max(u // 8, 2)))
-        pygame.draw.rect(screen, ACCENT, self.accept)
-        pygame.draw.rect(
-            screen, (255, 255, 255), (*self.accept.topleft, self.accept.w, max(u // 8, 2))
+            if i == self.selected:  # the chosen one is framed in yellow and marked with a dot
+                ui.plate(canvas, rect.inflate(6, 6), ui.YELLOW)
+            ui.plate(canvas, rect, KART_RAMPS[i][1])
+        ui.icon(
+            canvas,
+            "dot",
+            self.swatches[self.selected].centerx - 2,
+            self.swatches[self.selected].centery - 2,
+            ui.NIGHT,
         )
-        text = ui.name.get("Aceptar", DARK)
-        screen.blit(text, text.get_rect(center=self.accept.center))
-        self.draw_hint(screen)
+        button(canvas, self.accept, "ACEPTAR", chosen=True)
+        self.draw_hint(canvas)
 
 
 # -- ELIGE CIRCUITO ---------------------------------------------------------------------------
@@ -302,6 +285,12 @@ class TrackScreen(Screen):
     """Cards with the name, the length and a small drawing of the circuit."""
 
     dim = 60
+    COLS = 4
+    CARD_W = 70
+    CARD_H = 50
+    GAP = 6
+    TOP = 34
+    THUMB = (62, 18)
 
     def __init__(self, hub: KartLabApp, flow: Flow, for_editor: bool = False) -> None:
         super().__init__(hub)
@@ -316,15 +305,15 @@ class TrackScreen(Screen):
 
     @property
     def hint(self) -> str:  # type: ignore[override]
-        base = "← → ↑ ↓ elegir · Intro o clic confirmar · Esc volver"
-        if self.for_editor:
-            return base
-        current = self.options[self.selected].key if self.options else ""
-        if current == "random":
-            return base + " · R otro aleatorio"
-        if current.startswith("eval:"):
-            return base + " · Re Pág / Av Pág otra evaluación"
-        return base
+        parts = ["↑↓←→ elegir", "Intro aceptar"]
+        if not self.for_editor:
+            current = self.options[self.selected].key if self.options else ""
+            if current == "random":
+                parts.append("R otro circuito")
+            elif current.startswith("eval:"):
+                parts.append("Re/Av Pág cambian")
+        parts.append("Esc volver")
+        return ", ".join(parts)
 
     def enter(self) -> None:
         self.build_options()
@@ -360,24 +349,13 @@ class TrackScreen(Screen):
     # -- layout --------------------------------------------------------------------------
 
     def layout(self) -> None:
-        ui = self.hub.ui
-        w, h = ui.size
-        u = ui.unit
-        usable = round(w * 0.86)
-        gap = round(u * 0.8)
-        cols = max(1, min(4, (usable + gap) // (u * 13 + gap)))
-        card_w = min((usable - gap * (cols - 1)) // cols, u * 19)
-        self.cols = cols
-        self.card_w = card_w
-        self.card_h = round(card_w * 0.92)
-        top = round(h * 0.19)
-        bottom = h - round(u * 3.2)
-        self.rows_visible = max(1, (bottom - top + gap) // (self.card_h + gap))
-        self.gap = gap
-        self.top = top
-        total_w = cols * card_w + (cols - 1) * gap
-        self.left = (w - total_w) // 2
-        self._thumbs.clear()
+        self.cols = self.COLS
+        self.card_w, self.card_h, self.gap, self.top = self.CARD_W, self.CARD_H, self.GAP, self.TOP
+        # The cards leave a strip at the bottom for the details of the chosen circuit.
+        bottom = 148
+        self.rows_visible = max(1, (bottom - self.top + self.gap) // (self.card_h + self.gap))
+        total_w = self.cols * self.card_w + (self.cols - 1) * self.gap
+        self.left = (W - total_w) // 2
         self._place()
 
     def _place(self) -> None:
@@ -490,108 +468,108 @@ class TrackScreen(Screen):
 
     # -- drawing -------------------------------------------------------------------------
 
-    def thumbnail(self, option: TrackOption, size: tuple[int, int]) -> pygame.Surface | None:
+    def thumbnail(self, option: TrackOption) -> pygame.Surface | None:
+        """The centerline in small: dark edge, light road, a chequered start. Colour-keyed."""
         track = option.track
         if track is None:
             return None
-        key = (option.key, getattr(option, "seed", None), size)
+        size = self.THUMB
+        key = (option.key, option.seed)
         thumb = self._thumbs.get(key)
         if thumb is not None:
             return thumb
-        thumb = pygame.Surface(size, pygame.SRCALPHA)
+        thumb = pygame.Surface(size)
+        thumb.fill(ui._KEY)
+        thumb.set_colorkey(ui._KEY)
         pts = track.points
         lo, hi = pts.min(axis=0), pts.max(axis=0)
         span = np.maximum(hi - lo, 1e-6)
-        scale = min(size[0] / span[0], size[1] / span[1]) * 0.86
+        scale = min((size[0] - 6) / span[0], (size[1] - 6) / span[1])
         centre = (lo + hi) / 2
         xs = size[0] / 2 + (pts[:, 0] - centre[0]) * scale
         ys = size[1] / 2 - (pts[:, 1] - centre[1]) * scale  # y points up in the world
-        line = [(float(x), float(y)) for x, y in zip(xs, ys, strict=True)]
-        width = max(round(track.width * scale), 2)
-        edge = (22, 24, 34)
-        road = (196, 200, 212)
-        pygame.draw.lines(thumb, edge, True, line, width + 4)
-        pygame.draw.lines(thumb, road, True, line, width)
-        for x, y in line[::6]:  # round the joints between the segments
-            pygame.draw.circle(thumb, road, (round(x), round(y)), max(width // 2, 1))
+        line = [(round(float(x)), round(float(y))) for x, y in zip(xs, ys, strict=True)]
+        night, road = ui.rgb(ui.NIGHT), ui.rgb(ui.TEXT)
+        pygame.draw.lines(thumb, night, True, line, 4)
+        for x, y in line[::4]:  # round the joints between the segments
+            pygame.draw.circle(thumb, night, (x, y), 2)
+        pygame.draw.lines(thumb, road, True, line, 2)
+        for x, y in line[::4]:
+            pygame.draw.circle(thumb, road, (x, y), 1)
         sx, sy = line[0]
-        cell = max(width // 2, 2)
         for dx in range(2):
             for dy in range(2):
-                tone = (250, 250, 250) if (dx + dy) % 2 == 0 else (20, 20, 28)
-                thumb.fill(
-                    tone, (round(sx) - cell + dx * cell, round(sy) - cell + dy * cell, cell, cell)
-                )
+                ink = ui.rgb(ui.WHITE) if (dx + dy) % 2 == 0 else night
+                thumb.fill(ink, (sx - 2 + dx * 2, sy - 2 + dy * 2, 2, 2))
         self._thumbs[key] = thumb
         return thumb
 
-    def draw(self, screen: pygame.Surface) -> None:
-        hub = self.hub
-        ui = hub.ui
-        w, h = ui.size
-        u = ui.unit
-        title = "ABRE UN CIRCUITO" if self.for_editor else "ELIGE CIRCUITO"
-        ui.heading_text(screen, title, round(h * 0.06), self.age)
+    def draw(self, canvas: pygame.Surface) -> None:
+        title = "EDITAR CIRCUITO" if self.for_editor else "ELIGE CIRCUITO"
+        heading(canvas, title, self.age)
         self.eval_arrows = None
         for i, rect in self.rects.items():
             option = self.options[i]
             chosen = i == self.selected
-            screen.blit(ui.panel(rect.w, rect.h, 205), rect.topleft)
+            ui.plate(canvas, rect, ui.SLATE, ui.YELLOW if chosen else ui.NIGHT)
             if chosen:
-                pygame.draw.rect(screen, ACCENT, rect, max(u // 5, 2))
-                pygame.draw.rect(screen, (255, 255, 255), (rect.x, rect.y, rect.w, max(u // 8, 2)))
-            pad = u // 2
-            thumb_size = (rect.w - 2 * pad, rect.h - round(u * 3.4) - pad)
-            thumb = self.thumbnail(option, thumb_size)
+                ui.box(canvas, rect.inflate(-2, -2), ui.YELLOW)
+            area = pygame.Rect(rect.x + 4, rect.y + 3, *self.THUMB)
+            thumb = self.thumbnail(option)
             if thumb is not None:
-                screen.blit(thumb, (rect.x + pad, rect.y + pad))
+                canvas.blit(thumb, area.topleft)
             elif option.key == "new":
-                plus = ui.big.get("+", ACCENT)
-                screen.blit(
-                    plus,
-                    (
-                        rect.centerx - plus.get_width() // 2,
-                        rect.y + pad + thumb_size[1] // 2 - plus.get_height() // 2,
-                    ),
-                )
+                ui.text(canvas, "+", area.centerx, area.centery - 6, ui.YELLOW, 2, align="center")
             else:
-                bad = ui.small.get("No válido", WARN)
-                screen.blit(
-                    bad, (rect.centerx - bad.get_width() // 2, rect.y + pad + thumb_size[1] // 2)
-                )
-            name = ui.name.get(option.title, ACCENT if chosen else WHITE)
-            screen.blit(name, (rect.x + pad, rect.bottom - round(u * 3.1)))
+                ui.icon(canvas, "cross", area.centerx - 2, area.centery - 2, ui.RED)
+            lines = ui.wrap(option.title, rect.w - 8)
+            if len(lines) > 2:  # two lines of the name; the strip below has the whole of it
+                lines = [lines[0], ui.ellipsize(" ".join(lines[1:]), rect.w - 8)]
+            for k, line in enumerate(lines):
+                ink = ui.YELLOW if chosen else ui.TEXT
+                ui.text(canvas, line, rect.x + 4, rect.y + 23 + 9 * k, ink)
             if option.error and not self.for_editor:
-                sub = ui.small.get("Fichero no válido", WARN)
+                ui.text(canvas, "NO VÁLIDO", rect.x + 4, rect.bottom - 9, ui.RED)
             elif option.track is not None:
-                sub = ui.small.get(f"{option.track.length:,.0f} m".replace(",", "."), DIM)
+                length = ui.fmt_count(round(option.track.length))
+                ui.text(canvas, f"{length} M", rect.x + 4, rect.bottom - 9, ui.STONE_LIGHT)
             else:
-                sub = ui.small.get("Empieza de cero", DIM)
-            screen.blit(sub, (rect.x + pad, rect.bottom - round(u * 1.6)))
+                ui.text(canvas, "EN BLANCO", rect.x + 4, rect.bottom - 9, ui.STONE_LIGHT)
             if option.key.startswith("eval:") and chosen:
-                self.eval_arrows = self._draw_eval_arrows(screen, rect)
+                self.eval_arrows = self._draw_eval_arrows(canvas, rect)
+        self._draw_details(canvas)
         total_rows = (len(self.options) - 1) // self.cols + 1
         if total_rows > self.rows_visible:  # a thin scroll bar at the right of the cards
             track_h = self.rows_visible * (self.card_h + self.gap) - self.gap
-            bar_h = max(round(track_h * self.rows_visible / total_rows), u)
+            bar_h = max(round(track_h * self.rows_visible / total_rows), 6)
             bar_y = self.top + round(
                 (track_h - bar_h) * self.scroll / (total_rows - self.rows_visible)
             )
-            x = self.left + self.cols * (self.card_w + self.gap)
-            pygame.draw.rect(screen, (60, 64, 80), (x, self.top, max(u // 4, 3), track_h))
-            pygame.draw.rect(screen, ACCENT, (x, bar_y, max(u // 4, 3), bar_h))
-        self.draw_hint(screen)
+            x = self.left + self.cols * (self.card_w + self.gap) - 2
+            canvas.fill(ui.rgb(ui.SLATE), (x, self.top, 3, track_h))
+            canvas.fill(ui.rgb(ui.YELLOW), (x, bar_y, 3, bar_h))
+        self.draw_hint(canvas)
 
-    def _draw_eval_arrows(self, screen, rect) -> tuple[pygame.Rect, pygame.Rect]:
-        ui = self.hub.ui
-        u = ui.unit
-        size = round(u * 2)
-        left = pygame.Rect(rect.right - 2 * size - u // 2, rect.bottom - round(u * 3.2), size, size)
-        right = left.move(size, 0)
-        for box, glyph in ((left, "‹"), (right, "›")):
-            pygame.draw.rect(screen, ACCENT, box)
-            text = ui.name.get(glyph, DARK)
-            screen.blit(
-                text, (box.centerx - text.get_width() // 2, box.centery - text.get_height() // 2)
+    def _draw_details(self, canvas: pygame.Surface) -> None:
+        """The chosen circuit's full name and length, in a strip under the cards."""
+        if not self.options:
+            return
+        option = self.options[self.selected]
+        rect = pygame.Rect(self.left, 152, self.cols * (self.card_w + self.gap) - self.gap, 13)
+        ui.plate(canvas, rect, ui.NAVY)
+        ui.text(canvas, ui.ellipsize(option.title, rect.w - 140), rect.x + 5, rect.y + 3, ui.YELLOW)
+        if option.error and not self.for_editor:
+            ui.text(
+                canvas, "INTRO MUESTRA EL ERROR", rect.right - 5, rect.y + 3, ui.RED, align="right"
             )
+        elif option.track is not None:
+            length = ui.fmt_count(round(option.track.length))
+            ui.text(canvas, f"{length} M", rect.right - 5, rect.y + 3, ui.TEXT, align="right")
+
+    def _draw_eval_arrows(self, canvas, rect) -> tuple[pygame.Rect, pygame.Rect]:
+        left = pygame.Rect(rect.right - 20, rect.bottom - 24, 9, 9)
+        right = left.move(10, 0)
+        for box, name in ((left, "left"), (right, "right")):
+            ui.plate(canvas, box, ui.YELLOW)
+            ui.icon(canvas, name, box.x + 2, box.y + 2, ui.NIGHT)
         return left, right

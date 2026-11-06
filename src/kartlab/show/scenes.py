@@ -15,10 +15,11 @@ from typing import TYPE_CHECKING
 
 import pygame
 
+from kartlab.render import pixelui as ui
 from kartlab.render.palette import KART_RAMPS
 from kartlab.render.scene import KartVisual
-from kartlab.render.topdown import ACCENT, KART_COLOR, format_time
-from kartlab.render.view import DIM, WHITE, HudInfo
+from kartlab.render.topdown import KART_COLOR, format_time
+from kartlab.render.view import HudInfo
 from kartlab.show.drive import drift_pressed, keyboard_controls
 from kartlab.show.drivers import PolicyDriver, format_steps
 from kartlab.show.humanrace import (
@@ -309,42 +310,30 @@ class WatchScene(Scene):
         """Bottom strip with a tick per version, the chosen one marked and the cached ones
         lit: a map of where you are in the training."""
         app, ov = self.app, self.app.ov
-        screen, u = app.screen, ov.unit
+        canvas = ov.canvas
         steps = self.steps
         n = len(steps)
-        width = min(round(u * 30), round(app.game.world_rect.width * 0.42))
-        text = app.game.small.get(
-            f"{self.index + 1} / {n} · {version_name(steps[self.index])}", WHITE
-        )
-        first = app.game.small.get(short_label(steps[0]), DIM)
-        last = app.game.small.get(short_label(steps[-1]), DIM)
-        pad = u // 2
-        mark = u // 4  # how far the markers stick out above and below the ticks
-        bar_h = max(u // 2, 6)
-        height = pad + text.get_height() + mark + bar_h + mark + first.get_height() + pad // 2
-        x = app.game.world_rect.centerx - width // 2
-        y = app.game.world_rect.bottom - pad - height
-        screen.blit(ov.panel(width + 2 * pad, height), (x - pad, y))
-        screen.blit(text, (x + (width - text.get_width()) // 2, y + pad // 2))
-        bar_y = y + pad // 2 + text.get_height() + mark
-        self._bar = pygame.Rect(x, bar_y - mark, width, bar_h + 2 * mark)
+        width = 150
+        text = f"{self.index + 1} / {n}  {version_name(steps[self.index])}"
+        h = 34
+        x, y = (320 - width) // 2, 180 - 3 - h
+        ui.plate(canvas, ov.game.hud.reserve((x - 5, y, width + 10, h)), ui.SLATE)
+        ui.text(canvas, text, 160, y + 4, ui.WHITE, align="center")
+        bar_y, bar_h = y + 14, 8
+        self._bar = pygame.Rect(x, bar_y - 2, width, bar_h + 4)
         library = app.library
         span = max(n - 1, 1)
         for i in range(n):
             tx = x + round(i / span * (width - 2))
             lit = library.cached(steps[i]) is not None
-            colour = (150, 155, 175) if lit else (70, 72, 90)
-            pygame.draw.line(screen, colour, (tx, bar_y), (tx, bar_y + bar_h))
+            ui.vline(canvas, tx, bar_y, bar_h, ui.STONE_LIGHT if lit else ui.STONE)
         if self.shown is not None and self.shown in steps:  # the version at the wheel
             sx = x + round(steps.index(self.shown) / span * (width - 2))
-            pygame.draw.rect(screen, WHITE, (sx - 2, bar_y - mark, 5, bar_h + 2 * mark), 1)
+            ui.box(canvas, (sx - 2, bar_y - 2, 5, bar_h + 4), ui.WHITE)
         mx = x + round(self.index / span * (width - 2))  # the one chosen
-        pygame.draw.rect(screen, ACCENT, (mx - 1, bar_y - mark, 3, bar_h + 2 * mark))
-        label_y = bar_y + bar_h + mark
-        screen.blit(first, (x, label_y))
-        screen.blit(last, (x + width - last.get_width(), label_y))
-
-    # -- input -------------------------------------------------------------------------------
+        canvas.fill(ui.rgb(ui.YELLOW), (mx - 1, bar_y - 2, 3, bar_h + 4))
+        ui.text(canvas, short_label(steps[0]), x, y + 26, ui.STONE_LIGHT)
+        ui.text(canvas, short_label(steps[-1]), x + width, y + 26, ui.STONE_LIGHT, align="right")
 
     def on_key(self, key: int) -> bool:
         n = len(self.steps)
@@ -508,9 +497,10 @@ class RaceScene(Scene):
             extra=[
                 self.app.track.name,
                 f"{self.laps} vueltas",
-                f"Cámara en {version_name(followed.steps)}",
+                f"Sigues a {version_name(followed.steps)}",
             ],
             ramp=followed.ramp,
+            lap_panel=False,  # the standings, top left, say the laps
         )
         return visuals, self.focus, info
 
@@ -520,18 +510,17 @@ class RaceScene(Scene):
         app, ov = self.app, self.app.ov
         order = self._order()
         rows = [
-            (e.ramp, version_name(e.steps), f"vuelta {min(e.laps_done + 1, self.laps)}/{self.laps}")
+            (e.ramp, version_name(e.steps), f"{min(e.laps_done + 1, self.laps)}/{self.laps}")
             for e in order
         ]
         focus_row = order.index(self.entries[self.focus])
-        ov.standings(rows, (app.game.world_rect.x + ov.unit // 2, ov.unit * 7), focus_row)
+        ov.standings(rows, (3, 3), focus_row)
         ov.countdown(self.frame_no, round(COUNTDOWN_SECONDS * FPS), FPS)
         if self.end_frame is not None:
             age = (self.frame_no - self.end_frame) / FPS
             ov.card(
-                "Meta",
                 f"Ganador: {version_name(order[0].steps)}",
-                [f"{app.track.name} · {self.laps} vueltas"],
+                [f"{app.track.name}, {self.laps} vueltas"],
                 age=age,
                 life=FINISH_SECONDS,
             )
@@ -637,7 +626,7 @@ class ProgressionScene(Scene):
             self.end_frame = self.frame_no + round(SEGMENT_END_SECONDS * FPS)
         if self.end_frame is not None and self.frame_no >= self.end_frame:
             if last:
-                self.app.notify("Vuelta a empezar: de nuevo sin entrenar")
+                self.app.notify("Otra vez desde sin entrenar")
                 self.previous = 0
                 self.index = 0
                 self.rebuild()
@@ -660,6 +649,7 @@ class ProgressionScene(Scene):
             if self.steps == 0
             else f"Versión {version_name(self.steps)}",
             extra=[self.app.track.name, f"{self.index + 1} de {len(self.checkpoints)}"],
+            label_panel=False,  # the counter, the card and the timeline say all of it
         )
         return [visual_of(driver, 0)], 0, info
 
@@ -675,9 +665,8 @@ class ProgressionScene(Scene):
         ov.chart_panel(app.chart, app.metrics, steps)
         ov.timeline(self.names, self.index)
         ov.card(
-            "Versión",
-            version_name(steps),
-            [f"{app.track.name} · {app.run.root.name}"],
+            f"Versión {version_name(steps)}" if steps else "Sin entrenar",
+            [app.track.name],
             age=self.frame_no / FPS,
         )
         amount = 1.0 - ease_in_out(self.frame_no / (FADE_IN * FPS))
@@ -939,8 +928,8 @@ class HumanRaceScene(Scene):
             ramp=self.kart_ramp,
             extra=[
                 self.app.track.name,
-                f"{self.laps} vueltas · {self.difficulty.label}",
-                "Choques activados" if self.collisions else "Sin choques",
+                f"{self.laps} vueltas, {self.difficulty.label}",
+                f"Colisiones: {'Sí' if self.collisions else 'No'}",
             ],
             lap_panel=False,  # the race HUD shows the laps and times
             # The mode panel is only for the countdown (and while paused, or H is pressed).
@@ -951,22 +940,18 @@ class HumanRaceScene(Scene):
     def draw_overlays(self) -> None:
         if not self.started or self.hud is None:
             return
-        app, ov, hud = self.app, self.app.ov, self.hud
+        ov, hud = self.app.ov, self.hud
         t = self.race_time
         order = classify(self.entrants)
         rows = [
             (
                 e.ramp,
                 e.name,
-                "meta" if e.finished else f"vuelta {min(e.laps_done + 1, self.laps)}/{self.laps}",
+                "META" if e.finished else f"{min(e.laps_done + 1, self.laps)}/{self.laps}",
             )
             for e in order
         ]
-        ov.standings(
-            rows,
-            (app.game.world_rect.x + ov.unit // 2, app.game.world_rect.y + ov.unit // 2),
-            order.index(self.me),
-        )
+        ov.standings(rows, (3, 3), order.index(self.me))
         hud.position(self.place, len(self.entrants), t - self.place_since)
         hud.lap_counter(
             min(self.me.laps_done + 1, self.laps),
@@ -981,12 +966,12 @@ class HumanRaceScene(Scene):
             hud.banner(text, t - since, BANNER_SECONDS, look)
         if self.ended_at is not None:
             delay = RESULTS_DELAY if self.me.finished else RESULTS_DELAY_LOST
-            lines = [(text, (255, 214, 120) if human else WHITE) for text, human in self.final]
+            lines = [(text, ui.YELLOW if human else ui.TEXT) for text, human in self.final]
             hud.results(
                 "Resultados",
                 self.final_place,
                 lines,
-                "Intro: repetir  ·  Esc: salir",
+                "Intro repetir, Esc salir",
                 t - self.ended_at - delay,
             )
 

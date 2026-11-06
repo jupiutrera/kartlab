@@ -12,7 +12,6 @@ from collections.abc import Iterable, Sequence
 import numpy as np
 import pygame
 
-from kartlab.common.paths import FONTS_DIR
 from kartlab.render.palette import game_palette
 from kartlab.render.sparks import blink_ink, flame_spec, hash01, heat_ink, spark_spec
 from kartlab.sim.drift import DriftState
@@ -36,11 +35,6 @@ UNDER_ASPHALT = (60, 64, 74)  # the road that goes under the bridge, dimmed
 KART_COLOR = (255, 156, 44)
 KART_OUTLINE = (24, 24, 30)
 TRAIL_COLOR = (255, 214, 150)
-PANEL = (14, 16, 22, 200)
-TEXT = (236, 238, 242)
-TEXT_DIM = (150, 157, 170)
-ACCENT = (255, 186, 72)
-WARNING = (255, 118, 96)
 
 FOLLOW_VIEW_HEIGHT = 90.0  # metres visible vertically with the follow camera
 GRID_STEP = 10.0  # grass grid spacing, so speed is visible even on the grass (m)
@@ -48,14 +42,19 @@ KERB_CURVATURE = 1 / 45  # corners tighter than this radius get red and white ke
 MAX_MAP_PIXELS = 12_000_000  # cap for the pre-drawn map surface
 MIN_KART_PIXELS = 18.0  # karts are never drawn shorter than this
 
-FONT_REGULAR = FONTS_DIR / "ibm-plex-mono" / "IBMPlexMono-Regular.ttf"
-FONT_BOLD = FONTS_DIR / "ibm-plex-mono" / "IBMPlexMono-SemiBold.ttf"
+
+def snap_to_palette(surface: pygame.Surface) -> None:
+    """Replace every colour of ``surface`` with the nearest palette colour (in place)."""
+    palette = game_palette()
+    pixels = pygame.surfarray.pixels3d(surface)
+    pixels[...] = palette.rgb[palette.quantize(pixels)]
+    del pixels
 
 
 class TrackMap:
     """The track pre-drawn onto a surface at ``ppm`` pixels per metre."""
 
-    def __init__(self, track: Track, ppm: float, margin: float) -> None:
+    def __init__(self, track: Track, ppm: float, margin: float, pixel: bool = False) -> None:
         xmin, ymin, xmax, ymax = track.bounds
         span_x, span_y = xmax - xmin + 2 * margin, ymax - ymin + 2 * margin
         ppm = min(ppm, math.sqrt(MAX_MAP_PIXELS / (span_x * span_y)))
@@ -63,6 +62,8 @@ class TrackMap:
         self.origin = (xmin - margin, ymax + margin)  # world position of the top-left pixel
         self.surface = pygame.Surface((math.ceil(span_x * ppm), math.ceil(span_y * ppm)))
         self._draw(track)
+        if pixel:
+            snap_to_palette(self.surface)
         if pygame.display.get_surface() is not None:
             self.surface = self.surface.convert()
 
@@ -232,22 +233,44 @@ class TrackMap:
 
 
 class TopDownView:
-    """Draws the track, trails and karts with a follow or whole-track camera."""
+    """Draws the track, trails and karts with a follow or whole-track camera.
 
-    def __init__(self, track: Track, size: tuple[int, int]) -> None:
+    With ``pixel`` it is made for the 320x180 canvas: the map is snapped to the palette once,
+    trails are plain 1 px lines and the karts are small (``min_kart_pixels``)."""
+
+    def __init__(
+        self,
+        track: Track,
+        size: tuple[int, int],
+        pixel: bool = False,
+        min_kart_pixels: float | None = None,
+    ) -> None:
         self.track = track
+        self.pixel = pixel
+        self.min_kart_pixels = (
+            min_kart_pixels if min_kart_pixels is not None else (8.0 if pixel else MIN_KART_PIXELS)
+        )
+        palette = game_palette()  # in pixel mode every colour is a palette colour
+        snap = (
+            (lambda c: tuple(int(v) for v in palette.rgb[palette.quantize(np.array(c))]))
+            if pixel
+            else tuple
+        )
+        self._grass, self._outline, self._trail = snap(GRASS), snap(KART_OUTLINE), snap(TRAIL_COLOR)
         self.resize(size)
 
     def resize(self, size: tuple[int, int]) -> None:
         self.size = size
         width, height = size
-        self.follow_map = TrackMap(self.track, height / FOLLOW_VIEW_HEIGHT, WORLD_MARGIN)
+        self.follow_map = TrackMap(
+            self.track, height / FOLLOW_VIEW_HEIGHT, WORLD_MARGIN, self.pixel
+        )
         xmin, ymin, xmax, ymax = self.track.bounds
         margin = 10.0
         fit_ppm = min(
             width * 0.92 / (xmax - xmin + 2 * margin), height * 0.84 / (ymax - ymin + 2 * margin)
         )
-        self.fit_map = TrackMap(self.track, fit_ppm, margin)
+        self.fit_map = TrackMap(self.track, fit_ppm, margin, self.pixel)
 
     def draw(
         self,
@@ -265,13 +288,16 @@ class TopDownView:
         else:
             map_w, map_h = tmap.surface.get_size()
             ox, oy = (width - map_w) / 2, (height - map_h) / 2
-        target.fill(GRASS)
+        target.fill(self._grass)
         target.blit(tmap.surface, (round(ox), round(oy)))
         self._last = (tmap, ox, oy)
 
         if len(trail) > 1:
             pts = [(px + ox, py + oy) for px, py in (tmap.to_px(x, y) for x, y in trail)]
-            pygame.draw.aalines(target, TRAIL_COLOR, False, pts)
+            if self.pixel:
+                pygame.draw.lines(target, self._trail, False, pts)
+            else:
+                pygame.draw.aalines(target, TRAIL_COLOR, False, pts)
         levels = self.track.levels
         for kart, color, *extra in karts:
             # Optional: height over the ground (m), sweep state, height of the road (a bridge).
@@ -289,13 +315,14 @@ class TopDownView:
         px, py = tmap.to_px(x, y)
         return px + ox, py + oy
 
-    @staticmethod
-    def _draw_sparks(target, tmap: TrackMap, kart: KartState, drift: DriftState, offset) -> None:
+    def _draw_sparks(
+        self, target, tmap: TrackMap, kart: KartState, drift: DriftState, offset
+    ) -> None:
         """Sweep sparks behind the rear wheels, tinted by the charge like in the 3D view, and
         the exhaust flame after the release. Stateless: the phase of every spark comes from the
         time swept, so nothing is stored between frames."""
         rgb = game_palette().rgb
-        mpp = max(1.8 * tmap.ppm, MIN_KART_PIXELS) / 1.8  # pixels per metre at this zoom
+        mpp = max(1.8 * tmap.ppm, self.min_kart_pixels) / 1.8  # pixels per metre at this zoom
         px, py = tmap.to_px(kart.x, kart.y)
         px, py = px + offset[0], py + offset[1]
         c, s = math.cos(kart.heading), -math.sin(kart.heading)  # screen y grows downwards
@@ -348,9 +375,8 @@ class TopDownView:
                     max(flame.size * mpp * 1.6, 1.0),
                 )
 
-    @staticmethod
-    def _draw_kart(target, tmap: TrackMap, kart: KartState, color, offset) -> None:
-        length = max(1.8 * tmap.ppm, MIN_KART_PIXELS)
+    def _draw_kart(self, target, tmap: TrackMap, kart: KartState, color, offset) -> None:
+        length = max(1.8 * tmap.ppm, self.min_kart_pixels)
         width = length * 0.62
         px, py = tmap.to_px(kart.x, kart.y)
         px, py = px + offset[0], py + offset[1]
@@ -362,84 +388,12 @@ class TopDownView:
             for u, v in shape
         ]
         pygame.draw.polygon(target, color, pts)
-        pygame.draw.polygon(target, KART_OUTLINE, pts, 2)
-
-
-class TextCache:
-    """Renders each distinct text once; the HUD only re-renders strings that change."""
-
-    def __init__(self, font: pygame.font.Font, max_items: int = 256) -> None:
-        self.font = font
-        self.max_items = max_items
-        self._cache: dict[tuple[str, tuple[int, ...]], pygame.Surface] = {}
-
-    def get(self, text: str, color: tuple[int, ...]) -> pygame.Surface:
-        key = (text, color)
-        surface = self._cache.get(key)
-        if surface is None:
-            if len(self._cache) >= self.max_items:
-                self._cache.clear()
-            surface = self.font.render(text, True, color)
-            self._cache[key] = surface
-        return surface
-
-
-def load_fonts(height: int) -> tuple[pygame.font.Font, pygame.font.Font]:
-    """Regular and bold HUD fonts sized for a window ``height`` pixels tall."""
-    pygame.font.init()
-    size = max(12, height // 38)
-    return pygame.font.Font(FONT_REGULAR, size), pygame.font.Font(FONT_BOLD, round(size * 1.15))
+        pygame.draw.polygon(target, self._outline, pts, 1 if self.pixel else 2)
 
 
 def format_time(seconds: float | None) -> str:
+    """A lap time as ``1:23,45`` (Spanish decimal comma); ``-:--,--`` when there is none."""
     if seconds is None:
-        return "-:--.--"
+        return "-:--,--"
     minutes, rest = divmod(seconds, 60.0)
-    return f"{int(minutes)}:{rest:05.2f}"
-
-
-class DebugHud:
-    """Text panels for the debug view: lap data, speed, mode, fps and key help."""
-
-    def __init__(self, size: tuple[int, int]) -> None:
-        self.resize(size)
-
-    def resize(self, size: tuple[int, int]) -> None:
-        self.size = size
-        regular, bold = load_fonts(size[1])
-        self.text = TextCache(regular)
-        self.title = TextCache(bold)
-        self.line_height = regular.get_linesize()
-        self.pad = max(6, size[1] // 90)
-        self._panels: dict[tuple[int, int], pygame.Surface] = {}
-
-    def _panel(self, width: int, height: int) -> pygame.Surface:
-        key = (width, height)
-        panel = self._panels.get(key)
-        if panel is None:
-            panel = pygame.Surface(key, pygame.SRCALPHA)
-            panel.fill(PANEL)
-            self._panels[key] = panel
-        return panel
-
-    def draw_block(
-        self,
-        target: pygame.Surface,
-        lines: Sequence[tuple[str, tuple[int, int, int]]],
-        anchor: str,
-        title: str | None = None,
-    ) -> None:
-        """Draw text lines on a translucent panel anchored to a screen corner."""
-        surfaces = [self.title.get(title, ACCENT)] if title else []
-        surfaces += [self.text.get(text, color) for text, color in lines]
-        width = max(s.get_width() for s in surfaces) + 2 * self.pad
-        width = (width + 31) // 32 * 32  # stable panel width while digits change
-        height = sum(s.get_height() for s in surfaces) + 2 * self.pad
-        screen_w, screen_h = self.size
-        x = self.pad if "left" in anchor else screen_w - width - self.pad
-        y = self.pad if "top" in anchor else screen_h - height - self.pad
-        target.blit(self._panel(width, height), (x, y))
-        cy = y + self.pad
-        for surface in surfaces:
-            target.blit(surface, (x + self.pad, cy))
-            cy += surface.get_height()
+    return f"{int(minutes)}:{rest:05.2f}".replace(".", ",")

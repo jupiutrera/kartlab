@@ -7,6 +7,8 @@ import numpy as np
 import pygame
 import pytest
 
+from kartlab.render import bigtext, pixelfont
+from kartlab.render.bigtext import POP_SECONDS, place_look, pop_extra
 from kartlab.render.palette import KART_RAMPS
 from kartlab.show.drivers import PolicyDriver, Version
 from kartlab.show.humanrace import (
@@ -17,15 +19,7 @@ from kartlab.show.humanrace import (
     place_of,
     result_lines,
 )
-from kartlab.show.racehud import (
-    GLYPHS,
-    POP_SECONDS,
-    PixelText,
-    RaceHud,
-    place_look,
-    pop_extra,
-    text_mask,
-)
+from kartlab.show.racehud import RaceHud
 from kartlab.show.scenes import HumanRaceScene, grid_slot
 from kartlab.show.viewer import MODE_ORDER, MODES, ViewerApp, main
 from kartlab.sim.kart import KartParams, cruise_speed
@@ -69,7 +63,7 @@ def test_classification_puts_finishers_first_then_distance():
     assert [e.name for e in order] == ["b", "a", "c", "d"]
     assert place_of([near, far, slow, fast], near) == 4
     rows = result_lines([near, far, slow, fast])
-    assert rows[0][0].startswith("1º b") and "a 500 m" in rows[2][0]
+    assert rows[0][0].startswith("1º  b") and "faltan 500 m" in rows[2][0]
 
 
 def test_difficulty_levels_are_ordered_and_the_champion_is_unlimited():
@@ -84,25 +78,27 @@ def test_difficulty_levels_are_ordered_and_the_champion_is_unlimited():
 
 
 def test_every_hud_text_has_glyphs_and_a_solid_mask():
-    for text in ("1º", "VUELTA 3/3", "ÚLTIMA VUELTA", "¡META!", "¡YA!", "3", "2", "1", "/4"):
-        mask = text_mask(text)
-        assert mask.dtype == bool and mask.any()
-    for char in "0123456789":
-        assert char in GLYPHS
-    with pytest.raises(KeyError):
-        text_mask("ñ")
+    for text in ("1º", "VUELTA 3/3", "ÚLTIMA VUELTA", "¡META!", "¡YA!", "3", "2", "1", "/4", "ñ"):
+        assert all(pixelfont.has_glyph(c) for c in text)
+        assert bigtext._grid(text, True).any()
 
 
-def test_pixel_text_is_whole_cells_and_cached():
+def test_big_text_is_whole_cells_and_cached():
     pygame.init()
-    pixels = PixelText()
-    small = pixels.get("1", 3, place_look(1))
-    big = pixels.get("1", 6, place_look(1))
+    small = bigtext.render("1", 3, place_look(1))
+    big = bigtext.render("1", 6, place_look(1))
     assert big.get_width() == small.get_width() * 2  # an exact multiple: no smoothing
-    assert pixels.get("1", 3, place_look(1)) is small
+    assert bigtext.render("1", 3, place_look(1)) is small
     colours = {tuple(c) for c in pygame.surfarray.array3d(big).reshape(-1, 3)}
-    assert len(colours) < 40  # a few flat colours, not a blurred ramp
+    assert len(colours) <= 6  # the key, the outline and three bands: flat colours, no blur
     assert place_look(1) != place_look(2) != place_look(4) and place_look(7) == place_look(4)
+
+
+def test_big_text_is_the_interface_font_with_a_bigger_cell():
+    """The big digits are the same letters as the small ones: the lit cells of the bold
+    5x7 grid, each one a block."""
+    grid = bigtext._grid("3", False)
+    assert np.array_equal(grid, pixelfont.text_mask("3", 1)[pixelfont.CAP_TOP :])
 
 
 def test_pop_jumps_in_whole_cells_and_ends():
@@ -118,14 +114,14 @@ def test_race_hud_draws_every_piece_without_errors(tiny_app):
     for place in (1, 2, 4):
         hud.position(place, 4, 0.05)
         hud.position(place, 4, 5.0)
-    hud.lap_counter(2, 3, "1:02.50", "0:31.20", "0:30.90")
-    hud.lap_counter(1, 3, "0:05.00", "0:05.00")
+    hud.lap_counter(2, 3, "1:02,50", "0:31,20", "0:30,90")
+    hud.lap_counter(1, 3, "0:05,00", "0:05,00")
     for frame in (0, 60, 120, 179, 180, 200, 400):
         hud.countdown(frame, 180, 60)
     hud.banner("ÚLTIMA VUELTA", 0.1)
     hud.banner("¡META!", 2.2)
     hud.banner("¡META!", 9.0)  # long gone: draws nothing
-    lines = [("1º Tú     1:00.00   mejor 0:20.00", (255, 255, 255))]
+    lines = [("1º  Tú  1:00,00  mejor 0:20,00", 9), ("Sin récord", 8)]
     hud.results("Resultados", 1, lines, "Intro", 1.0)
     hud.results("Resultados", None, lines, "Intro", 0.0)
 
@@ -349,7 +345,7 @@ def test_the_human_on_autopilot_beats_the_easy_ai_and_gets_the_results(tiny_app)
             break
     assert scene.me.finished and scene.final_place == 1
     app.run_loop(60 * 4)  # the banner, then the table
-    assert scene.final[0][1] is True and scene.final[0][0].startswith("1º Tú")
+    assert scene.final[0][1] is True and scene.final[0][0].startswith("1º  Tú")
     app.handle_key(pygame.K_RETURN)  # Intro: race again
     app.run_loop(3)
     assert scene.started and scene.race_steps < 5 and scene.ended_at is None

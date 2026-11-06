@@ -57,7 +57,7 @@ def existing_run_or_exit(path: Path) -> RunPaths:
     """A run folder that exists and has a config, or a clear exit."""
     run = RunPaths(path)
     if not path.is_dir():
-        raise SystemExit(f"El run {path} no existe.")
+        raise SystemExit(f"La carpeta {path} no existe.")
     if not run.config.exists():
-        raise SystemExit(f"{path} no es un run: no tiene config.yaml")
+        raise SystemExit(f"{path} no es una carpeta de entrenamiento: falta config.yaml")
     return run

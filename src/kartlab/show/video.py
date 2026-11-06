@@ -2,9 +2,9 @@
 
 Frames are rendered faster or slower than real time (it does not matter), one physics
 step (1/60 s) per video frame, and piped straight to ffmpeg: no frame ever touches the
-disk. Output is always 1920x1080 at exactly 60 fps (H.264, yuv420p). The 320x180 world
-is scaled x6 (exact) and the HUD is drawn at 1080p. Actions are deterministic, so the
-same run and track give the same video.
+disk. Output is always 1920x1080 at exactly 60 fps (H.264, yuv420p). The 320x180 canvas,
+with the world and the whole interface on it, is scaled x6 (exact). Actions are
+deterministic, so the same run and track give the same video.
 
 Run with ``uv run python scripts/make_video.py <progression|race|demo> --run runs/<folder>``.
 """
@@ -23,7 +23,7 @@ import pygame
 
 from kartlab.render.scene import KartVisual
 from kartlab.render.topdown import KART_COLOR, format_time
-from kartlab.render.view import SANS_REGULAR, GameView, HudInfo
+from kartlab.render.view import GameView, HudInfo
 from kartlab.show.cli import existing_run_or_exit, resolve_track_or_exit
 from kartlab.show.drivers import PolicyDriver, format_steps, load_version
 from kartlab.show.overlays import (
@@ -190,8 +190,8 @@ class Compositor(Overlays):
         self.ramps = ramps
         self.progress = progress
         self.scene_start = 0
-        game = self._new_game()
-        super().__init__(pygame.Surface(writer.size), game)
+        self.screen = pygame.Surface(writer.size)
+        super().__init__(self._new_game())
 
     def _new_game(self) -> GameView:
         game = GameView(self.track, self.writer.size, self.camera, self.variant, ramps=self.ramps)
@@ -212,9 +212,10 @@ class Compositor(Overlays):
     def draw_world(self, visuals: list[KartVisual], focus: int, info: HudInfo) -> None:
         self.game.fixed_time = self.scene_frame / FPS
         pose = self.game.update(visuals, DT, focus)
-        self.game.draw(self.screen, pose, visuals, info, DT)
+        self.game.render_canvas(pose, visuals, info, DT)
 
     def commit(self) -> None:
+        self.game.present(self.screen)
         self.writer.write(self.screen)
         if self.progress is not None and self.writer.frames % FPS == 0:
             self.progress(self.writer.frames)
@@ -270,11 +271,7 @@ def render_progression(
 
     with VideoWriter(out) as writer:
         comp = Compositor(track, writer, camera, variant, progress=progress)
-        chart = RewardChart(
-            (round(comp.unit * 17.5), round(comp.unit * 9.5)),
-            pygame.font.Font(SANS_REGULAR, round(comp.unit * 0.75)),
-            log_x=True,
-        )
+        chart = RewardChart((92, 56), log_x=True)
         names = [format_steps(c.steps) for c in checkpoints]
         previous = 0
         for index, checkpoint in enumerate(checkpoints):
@@ -301,7 +298,7 @@ def render_progression(
                     label="Versión sin entrenar"
                     if version.steps == 0
                     else f"Versión {version.label}",
-                    extra=[f"Circuito: {track.name}", f"{index + 1} de {len(checkpoints)}"],
+                    extra=[track.name, f"{index + 1} de {len(checkpoints)}"],
                 )
                 comp.draw_world([visual_of(driver, 0)], 0, info)
                 shown = round(
@@ -311,9 +308,8 @@ def render_progression(
                 comp.chart_panel(chart, metrics, version.steps)
                 comp.timeline(names, index)
                 comp.card(
-                    "Versión",
-                    version_name(version.steps),
-                    [f"{track.name} · {run.root.name}"],
+                    f"Versión {version_name(version.steps)}" if version.steps else "Sin entrenar",
+                    [track.name],
                     age=frame / FPS,
                 )
                 comp.dim(comp.segment_fade(frame, end_frame))
@@ -396,22 +392,21 @@ def render_race(
                 best_lap=best.driver.best_lap,
                 speed=racer.speed,
                 label="Carrera de versiones",
-                extra=[f"Circuito: {track.name}", f"{laps} vueltas · cámara de retransmisión"],
+                extra=[track.name, f"{laps} vueltas, cámara de retransmisión"],
             )
             comp.draw_world(visuals, 0, info)
             order = sorted(racers, key=lambda r: -r.driver.racer.progress.distance)
             rows = [
-                (r.ramp, version_name(r.steps), f"vuelta {min(r.laps_done + 1, laps)}/{laps}")
+                (r.ramp, version_name(r.steps), f"{min(r.laps_done + 1, laps)}/{laps}")
                 for r in order
             ]
-            comp.standings(rows, (comp.unit // 2, comp.unit * 7))
+            comp.standings(rows, (3, 3))
             comp.countdown(frame, start_frames, FPS)
             if end_frame is not None:
                 age = frame - (end_frame - round(FINISH_SECONDS * FPS))
                 comp.card(
-                    "Meta",
                     f"Ganador: {version_name(order[0].steps)}",
-                    [f"{track.name} · {laps} vueltas"],
+                    [f"{track.name}, {laps} vueltas"],
                     age=age / FPS,
                     life=FINISH_SECONDS,
                 )
@@ -465,25 +460,24 @@ def render_demo(
                 lap_time=lap_times[-1] if finished else racer.lap_time,  # frozen at the flag
                 best_lap=driver.best_lap,
                 speed=racer.speed,
-                label=f"Mejor modelo · {format_steps(version.steps)} pasos",
-                extra=[f"Circuito: {track.name}", "Nunca visto en el entrenamiento"],
+                label=f"Mejor versión: {format_steps(version.steps)} pasos",
+                extra=[track.name, "Nunca visto en el entrenamiento"],
             )
             comp.draw_world([visual_of(driver, 0)], 0, info)
             comp.card(
-                "Circuito nunca visto en el entrenamiento",
-                track.name,
-                [f"Mejor modelo · {format_steps(version.steps)} pasos de entrenamiento"],
+                "Circuito nuevo",
+                [track.name, "Nunca visto en el entrenamiento"],
                 age=frame / FPS,
                 life=intro,
             )
             if end_frame is not None:
                 age = frame - (end_frame - summary_frames)
                 best = min(lap_times) if lap_times else None
-                lines = [f"Vuelta {i + 1}   {format_time(t)}" for i, t in enumerate(lap_times)]
+                lines = [f"Vuelta {i + 1}  {format_time(t)}" for i, t in enumerate(lap_times)]
                 if best is not None:
-                    lines.append(f"Mejor vuelta   {format_time(best)}")
+                    lines.append(f"Mejor vuelta  {format_time(best)}")
                 comp.card(
-                    "Resultado", f"{len(lap_times)} de {laps} vueltas", lines or ["Sin vueltas"],
+                    f"{len(lap_times)} de {laps} vueltas", lines or ["Sin vueltas"],
                     age=age / FPS, life=summary_frames / FPS,
                 )  # fmt: skip
             comp.dim(comp.segment_fade(frame, end_frame))

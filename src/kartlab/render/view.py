@@ -1,9 +1,9 @@
 """Window composition for the pseudo-3D view.
 
-The 320x180 world is scaled by the largest integer factor that fits (no smoothing,
-black bars if needed) and the HUD is drawn on top at window resolution: crisp text,
-rendered once per distinct string. Panels slide in with easing, numbers ease towards
-their value, and an optional diagnostics line shows the time of every part.
+The 320x180 world is the canvas of the whole game: the HUD, the panels of every mode and the
+menus are drawn on it with the pixel interface kit (``pixelui``) and the canvas is then
+scaled by the largest integer factor that fits the window (no smoothing, black bars if
+needed). A diagnostics line shows the time of every part.
 """
 
 from __future__ import annotations
@@ -11,56 +11,41 @@ from __future__ import annotations
 import math
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
 import pygame
 
-from kartlab.common.paths import FONTS_DIR
 from kartlab.render.camera import CAMERAS, CameraPose
-from kartlab.render.palette import KART_RAMPS, Ink, game_palette
+from kartlab.render.hud import (
+    CAMERA_NAMES,
+    VARIANT_NAMES,
+    Hud,
+    Smoothed,
+    ease_out,
+    format_delta,
+)
 from kartlab.render.scene import WORLD_SIZE, KartVisual, WorldRenderer
 from kartlab.render.sprites import VOXEL
-from kartlab.render.topdown import TextCache, format_time
+from kartlab.render.topdown import format_time
 from kartlab.sim.sensors import RaySensor
 from kartlab.sim.track import Track
 
-SANS = FONTS_DIR / "ibm-plex-sans" / "IBMPlexSans-SemiBold.ttf"
-SANS_REGULAR = FONTS_DIR / "ibm-plex-sans" / "IBMPlexSans-Regular.ttf"
-MONO = FONTS_DIR / "ibm-plex-mono" / "IBMPlexMono-SemiBold.ttf"
-PANEL = (14, 14, 22, 190)
-WHITE = (240, 240, 236)
-DIM = (160, 164, 178)
-ACCENT = (251, 185, 84)
 LIGHT_MODE_FPS = 50.0
-CAMERA_NAMES = {"chase": "persecución", "broadcast": "retransmisión", "top": "cenital"}
-VARIANT_NAMES = {"day": "día", "sunset": "atardecer", "night": "noche"}
 
-
-def ease_out(t: float) -> float:
-    t = min(max(t, 0.0), 1.0)
-    return 1.0 - (1.0 - t) ** 3
-
-
-class Smoothed:
-    """A displayed number that eases towards its target (no jumps on screen)."""
-
-    def __init__(self, rate: float = 10.0) -> None:
-        self.value: float | None = None
-        self.rate = rate
-
-    def update(self, target: float, dt: float) -> float:
-        if self.value is None:
-            self.value = target
-        self.value += (target - self.value) * (1.0 - math.exp(-self.rate * dt))
-        return self.value
-
-
-def format_delta(delta: float) -> str:
-    """Gap to the record as ``−0,42`` (ahead) or ``+1,03`` (behind), two decimals."""
-    rounded = round(delta, 2)
-    sign = "−" if rounded < 0 else "+"
-    return f"{sign}{abs(rounded):.2f}".replace(".", ",")
+__all__ = [
+    "CAMERA_NAMES",
+    "VARIANT_NAMES",
+    "GameView",
+    "HudInfo",
+    "Smoothed",
+    "TrialHud",
+    "ease_out",
+    "format_delta",
+    "format_time",
+    "scale_for",
+]
 
 
 @dataclass
@@ -91,11 +76,6 @@ def scale_for(window: tuple[int, int]) -> int:
     return max(1, min(window[0] // WORLD_SIZE[0], window[1] // WORLD_SIZE[1]))
 
 
-def unit_for(window: tuple[int, int]) -> int:
-    """Base size of the interface text (px) for a window."""
-    return max(window[1] // 40, 12)
-
-
 class GameView:
     def __init__(
         self,
@@ -107,7 +87,6 @@ class GameView:
         seed: int = 0,
         ramps: tuple[int, ...] = (0,),
     ) -> None:
-        pygame.font.init()
         self.track = track
         self.cameras = {name: cls() for name, cls in CAMERAS.items()}
         self.camera_name = camera
@@ -119,11 +98,8 @@ class GameView:
         self._fps: deque[float] = deque(maxlen=120)
         self._start = time.perf_counter()
         self.fixed_time: float | None = None  # offline rendering: time of the frame (s)
-        self._speed = Smoothed()
-        rgb = game_palette().rgb  # gap colours come from the palette like everything else
-        self._ahead = tuple(int(c) for c in rgb[Ink.LEAF_LIGHT])
-        self._behind = tuple(int(c) for c in rgb[Ink.KERB_RED])
-        self._notice: tuple[str, float] | None = None
+        self._fps_now: float | None = None
+        self.hud = Hud(self)
         self.sensor = RaySensor(track, 11, math.pi, 60.0)
         self._ray_hint: int | None = None  # previous centerline index (tracks with crossings)
         self.resize(window)
@@ -142,15 +118,6 @@ class GameView:
         self.scale = scale_for(window)
         w, h = WORLD_SIZE[0] * self.scale, WORLD_SIZE[1] * self.scale
         self.world_rect = pygame.Rect((window[0] - w) // 2, (window[1] - h) // 2, w, h)
-        unit = unit_for(window)
-        self.unit = unit
-        self.text = TextCache(pygame.font.Font(SANS, unit))
-        self.small = TextCache(pygame.font.Font(SANS_REGULAR, max(int(unit * 0.75), 10)))
-        self.big = TextCache(pygame.font.Font(MONO, int(unit * 2.0)))
-        self.mono = TextCache(pygame.font.Font(MONO, unit))
-        self.tiny = TextCache(pygame.font.Font(MONO, max(int(unit * 0.7), 10)))
-        self._panels: dict[tuple[int, int], pygame.Surface] = {}
-        self._minimap = self._build_minimap(int(window[1] * 0.24))
 
     def set_camera(self, name: str) -> None:
         self.camera_name = name
@@ -175,7 +142,7 @@ class GameView:
         return time.perf_counter() - self._start
 
     def notify(self, text: str) -> None:
-        self._notice = (text, self.now())
+        self.hud.notify(text, self.now())
 
     # -- per frame ------------------------------------------------------------------------
 
@@ -197,6 +164,56 @@ class GameView:
         self.world.show_rays = [(kart.x, kart.y, kart.heading)]
         self.world.ray_ground = visual.ground
 
+    @property
+    def canvas(self) -> pygame.Surface:
+        """The 320x180 surface the world is drawn on and the interface is painted over."""
+        return self.world.world
+
+    def render_canvas(
+        self,
+        pose: CameraPose,
+        visuals: list[KartVisual],
+        info: HudInfo,
+        dt: float,
+        fps: float | None = None,
+        hud: bool = True,
+        pixel_ui: Callable[[pygame.Surface], None] | None = None,
+    ) -> pygame.Surface:
+        """Draw the world and the HUD on the canvas, without magnifying it yet. ``pixel_ui``
+        (or the caller, afterwards) paints more interface on it; ``present`` then shows it."""
+        now = self.now()
+        timings = self.world.render(pose, visuals, now)
+        canvas = self.world.world
+        t0 = time.perf_counter()
+        if hud:
+            self.hud.draw(canvas, visuals, info, dt, now)
+        if pixel_ui is not None:
+            pixel_ui(canvas)
+        timings["interfaz"] = (time.perf_counter() - t0) * 1000
+        self.last_timings = timings
+        self._fps_now = fps
+        return canvas
+
+    def present(self, screen: pygame.Surface) -> None:
+        """Magnify the canvas into the window by the integer factor, centred."""
+        canvas = self.world.world
+        self.hud.draw_notice(canvas, self.now())  # last: it goes where no panel is
+        if self.diagnostics:
+            self.hud.draw_diagnostics(canvas, self._fps_now)
+        t1 = time.perf_counter()
+        if self.world_rect.size != screen.get_size():
+            screen.fill((0, 0, 0))
+        target = screen.subsurface(self.world_rect)
+        if self.scale == 1:
+            target.blit(canvas, (0, 0))
+        else:
+            pygame.transform.scale(canvas, self.world_rect.size, target)
+        self.last_timings["escalado"] = (time.perf_counter() - t1) * 1000
+        for key, value in self.last_timings.items():  # smoothed for a readable overlay
+            self.timings[key] = self.timings.get(key, value) * 0.9 + value * 0.1
+        if self._fps_now is not None:
+            self._watch_fps(self._fps_now)
+
     def draw(
         self,
         screen: pygame.Surface,
@@ -206,30 +223,11 @@ class GameView:
         dt: float,
         fps: float | None = None,
         hud: bool = True,
+        pixel_ui: Callable[[pygame.Surface], None] | None = None,
     ) -> None:
-        now = self.now()
-        timings = self.world.render(pose, visuals, now)
-        t0 = time.perf_counter()
-        if self.world_rect.size != screen.get_size():
-            screen.fill((0, 0, 0))
-        target = screen.subsurface(self.world_rect)
-        if self.scale == 1:
-            target.blit(self.world.world, (0, 0))
-        else:
-            pygame.transform.scale(self.world.world, self.world_rect.size, target)
-        t1 = time.perf_counter()
-        if hud:
-            self._draw_hud(screen, visuals, info, dt, now)
-        t2 = time.perf_counter()
-        timings["escalado"] = (t1 - t0) * 1000
-        timings["HUD"] = (t2 - t1) * 1000
-        self.last_timings = timings
-        for key, value in timings.items():  # smoothed for a readable overlay
-            self.timings[key] = self.timings.get(key, value) * 0.9 + value * 0.1
-        if fps is not None:
-            self._watch_fps(fps)
-        if self.diagnostics:
-            self._draw_diagnostics(screen, fps)
+        """Draw a whole frame into ``screen``: ``render_canvas`` and ``present``."""
+        self.render_canvas(pose, visuals, info, dt, fps, hud, pixel_ui)
+        self.present(screen)
 
     def forget_fps(self) -> None:
         """Drop the frame-rate samples (after a stall that was not the view being slow)."""
@@ -244,180 +242,8 @@ class GameView:
             and np.mean(self._fps) < LIGHT_MODE_FPS
         ):
             self.world.set_light_mode(True)
-            self.notify("Modo ligero activado (30 fps)")
+            self.notify("Modo ligero: Sí (30 fps)")
 
     @property
     def target_fps(self) -> int:
         return 30 if self.world.light_mode else 60
-
-    # -- HUD ------------------------------------------------------------------------------
-
-    def _panel(self, w: int, h: int) -> pygame.Surface:
-        key = (w, h)
-        panel = self._panels.get(key)
-        if panel is None:
-            panel = pygame.Surface(key, pygame.SRCALPHA)
-            panel.fill(PANEL)
-            self._panels[key] = panel
-        return panel
-
-    def _draw_hud(self, screen, visuals, info: HudInfo, dt: float, now: float) -> None:
-        u = self.unit
-        pad = u // 2
-        slide = ease_out(now / 0.7)  # panels slide in when the view opens
-        left = self.world_rect.x + pad - round((1 - slide) * 12 * u)
-        right = self.world_rect.right - pad + round((1 - slide) * 12 * u)
-        top = self.world_rect.y + pad
-
-        # Lap and times (top left).
-        trial_top, trial_width = top, 0
-        if info.lap_panel:
-            lap = self.text.get(f"VUELTA {info.laps + 1}", ACCENT)
-            clock = self.big.get(format_time(info.lap_time), WHITE)
-            best = self.small.get(f"Mejor  {format_time(info.best_lap)}", DIM)
-            w = max(lap.get_width(), clock.get_width(), best.get_width()) + 2 * pad
-            h = lap.get_height() + clock.get_height() + best.get_height() + pad
-            screen.blit(self._panel(w, h), (left, top))
-            y = top + pad // 2
-            for surface in (lap, clock, best):
-                screen.blit(surface, (left + pad, y))
-                y += surface.get_height()
-            trial_top, trial_width = top + h + pad // 2, w
-        if info.trial is not None:
-            self._draw_trial(screen, info.trial, left, trial_top, trial_width)
-
-        # Model label and view settings (top right).
-        if info.label_panel:
-            self._draw_label_panel(screen, info, right, top, pad)
-
-        # Speed (bottom right), eased so it never flickers.
-        kmh = abs(self._speed.update(info.speed * 3.6, dt))
-        speed = self.big.get(f"{kmh:3.0f}", WHITE)
-        unit_text = self.small.get("km/h", DIM)
-        w = speed.get_width() + unit_text.get_width() + 3 * pad
-        h = speed.get_height() + pad // 2
-        bottom = self.world_rect.bottom - pad
-        screen.blit(self._panel(w, h), (right - w, bottom - h))
-        screen.blit(speed, (right - w + pad, bottom - h))
-        screen.blit(
-            unit_text, (right - unit_text.get_width() - pad, bottom - unit_text.get_height() - pad)
-        )
-
-        self._draw_minimap(screen, visuals, (left, bottom - self._minimap[0].get_height()))
-        self._draw_notice(screen)
-
-    def _draw_label_panel(self, screen, info: HudInfo, right: int, top: int, pad: int) -> None:
-        u = self.unit
-        colour = tuple(
-            int(c) for c in game_palette().rgb[KART_RAMPS[info.ramp % len(KART_RAMPS)][1]]
-        )
-        label = self.text.get(info.label, WHITE)
-        sub = self.small.get(
-            f"Cámara {CAMERA_NAMES[self.camera_name]} · {VARIANT_NAMES[self.world.variant]}", DIM
-        )
-        extra = [self.small.get(text, DIM) for text in info.extra]
-        w = max(label.get_width() + u, sub.get_width(), *(e.get_width() for e in extra)) + 2 * pad
-        h = label.get_height() + sub.get_height() + sum(e.get_height() for e in extra) + pad
-        x = right - w
-        screen.blit(self._panel(w, h), (x, top))
-        pygame.draw.circle(
-            screen, colour, (x + pad + u // 3, top + pad // 2 + label.get_height() // 2), u // 3
-        )
-        screen.blit(label, (x + pad + u, top + pad // 2))
-        y = top + pad // 2 + label.get_height()
-        for surface in (sub, *extra):
-            screen.blit(surface, (x + pad, y))
-            y += surface.get_height()
-
-    def _draw_trial(self, screen, trial: TrialHud, left: int, top: int, width: int) -> None:
-        """Gap to the record (green ahead, red behind), then the record and the last lap."""
-        pad = self.unit // 2
-        if trial.delta is None:
-            gap = self.text.get("Sin récord: ¡marca uno!" if trial.record is None else "…", DIM)
-        else:
-            colour = self._ahead if trial.delta < -0.005 else self._behind
-            if abs(trial.delta) < 0.005:
-                colour = WHITE
-            gap = self.big.get(format_delta(trial.delta), colour)
-        lines = [
-            self.small.get(f"Récord  {format_time(trial.record)}", ACCENT),
-            self.small.get(f"Última  {format_time(trial.last)}", DIM),
-        ]
-        w = max(width, gap.get_width() + 2 * pad, *(line.get_width() + 2 * pad for line in lines))
-        h = gap.get_height() + sum(line.get_height() for line in lines) + pad
-        screen.blit(self._panel(w, h), (left, top))
-        y = top + pad // 2
-        screen.blit(gap, (left + pad, y))
-        y += gap.get_height()
-        for line in lines:
-            screen.blit(line, (left + pad, y))
-            y += line.get_height()
-
-    def _build_minimap(self, size: int):
-        pts = self.track.points
-        lo, hi = pts.min(axis=0), pts.max(axis=0)
-        span = max(hi - lo)
-        pad = max(size // 10, 4)
-        ppm = (size - 2 * pad) / span
-        w = int((hi[0] - lo[0]) * ppm) + 2 * pad
-        h = int((hi[1] - lo[1]) * ppm) + 2 * pad
-        panel = pygame.Surface((w, h), pygame.SRCALPHA)
-        panel.fill(PANEL)
-
-        def to_px(x, y):
-            return pad + (x - lo[0]) * ppm, h - pad - (y - lo[1]) * ppm
-
-        line = [to_px(x, y) for x, y in pts[::3]]
-        pygame.draw.lines(panel, (90, 90, 110), True, line, max(size // 28, 3))
-        pygame.draw.lines(panel, (200, 200, 210), True, line, max(size // 70, 1))
-        sx, sy = to_px(*pts[0])
-        pygame.draw.circle(panel, WHITE, (sx, sy), max(size // 40, 2))
-        return panel, to_px
-
-    def _draw_minimap(self, screen, visuals: list[KartVisual], at: tuple[int, int]) -> None:
-        panel, to_px = self._minimap
-        screen.blit(panel, at)
-        rgb = game_palette().rgb
-        radius = max(panel.get_height() // 30, 3)
-        for k, v in enumerate(visuals):
-            x, y = to_px(v.kart.x, v.kart.y)
-            colour = tuple(int(c) for c in rgb[KART_RAMPS[v.ramp % len(KART_RAMPS)][1]])
-            r = radius + (1 if k == 0 else 0)
-            pygame.draw.circle(screen, (10, 10, 16), (at[0] + x, at[1] + y), r + 1)
-            pygame.draw.circle(screen, colour, (at[0] + x, at[1] + y), r)
-
-    def _draw_notice(self, screen) -> None:
-        if self._notice is None:
-            return
-        text, start = self._notice
-        age = self.now() - start
-        if age > 3.0:
-            self._notice = None
-            return
-        label = self.text.get(text, ACCENT)
-        pad = self.unit // 2
-        box = pygame.Surface((label.get_width() + 2 * pad, label.get_height() + pad))
-        box.fill((14, 14, 22))
-        box.blit(label, (pad, pad // 2))
-        alpha = ease_out(age / 0.35) if age < 2.4 else (3.0 - age) / 0.6
-        box.set_alpha(round(255 * max(0.0, min(alpha, 1.0))))
-        offset = round((1 - ease_out(age / 0.35)) * -box.get_height())
-        screen.blit(
-            box,
-            (self.world_rect.centerx - box.get_width() // 2, self.world_rect.y + pad * 6 + offset),
-        )
-
-    def _draw_diagnostics(self, screen, fps: float | None) -> None:
-        parts = " · ".join(f"{k} {v:.1f}" for k, v in self.timings.items())
-        total = sum(self.timings.values())
-        head = f"{fps:.0f} fps · " if fps else ""
-        mode = " · ligero" if self.world.light_mode else ""
-        text = self.tiny.get(f"{head}{parts} · total {total:.1f} ms{mode}", WHITE)
-        pad = self.unit // 3
-        x = self.world_rect.centerx - text.get_width() // 2
-        y = self.world_rect.bottom - text.get_height() - pad * 2
-        screen.blit(
-            self._panel(text.get_width() + 2 * pad, text.get_height() + pad),
-            (x - pad, y - pad // 2),
-        )
-        screen.blit(text, (x, y))
