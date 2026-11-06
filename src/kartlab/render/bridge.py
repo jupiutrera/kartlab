@@ -47,6 +47,7 @@ DASH = (1.0, 3.0)  # centre dash of every other section, from-to along it (m)
 DASH_HALF_WIDTH = 0.12
 LINTEL = 0.5  # height of the lintel over a tunnel mouth (m)
 JAMB = 0.35  # how far the lintel and the jambs stand out beside the opening (m)
+LINES_UNTIL = 55.0  # the painted lines of the deck are drawn up to this depth (m)
 LAMP_EVERY = 3  # a lamp strip on the roof of the tunnel every this many segments
 
 # Ink of each part. Faces take the lit or the shaded one according to the sun.
@@ -214,6 +215,27 @@ class BridgeRenderer:
         normal = np.stack([-np.sin(self.heading), np.cos(self.heading)], axis=1)  # left of the road
         lit_left = (normal @ -self.sun) > 0.0
         self.lit_left = lit_left[:-1] | lit_left[1:]
+        self._col_a = np.array([p[0] for p in STRIPS])
+        self._col_b = np.array([p[1] for p in STRIPS])
+        self._in_far_left = np.ones((count, len(STRIPS)), dtype=bool)
+        self._in_far_left[:, list(RIGHT_STRIPS)] = False  # the far side is the left one
+        self._in_far_right = np.ones((count, len(STRIPS)), dtype=bool)
+        self._in_far_right[:, list(LEFT_STRIPS)] = False
+        # Plain Python copies for the polygons that need clipping, and every strip's ink.
+        self._ring_x = self.ring_x.tolist()
+        self._ring_y = self.ring_y.tolist()
+        self._ring_z = self.ring_z.tolist()
+        self._corners = [
+            [
+                [(int(self.corner_k[k, s, i]), int(self.corner_j[k, s, i])) for i in range(4)]
+                for s in range(len(STRIPS))
+            ]
+            for k in range(count)
+        ]
+        self._inks = [
+            [self._ink(k, s, bool(self.lit_left[k])) for s in range(len(STRIPS))]
+            for k in range(count)
+        ]
 
     def _build_tunnel(self) -> None:
         track, levels = self.track, self.levels
@@ -308,6 +330,7 @@ class BridgeRenderer:
         self._lens = lens
         self._pose = pose
         self._projection = projection
+        self._setup_camera(pose, projection, lens)
         drawables: list[tuple[float, int, tuple]] = []
         if inside:
             # The inside is drawn after what is beyond the far mouth (seen through it) and
@@ -320,16 +343,17 @@ class BridgeRenderer:
             return drawables
 
         sx, sy, depth = projection.project(pose, self.ring_x, self.ring_y, self.ring_z)
-        k, j = self.corner_k, self.corner_j
-        qx, qy, qd = sx[k, j], sy[k, j], depth[k, j]
+        x0, x1 = self._span(sx)
+        y0, y1 = self._span(sy)
+        d0, d1 = self._span(depth)
+        ahead = d0 > NEAR  # every corner of the strip is in front of the camera
+        partial = (d1 > NEAR) & ~ahead  # some are not: the strip is cut at the near plane
         width, height = projection.width, projection.height
-        ahead = (qd > NEAR).all(axis=2)
-        any_ahead = (qd > NEAR).any(axis=2)
-        on_screen = (qx.max(axis=2) >= 0) & (qx.min(axis=2) <= width)
-        on_screen &= (qy.max(axis=2) >= 0) & (qy.min(axis=2) <= height)
-        show = (
-            self.strip_ok & ((ahead & on_screen) | (any_ahead & ~ahead)) & self._facing(pose, eye)
-        )
+        seen = (x1 >= 0) & (x0 <= width) & (y1 >= 0) & (y0 <= height)
+        # Less than a pixel across: nothing to draw. Painted lines only where they can be seen.
+        seen &= ((x1 - x0) >= 1.0) | ((y1 - y0) >= 1.0)
+        seen[:, [LINE_L, LINE_R]] &= d0[:, [LINE_L, LINE_R]] < LINES_UNTIL
+        show = self.strip_ok & ((ahead & seen) | partial) & self._facing(pose, eye)
         # How far each side of each section is: the farther goes first.
         left_depth = depth[:, 0:3].mean(axis=1)
         right_depth = depth[:, 7:10].mean(axis=1)
@@ -338,15 +362,13 @@ class BridgeRenderer:
         far_is_left = left_depth > right_depth
         far_key = np.maximum(left_depth, right_depth)
         near_key = np.minimum(left_depth, right_depth)
-        in_far = np.ones((self.count, len(STRIPS)), dtype=bool)
-        in_far[:, list(LEFT_STRIPS)] = far_is_left[:, None]
-        in_far[:, list(RIGHT_STRIPS)] = ~far_is_left[:, None]
+        in_far = self._in_far_left.copy()
+        in_far[~far_is_left] = self._in_far_right[~far_is_left]
         self._frame = {
-            "qx": qx.tolist(),
-            "qy": qy.tolist(),
-            "qd": qd,
-            "partial": (any_ahead & ~ahead),
-            "show": show,
+            "sx": sx.tolist(),
+            "sy": sy.tolist(),
+            "partial": partial.tolist(),
+            "show": show.tolist(),
             "far_is_left": far_is_left.tolist(),
         }
         for index in np.flatnonzero((show & in_far).any(axis=1)).tolist():
@@ -373,6 +395,12 @@ class BridgeRenderer:
         ox, oy = self.origin
         nx, ny = self.upper_normal
         return abs((pose.x - ox) * nx + (pose.y - oy) * ny) <= self.wide
+
+    def _span(self, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Smallest and largest of the four corners of every strip of every section."""
+        first, second = values[:, self._col_a], values[:, self._col_b]
+        low, high = np.minimum(first, second), np.maximum(first, second)
+        return np.minimum(low[:-1], low[1:]), np.maximum(high[:-1], high[1:])
 
     def _facing(self, pose: CameraPose, eye: float) -> np.ndarray:
         """Which strips of which sections face the camera (a boolean (sections, strips))."""
@@ -416,7 +444,8 @@ class BridgeRenderer:
         fog = self._fog(float(self._section_depth[k]))
         rgb = self.rgb
         surface = self.surface
-        lit = bool(self.lit_left[k])
+        inks = self._inks[k]
+        sx, sy = frame["sx"], frame["sy"]
         far_is_left = frame["far_is_left"][k]
         if far:
             order = FAR_LEFT if far_is_left else FAR_RIGHT
@@ -425,14 +454,13 @@ class BridgeRenderer:
         for strip in order:
             if not show[strip]:
                 continue
-            if frame["partial"][k, strip]:
+            if frame["partial"][k][strip]:
                 points = self._clipped(k, strip)
                 if len(points) < 3:
                     continue
             else:
-                xs, ys = frame["qx"][k][strip], frame["qy"][k][strip]
-                points = list(zip(xs, ys, strict=True))
-            pygame.draw.polygon(surface, rgb(self._ink(k, strip, lit), fog), points)
+                points = [(sx[a][b], sy[a][b]) for a, b in self._corners[k][strip]]
+            pygame.draw.polygon(surface, rgb(inks[strip], fog), points)
         if far and k % 2 == 0 and show[DECK_STRIP]:
             self._draw_dash(k // 2, fog)
 
@@ -459,35 +487,53 @@ class BridgeRenderer:
             self.surface, self.rgb(DECK_LINE, fog), list(zip(xs[index], ys[index], strict=True))
         )
 
+    def _setup_camera(self, pose: CameraPose, projection: Projection, lens: Lens) -> None:
+        """The constants of the projection as plain floats, for the few polygons that are
+        cut at the near plane (scalar math is much faster than numpy for four points)."""
+        self._cam = (
+            pose.x,
+            pose.y,
+            lens.height + pose.z,
+            math.cos(pose.heading),
+            math.sin(pose.heading),
+            math.cos(lens.pitch),
+            math.sin(lens.pitch),
+            projection.focal,
+            projection.centre[0],
+            projection.centre[1],
+        )
+
+    def _depth_of(self, x: float, y: float, z: float) -> float:
+        px, py, eye, ch, sh, cp, sp, _, _, _ = self._cam
+        dx, dy = x - px, y - py
+        return (dx * ch + dy * sh) * cp - (z - eye) * sp
+
+    def _screen_of(self, x: float, y: float, z: float) -> tuple[float, float]:
+        px, py, eye, ch, sh, cp, sp, focal, cx, cy = self._cam
+        dx, dy, up = x - px, y - py, z - eye
+        ahead, right = dx * ch + dy * sh, dx * sh - dy * ch
+        depth = ahead * cp - up * sp
+        return cx + focal * right / depth, cy - focal * (ahead * sp + up * cp) / depth
+
     def _clipped(self, k: int, strip: int):
         """A strip that crosses the near plane: clip it in the world and project the rest."""
-        corners = [
-            (int(self.corner_k[k, strip, i]), int(self.corner_j[k, strip, i])) for i in range(4)
+        world = [
+            (self._ring_x[a][b], self._ring_y[a][b], self._ring_z[a][b])
+            for a, b in self._corners[k][strip]
         ]
-        world = [(self.ring_x[a, b], self.ring_y[a, b], self.ring_z[a, b]) for a, b in corners]
-        depths = [float(self._frame["qd"][k, strip, i]) for i in range(4)]
-        return self._project_polygon(_clip(world, depths))
-
-    def _project_polygon(self, world: list[tuple[float, float, float]]):
-        if len(world) < 3:
-            return []
-        arr = np.array(world)
-        sx, sy, _ = self._projection.project(self._pose, arr[:, 0], arr[:, 1], arr[:, 2])
-        return list(zip(sx.tolist(), sy.tolist(), strict=True))
+        depths = [self._depth_of(*p) for p in world]
+        return [self._screen_of(*p) for p in _clip(world, depths)]
 
     def _world_polygon(
         self, world: list[tuple[float, float, float]], ink: int, fog: int = 0
     ) -> None:
         """Project a polygon given in world points (cut at the near plane) and draw it."""
-        arr = np.array(world)
-        _, _, depth = self._projection.project(self._pose, arr[:, 0], arr[:, 1], arr[:, 2])
-        depths = depth.tolist()
-        if all(d > NEAR for d in depths):
-            points = self._project_polygon(world)
-        elif any(d > NEAR for d in depths):
-            points = self._project_polygon(_clip(world, depths))
-        else:
-            return
+        depths = [self._depth_of(*p) for p in world]
+        if min(depths) <= NEAR:
+            if max(depths) <= NEAR:
+                return
+            world = _clip(world, depths)
+        points = [self._screen_of(*p) for p in world]
         if len(points) >= 3:
             pygame.draw.polygon(self.surface, self.rgb(ink, fog), points)
 
@@ -499,10 +545,7 @@ class BridgeRenderer:
         dx, dy = (bx - ax) / span, (by - ay) / span
         a2, b2 = (ax - dx * JAMB, ay - dy * JAMB), (bx + dx * JAMB, by + dy * JAMB)
         top = roof + LINTEL
-        depth = float(
-            self._projection.project(self._pose, (ax + bx) / 2, (ay + by) / 2, roof / 2)[2]
-        )
-        fog = self._fog(depth)
+        fog = self._fog(self._depth_of((ax + bx) / 2, (ay + by) / 2, roof / 2))
         self._world_polygon(
             [(ax, ay, 0), (bx, by, 0), (bx, by, roof), (ax, ay, roof)], OPENING, fog
         )
