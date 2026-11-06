@@ -23,9 +23,10 @@ uv run python scripts/live.py            # visor en directo del último run
 uv run python scripts/evaluate.py --tracks 20   # 3 vueltas en los circuitos reservados
 uv run python scripts/evaluate.py --track-file tracks/ejemplo.json   # un circuito propio (se valida antes)
 uv run python scripts/track_file.py validate tracks/ejemplo.json     # validar / exportar (export --seed N)
+uv run python scripts/editor.py tracks/ejemplo.json   # editor de circuitos con ratón (--new para uno nuevo)
 ```
 
-Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames N --screenshot f.png`.
+Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames N --screenshot f.png` (igual en `scripts/editor.py`).
 
 ## Estructura
 
