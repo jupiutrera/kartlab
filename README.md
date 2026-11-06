@@ -23,6 +23,18 @@ uv sync
 uv run pre-commit install
 ```
 
+## Qué probar primero
+
+```sh
+uv run python scripts/viewer.py                                                  # título y tres modos, a pantalla completa con --fullscreen
+uv run python scripts/viewer.py --mode race --track-file tracks/ocho.json        # carrera de versiones por el 8 con cruce a nivel
+uv run python scripts/viewer.py --mode watch --brain --track-file tracks/ocho.json  # vista cerebro: lo que ve y decide la IA
+uv run python scripts/drive.py --time-trial --track-file tracks/ocho.json        # conducir tú: Mayús para el barrido, contrarreloj con fantasma
+uv run python scripts/editor.py tracks/ejemplo.json                              # editor con ratón; F5 prueba el circuito conduciendo
+```
+
+Los tres primeros enseñan un entrenamiento: necesitan un run con checkpoints en `runs/` (`uv run python scripts/train.py configs/random_tracks.yaml`, unos 20 minutos). Conducir y editar funcionan sin entrenar. Detalles en las secciones de abajo.
+
 ## Conducir a mano
 
 ```sh
@@ -83,9 +95,10 @@ Al soltar, el kart recibe un impulso **proporcional al tiempo barrido**, con un 
 
 El piloto automático y el entorno de aprendizaje no usan el barrido: no cambia las observaciones, las acciones ni la física del entrenamiento. Las constantes están en `src/kartlab/sim/drift.py` (`DriftParams`).
 
+### Cómo se dibuja
+
 La ventana usa la mayor escala entera de 320×180 que cabe en la pantalla: ×4 (1280×720) en una de 1366×768 y ×5 (1600×900) en una de 1920×1080. A pantalla completa en 1080p, ×6 encaja exacto.
 
-### Cómo se dibuja
 
 - **El mundo** se dibuja a 320×180 con la paleta Resurrect 64 y se escala por un factor entero, sin suavizado. Texto, paneles y minimapa van encima, a la resolución de la ventana.
 - **El suelo** está en perspectiva, calculado por filas con numpy.
@@ -215,7 +228,7 @@ El título muestra el mejor modelo conduciendo, con la luz cambiando despacio de
 | S | Cámara lenta: 0,5× y 0,25× |
 | F3 | Diagnóstico: fps y milisegundos de cada parte, incluida la simulación con la IA |
 | F11 | Pantalla completa |
-| H | Ayuda con todas las teclas |
+| H o F1 | Ayuda con todas las teclas |
 
 Las teclas son las mismas que en `drive.py` donde significan lo mismo; aquí no se conduce, así que las flechas y la S quedan libres. Cada modo elige su cámara hasta que se pulsa C: persecución en el título y con versiones ya entrenadas, retransmisión en la carrera, la progresión y las versiones torpes (marean menos).
 
@@ -377,13 +390,20 @@ Cómo se trata el cruce:
 ```
 src/kartlab/
   common/   utilidades compartidas (config, semillas, ficheros)
-  sim/      simulación 2D: circuitos y física (solo numpy)
+  sim/      simulación 2D: circuitos y física (solo numpy); además, drift.py (barrido),
+            timetrial.py (contrarreloj), version.py (PHYSICS_VERSION), trackfile.py y
+            trackissues.py (circuitos en JSON y su validador) y trackcli.py (track_file.py)
   env/      entorno Gymnasium
   train/    entrenamiento PPO, checkpoints y métricas
   render/   render pseudo-3D (numpy + pygame-ce)
-  show/     visor de exhibición, visor en directo, vídeos y carreras de fantasmas
-scripts/    puntos de entrada
-tracks/     circuitos en fichero JSON
+  show/     visor de exhibición (viewer.py, title.py, scenes.py), vista cerebro (brain.py),
+            visor en directo (live.py), editor de circuitos (editor.py), vídeos (video.py);
+            compartido: overlays.py (paneles), versions.py (checkpoints de un run en caché),
+            drivers.py (la IA al volante) y cli.py (comprobación de argumentos)
+scripts/    puntos de entrada: drive, viewer, live, editor, make_video, evaluate, track_file,
+            track_gallery, train y los benchmarks
+tracks/     circuitos en fichero JSON (ejemplo.json y ocho.json)
+records/    récords de la contrarreloj, uno por circuito (ignorado por git)
 configs/    configuraciones de entrenamiento (YAML)
 assets/     fuentes y paleta
 docs/       procedencia de recursos y registro de experimentos
@@ -400,9 +420,9 @@ tests/
 | 1 | Simulación 2D y control manual | Hecha |
 | 2 | Entorno Gymnasium | Hecha |
 | 3 | Entrenamiento | Hecha |
-| 4 | Render pseudo-3D y dirección de arte | En revisión |
-| 5 | Herramientas de exhibición | En revisión (vídeos y visor) |
-| 6 | Editor de circuitos (opcional) | Pendiente |
+| 4 | Render pseudo-3D y dirección de arte | Hecha |
+| 5 | Herramientas de exhibición (visor, vídeos, vista cerebro) | Hecha |
+| 6 | Editor de circuitos con ratón (opcional) | Hecha |
 
 ## Licencia
 
