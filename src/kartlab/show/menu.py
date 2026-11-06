@@ -600,7 +600,10 @@ class TrainScreen(Screen):
         self.flow = flow
         self.configs: list[ConfigInfo] = []
         self.selected = 0
-        self.rects: list[pygame.Rect] = []
+        self.scroll = 0  # first visible config
+        self.visible = 1  # how many fit above the job panel
+        self.rects: dict[int, pygame.Rect] = {}  # config index -> its row (visible ones)
+        self._laid_out_for = -1
         self.buttons: dict[str, pygame.Rect] = {}
 
     def enter(self) -> None:
@@ -631,7 +634,7 @@ class TrainScreen(Screen):
         config = self.configs[self.selected] if self.configs else None
         launch_off = self.busy_reason()
         if launch_off is None and (config is None or config.error):
-            launch_off = "Esta configuración no es válida"
+            launch_off = "Esta configuración no es válida"  # the box says why
         run = self.run_for_live()
         return {
             "launch": ("Lanzar  Intro", launch_off),
@@ -649,7 +652,9 @@ class TrainScreen(Screen):
         hub = self.hub
         reason = self.button_states()["launch"][1]
         if reason:
-            hub.message("No se puede lanzar", reason)
+            config = self.configs[self.selected] if self.configs else None
+            detail = config.error if config is not None and config.error else reason
+            hub.message("No se puede lanzar", detail)
             return
         config = self.configs[self.selected]
         if config.is_long:
@@ -704,32 +709,54 @@ class TrainScreen(Screen):
         self.x = (w - self.width) // 2
         top = round(h * 0.2)
         self.row_h = round(u * 3.4)
-        self.rects = [
-            pygame.Rect(self.x, top + i * self.row_h, self.width, self.row_h - u // 4)
-            for i in range(len(self.configs))
-        ]
-        self.list_bottom = top + len(self.configs) * self.row_h
-        self.panel_rect = pygame.Rect(self.x, self.list_bottom + u, self.width, round(u * 6.5))
+        panel_h, button_h = round(u * 6.5), round(u * 2.4)
+        below = panel_h + u + u // 2 + button_h + round(u * 3.2)  # panel, buttons, hover note, hint
+        self.visible = max(1, min(len(self.configs) or 1, (h - top - below) // self.row_h))
+        self._laid_out_for = len(self.configs)
+        self.top = top
+        self._place()
+        rows_bottom = top + self.visible * self.row_h
+        self.panel_rect = pygame.Rect(self.x, rows_bottom + u, self.width, panel_h)
         names = ("launch", "live", "stop", "folder")
         gap = u // 2
         bw = (self.width - gap * (len(names) - 1)) // len(names)
         by = self.panel_rect.bottom + u // 2
         self.buttons = {
-            name: pygame.Rect(self.x + i * (bw + gap), by, bw, round(u * 2.4))
+            name: pygame.Rect(self.x + i * (bw + gap), by, bw, button_h)
             for i, name in enumerate(names)
         }
 
+    def _place(self) -> None:
+        """Rows of the configs in view; the selected one always is."""
+        u = self.hub.ui.unit
+        last = max(len(self.configs) - self.visible, 0)
+        if self.selected < self.scroll:
+            self.scroll = self.selected
+        elif self.selected >= self.scroll + self.visible:
+            self.scroll = self.selected - self.visible + 1
+        self.scroll = min(max(self.scroll, 0), last)
+        shown = range(self.scroll, min(self.scroll + self.visible, len(self.configs)))
+        self.rects = {
+            i: pygame.Rect(self.x, self.top + n * self.row_h, self.width, self.row_h - u // 4)
+            for n, i in enumerate(shown)
+        }
+
     def update(self, dt: float) -> None:
-        if len(self.rects) != len(self.configs):
+        if self._laid_out_for != len(self.configs):
             self.layout()
+
+    def move(self, delta: int) -> None:
+        if self.configs:
+            self.selected = (self.selected + delta) % len(self.configs)
+            self._place()
 
     def on_key(self, key: int) -> None:
         if key == pygame.K_ESCAPE:
             self.hub.back()
-        elif key in (pygame.K_UP, pygame.K_w) and self.configs:
-            self.selected = (self.selected - 1) % len(self.configs)
-        elif key in (pygame.K_DOWN, pygame.K_s) and self.configs:
-            self.selected = (self.selected + 1) % len(self.configs)
+        elif key in (pygame.K_UP, pygame.K_w):
+            self.move(-1)
+        elif key in (pygame.K_DOWN, pygame.K_s):
+            self.move(1)
         elif key in CONFIRM_KEYS[:2]:
             self.launch()
         elif key == pygame.K_v:
@@ -740,12 +767,15 @@ class TrainScreen(Screen):
             self.folder()
 
     def on_motion(self, pos) -> None:
-        for i, rect in enumerate(self.rects):
+        for i, rect in self.rects.items():
             if rect.collidepoint(pos):
                 self.selected = i
 
+    def on_wheel(self, dy: int) -> None:
+        self.move(-1 if dy > 0 else 1)
+
     def on_click(self, pos) -> None:
-        for i, rect in enumerate(self.rects):
+        for i, rect in self.rects.items():
             if rect.collidepoint(pos):
                 self.selected = i
                 return
@@ -768,10 +798,9 @@ class TrainScreen(Screen):
         ui.heading_text(screen, "ENTRENAR A LA IA", round(ui.size[1] * 0.07), self.age)
         if not self.configs:
             text = ui.desc.get("No hay ningún fichero en configs/", WARN)
-            screen.blit(
-                text, ((ui.size[0] - text.get_width()) // 2, self.rects[0].y if self.rects else 200)
-            )
-        for i, (config, rect) in enumerate(zip(self.configs, self.rects, strict=False)):
+            screen.blit(text, ((ui.size[0] - text.get_width()) // 2, self.top))
+        for i, rect in self.rects.items():
+            config = self.configs[i]
             chosen = i == self.selected
             if chosen:
                 pygame.draw.rect(screen, ACCENT, rect)
@@ -781,8 +810,9 @@ class TrainScreen(Screen):
             ink = DARK if chosen else WHITE
             sub = DARK if chosen else DIM
             if config.error:
-                title = ui.name.get(f"{config.path.name}  (no válido)", WARN)
-                detail = ui.small.get(config.error.splitlines()[-1][:90], WARN)
+                title = ui.name.get(f"{config.path.name}  (no válido)", DARK if chosen else WARN)
+                reason = config.error.splitlines()[-1]
+                detail = ui.small.get(self._fit(ui.small, reason, rect.w - 2 * u), sub)
             else:
                 title = ui.name.get(config.name, ink)
                 steps = f"{config.total_steps:,}".replace(",", ".")
@@ -792,6 +822,14 @@ class TrainScreen(Screen):
                 detail = ui.small.get(self._fit(ui.small, detail_text, rect.w - 2 * u), sub)
             screen.blit(title, (rect.x + u, rect.y + u // 3))
             screen.blit(detail, (rect.x + u, rect.bottom - detail.get_height() - u // 3))
+        if len(self.configs) > self.visible:  # more configs than rows: where we are
+            more = ui.small.get(
+                f"{self.scroll + 1}-{self.scroll + len(self.rects)} de {len(self.configs)}  ↑ ↓",
+                DIM,
+            )
+            screen.blit(
+                more, (self.x + self.width - more.get_width(), self.top - more.get_height())
+            )
         self._draw_job_panel(screen)
         self._draw_buttons(screen)
         self.draw_hint(screen)

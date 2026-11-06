@@ -816,6 +816,45 @@ def test_f11_and_the_options_keep_the_scale_of_the_session(make_hub):
     assert app.scale == 2 and app.screen.get_size() == (640, 360)
 
 
+def test_many_configs_scroll_instead_of_covering_the_buttons(make_hub, tmp_path):
+    for i in range(9):
+        write_config(tmp_path / "configs", f"c{i}", 10_000 * (i + 1))
+    app = make_hub(scale=2)  # a small window: only a few rows fit
+    screen = open_training(app)
+    assert screen.visible < 9
+    assert max(r.bottom for r in screen.rects.values()) < screen.panel_rect.top
+    assert screen.buttons["launch"].bottom < app.ui.size[1] - app.ui.unit  # above the hint line
+    for _ in range(8):
+        key(app, pygame.K_DOWN)
+    assert screen.selected == 8 and 8 in screen.rects  # the selection is always in view
+    assert screen.scroll > 0
+    key(app, pygame.K_DOWN)  # wraps to the first
+    assert screen.selected == 0 and screen.scroll == 0
+    app.handle_event(pygame.event.Event(pygame.MOUSEWHEEL, x=0, y=-1))
+    assert screen.selected == 1
+    app.run(2)  # draws the scroll marker without errors
+
+
+def test_an_invalid_config_shows_a_readable_reason_and_is_not_orange_on_orange(make_hub, tmp_path):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "rota.yaml").write_text("name: x\ntotal_steps: [1, 2\nn_envs: 1\n", encoding="utf-8")
+    app = make_hub()
+    screen = open_training(app)
+    error = screen.configs[0].error
+    assert error.splitlines()[0] == "rota.yaml: configuración no válida"
+    assert "línea" in error and "columna" in error and "^" not in error
+    app.run(2)
+    pixels = pygame.surfarray.array3d(app.screen)
+    row = screen.rects[0]
+    inside = pixels[row.x : row.right, row.y : row.bottom].reshape(-1, 3)
+    orange = np.array([251, 185, 84])
+    others = (np.abs(inside.astype(int) - orange).sum(axis=1) > 120).sum()
+    assert others > 40  # the title and the reason are drawn in a colour that is not the fill
+    key(app, pygame.K_RETURN)
+    assert app.dialog is not None and "línea" in app.dialog.text  # Lanzar says why too
+
+
 @pytest.fixture
 def dirty_editor():
     from kartlab.show.editor import NEW_SPEC, EditorApp

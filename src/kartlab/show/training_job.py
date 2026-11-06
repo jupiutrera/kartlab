@@ -81,6 +81,19 @@ def first_comment(path: Path) -> str:
     return ""
 
 
+def describe_error(error: Exception) -> str:
+    """One useful line for a config that does not load: where the YAML breaks (line and
+    column) and why, or the first line of the message (unknown option, wrong type...)."""
+    import yaml
+
+    if isinstance(error, yaml.MarkedYAMLError):
+        mark = error.problem_mark or error.context_mark
+        reason = error.problem or error.context or "YAML no válido"
+        where = f"línea {mark.line + 1}, columna {mark.column + 1}: " if mark is not None else ""
+        return where + reason
+    return (str(error).strip().splitlines() or [type(error).__name__])[0]
+
+
 def load_config(path: Path):
     """``TrainConfig.from_yaml`` with every failure turned into a ``TrainingError``."""
     from kartlab.train.config import TrainConfig
@@ -92,7 +105,9 @@ def load_config(path: Path):
     except (OSError, UnicodeDecodeError) as error:
         raise TrainingError(f"{path}: no se puede leer ({error})") from None
     except Exception as error:  # YAML errors, unknown options, wrong types...
-        raise TrainingError(f"{Path(path).name}: configuración no válida\n{error}") from None
+        raise TrainingError(
+            f"{Path(path).name}: configuración no válida\n{describe_error(error)}"
+        ) from None
 
 
 def list_configs(configs_dir: Path = CONFIGS_DIR) -> list[ConfigInfo]:
