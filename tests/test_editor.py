@@ -54,7 +54,12 @@ def make_app(tmp_path, launched):
             spec, path = source, None
         kwargs.setdefault("path", path)
         app = EditorApp(
-            spec, size=(1280, 800), spawn=spawn, tracks_dir=tmp_path / "tracks", **kwargs
+            spec,
+            size=(1280, 800),
+            spawn=spawn,
+            tracks_dir=tmp_path / "tracks",
+            root=tmp_path,
+            **kwargs,
         )
         apps.append(app)
         return app
@@ -210,8 +215,13 @@ def test_file_names_from_track_names():
     assert slugify("Bahía del Faro") == "bahia-del-faro"
     assert slugify("  ¡¡¡ ") == "circuito"
     assert resolve_save_path("Mi pista", Path("T")) == Path("T/mi-pista.json")
-    assert resolve_save_path("otro/sitio.json", Path("T")) == Path("otro/sitio.json")
-    assert resolve_save_path("x\\y", Path("T")) == Path("x\\y.json")
+    root = Path("R").resolve()
+    assert resolve_save_path("otro/sitio.json", Path("T"), root) == root / "otro/sitio.json"
+    assert resolve_save_path("x\\y", Path("T"), root) == root / "x\\y.json"
+    assert resolve_save_path(str(root / "a" / "b.json"), Path("T"), root) == root / "a" / "b.json"
+    for outside in ("../fuera.json", "a/../../fuera", str(root.parent / "fuera.json")):
+        with pytest.raises(ValueError, match="Solo se guarda dentro del proyecto"):
+            resolve_save_path(outside, Path("T"), root)
 
 
 # -- mouse editing ---------------------------------------------------------------------------
@@ -811,3 +821,37 @@ def test_toasts_never_overflow_the_canvas_even_with_a_long_path(make_app, tmp_pa
     assert tuple(app.screen.get_at((app.panel_rect.x + 30, 20)))[:3] != ed.GRASS
     app.say("Abierto tracks/ejemplo.json")
     assert app._toast_path(EXAMPLE.resolve()) == "tracks/ejemplo.json"
+
+
+def test_save_as_refuses_paths_outside_the_project(make_app, tmp_path):
+    app = make_app()
+    app.settle()
+    before = set(tmp_path.parent.iterdir())
+    for text in ("../fuera.json", "../../fuera", str(tmp_path.parent / "fuera.json")):
+        app._accept_save_as(text)
+        assert "Solo se guarda dentro del proyecto" in app.message
+    assert set(tmp_path.parent.iterdir()) == before
+    app._accept_save_as("dentro/ok.json")  # relative paths resolve against the project root
+    assert (tmp_path / "dentro" / "ok.json").exists()
+
+
+def test_save_as_to_the_file_being_edited_is_allowed_even_outside_the_project(make_app, tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-externo"
+    outside.mkdir()
+    copy = outside / "copia.json"
+    copy.write_bytes(EXAMPLE.read_bytes())
+    app = make_app(copy)
+    key(app, pygame.K_s, CTRL | SHIFT)
+    assert app.prompt.text == str(copy)  # the suggestion is its path
+    app.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0))
+    assert "Guardado" in app.message and not app.model.dirty
+
+
+def test_the_prompt_says_when_it_stops_accepting_characters(make_app):
+    app = make_app()
+    key(app, pygame.K_s, CTRL | SHIFT)
+    prompt = app.prompt
+    assert not prompt.full
+    prompt.insert("x" * 500)
+    assert len(prompt.text) == prompt.max_length and prompt.full
+    app.draw()

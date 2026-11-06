@@ -151,14 +151,21 @@ def slugify(name: str) -> str:
     return "-".join(part for part in stem.split("-") if part) or "circuito"
 
 
-def resolve_save_path(text: str, tracks_dir: Path = TRACKS_DIR) -> Path:
+def resolve_save_path(text: str, tracks_dir: Path = TRACKS_DIR, root: Path = REPO_ROOT) -> Path:
     """The file a "save as" answer means: a bare name goes to ``tracks/<slug>.json``;
-    anything with a folder or a ``.json`` suffix is taken as a path."""
+    anything with a folder or a ``.json`` suffix is a path (relative to the project root).
+
+    Raises ``ValueError`` (Spanish message) for a path that leaves the project, so a
+    typo such as ``../x`` can never write elsewhere on the disk."""
     text = text.strip()
-    if "/" in text or "\\" in text or text.lower().endswith(".json"):
-        path = Path(text)
-        return path if path.suffix else path.with_suffix(".json")
-    return tracks_dir / f"{slugify(text)}.json"
+    if not ("/" in text or "\\" in text or text.lower().endswith(".json")):
+        return tracks_dir / f"{slugify(text)}.json"
+    path = Path(text)
+    path = path if path.suffix else path.with_suffix(".json")
+    path = path if path.is_absolute() else root / path
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise ValueError(f"Solo se guarda dentro del proyecto: «{text}» queda fuera de {root.name}")
+    return path
 
 
 def project_on_segment(
@@ -400,6 +407,10 @@ class TextPrompt:
         self.on_accept = on_accept
         self.max_length = max_length
 
+    @property
+    def full(self) -> bool:
+        return len(self.text) >= self.max_length
+
     def insert(self, chars: str) -> None:
         chars = "".join(c for c in chars if c.isprintable())
         self.text = (self.text + chars)[: self.max_length]
@@ -452,6 +463,7 @@ class EditorApp:
         size: tuple[int, int] | None = None,
         spawn: Callable[[Sequence[str]], subprocess.Popen] | None = None,
         tracks_dir: Path = TRACKS_DIR,
+        root: Path = REPO_ROOT,
     ) -> None:
         enable_dpi_awareness()
         pygame.display.init()
@@ -462,6 +474,7 @@ class EditorApp:
         self.model = EditorModel(spec, saved=not new)
         self.path: Path | None = Path(path) if path else None
         self.tracks_dir = tracks_dir
+        self.root = root  # "save as" never writes outside it
         self.spawn = spawn or self._spawn
         self.view = Viewport()
         self.running = False
@@ -999,7 +1012,15 @@ class EditorApp:
         if not text.strip():
             self.say("Escribe un nombre de fichero", "error")
             return
-        self.save(resolve_save_path(text, self.tracks_dir))
+        if self.path is not None and _same_file(Path(text.strip()), self.path):
+            target = self.path  # the file being edited is always allowed
+        else:
+            try:
+                target = resolve_save_path(text, self.tracks_dir, self.root)
+            except ValueError as error:
+                self.say(str(error), "error", 6.0)
+                return
+        self.save(target)
 
     # -- saving -------------------------------------------------------------------------------
 
@@ -1528,7 +1549,10 @@ class EditorApp:
         if int(time.perf_counter() * 2) % 2 == 0:
             cx = field.x + 8 + text.get_width() + 2
             pygame.draw.line(screen, TEXT, (cx, field.y + 4), (cx, field.bottom - 4), 2)
-        hint = self.text_small.get("Intro: aceptar · Esc: cancelar", TEXT_DIM)
+        if prompt.full:
+            hint = self.text_small.get(f"Límite de {prompt.max_length} caracteres", PENDING)
+        else:
+            hint = self.text_small.get("Intro: aceptar · Esc: cancelar", TEXT_DIM)
         screen.blit(hint, (box.x + 16, box.bottom - hint.get_height() - 6))
         self._redraw = True  # the caret blinks
 

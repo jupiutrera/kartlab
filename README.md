@@ -209,7 +209,7 @@ Lo que se ve es lo que se carga: el asfalto y la línea central salen de las mis
 | `F2` | Cambia el nombre del circuito |
 | `Ctrl`+`Z`, `Ctrl`+`Y` | Deshacer y rehacer (200 pasos; un arrastre es un paso) |
 | `Ctrl`+`S` | Guarda en el fichero abierto, o en `tracks/<nombre>.json` si es nuevo |
-| `Ctrl`+`Mayús`+`S` | Guardar como: pide un nombre (`tracks/<nombre>.json`) o una ruta |
+| `Ctrl`+`Mayús`+`S` | Guardar como: pide un nombre (`tracks/<nombre>.json`) o una ruta dentro del proyecto (relativa a su raíz; `../x` se rechaza) |
 | `F5` o `T` | Prueba el circuito conduciendo (abre `drive.py` en otro proceso) |
 | `H`, `Esc` | Ayuda; salir (si hay cambios sin guardar, hay que pulsarlo dos veces) |
 
@@ -222,7 +222,7 @@ uv run python scripts/evaluate.py --track-file tracks/mio.json      # 3. 3 vuelt
 ```
 
 Reglas del editor:
-- **Guardar** (`Ctrl`+`S`) escribe sobre el fichero abierto: para conservar el original, guarda una copia con `Ctrl`+`Mayús`+`S`. Solo escribe un circuito válido (la validación completa se ejecuta justo antes) y lo hace de forma atómica, en UTF-8 y con LF. Un circuito inválido se rechaza con un mensaje y el fichero no se toca. Un circuito nuevo no sobrescribe un fichero que ya exista: se avisa y se elige otro nombre con `Ctrl`+`Mayús`+`S`.
+- **Guardar** (`Ctrl`+`S`) escribe sobre el fichero abierto: para conservar el original, guarda una copia con `Ctrl`+`Mayús`+`S`. Solo escribe un circuito válido (la validación completa se ejecuta justo antes) y lo hace de forma atómica, en UTF-8 y con LF. Un circuito inválido se rechaza con un mensaje y el fichero no se toca. «Guardar como» solo escribe dentro del proyecto (salvo sobre el propio fichero abierto). Un circuito nuevo no sobrescribe un fichero que ya exista: se avisa y se elige otro nombre con `Ctrl`+`Mayús`+`S`.
 - **Probar** (`F5`) necesita un circuito válido. Si está guardado y sin cambios, se conduce el propio fichero; si no, una copia temporal, así que probar no escribe nada en `tracks/`. Solo hay una prueba a la vez.
 - **Abrir un fichero inválido** (pero bien formado) está permitido, para poder arreglarlo; un fichero que no se puede leer se rechaza con el motivo.
 - **Formato 2 (cruces a nivel).** `tracks/ocho.json` se abre y se edita como cualquier otro, y `crossings` y `start` se conservan sin tocar al guardar. El editor no sabe declarar ni mover cruces: si al arrastrar una esquina un cruce declarado deja de existir, el validador lo dice en rojo, como cualquier otro error. Declarar cruces desde el editor queda para cuando se decida.
