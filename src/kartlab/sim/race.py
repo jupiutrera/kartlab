@@ -56,6 +56,7 @@ class Racer:
         self._lap_start = 0.0
         self._laps = 0
         self._visited: set[int] = set()
+        self.wall_hit = False  # the last step pushed the kart off a wall or the embankment
 
     @property
     def on_grass(self) -> bool:
@@ -63,17 +64,21 @@ class Racer:
 
         Tracks with level crossings ask the whole track (the second road of a crossing is
         asphalt too, though it is another branch); every other track compares the lateral
-        offset with the half width, exactly as it always did.
+        offset with the half width, exactly as it always did. With a bridge each branch is
+        its own surface: the lateral offset from its own centerline decides.
         """
-        if self.track.crossings:
+        if self.track.crossings and self.track.levels is None:
             return self._grass
         return abs(self.position.lateral) > self.track.half_width
 
     @property
     def level_z(self) -> float:
-        """Height of the road under the kart (m). Flat everywhere for now; a track with a
-        bridge will report the deck height here."""
-        return 0.0
+        """Height (m) of the road under the kart: 0 except on a bridge and its ramps.
+
+        Other code that asks "how high is this kart" (contact between karts, the renderer's
+        ``lift``) adds the hop height of the sweep on top of it.
+        """
+        return self.track.height_at(self.position.s)
 
     def displace(self, dx: float, dy: float) -> None:
         """Move the kart by ``(dx, dy)`` metres outside of the physics step (a nudge from
@@ -86,7 +91,7 @@ class Racer:
         self._update_surface()
 
     def _update_surface(self) -> None:
-        if self.track.crossings:
+        if self.track.crossings and self.track.levels is None:
             self._grass = not self.track.contains(self.kart.x, self.kart.y)
 
     @property
@@ -129,6 +134,8 @@ class Racer:
         self._keep_in_world()
         previous = self.position
         self.position = self.track.locate(self.kart.x, self.kart.y, hint=previous.index)
+        if self.track.levels is not None:
+            self._collide(previous)
         self._update_surface()
         laps = self.progress.laps
         jump = (self.position.s - previous.s + self.track.length / 2) % self.track.length
@@ -152,6 +159,17 @@ class Racer:
             self.lap_times.append(self.time - self._lap_start)
             self._lap_start = self.time
         return delta
+
+    def _collide(self, previous: TrackPosition) -> None:
+        """Walls of the bridge and tunnel, and the solid ground under the ramps."""
+        levels = self.track.levels
+        assert levels is not None
+        self.wall_hit = False
+        for _ in range(2):  # a push out of the ground can end against a wall
+            if not levels.constrain(self.kart, self.position, previous):
+                break
+            self.wall_hit = True
+            self.position = self.track.locate(self.kart.x, self.kart.y, hint=self.position.index)
 
     def _count_lap(self, delta: float, laps_before: int) -> None:
         """Lap counting for tracks with crossings (see ``laps``)."""
