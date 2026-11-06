@@ -49,7 +49,8 @@ def world(bridge):
 def render(world, pose, visuals=(), lens=CHASE, variant="day") -> np.ndarray:
     world.set_variant(variant)
     world.set_lens(lens)
-    world.render(pose, list(visuals), 1.0)
+    for _ in range(3):  # the sprite bank builds new sprites within a time budget per frame
+        world.render(pose, list(visuals), 1.0)
     return world.world_array()
 
 
