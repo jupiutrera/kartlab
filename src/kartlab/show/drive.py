@@ -431,8 +431,7 @@ class DriveApp:
             self.race_hud = RaceHud(self.overlays)
         hud, racer = self.race_hud, self.racer
         total = session.total if session.finished else racer.time
-        lap_time = 0.0 if session.finished else racer.lap_time
-        hud.lap_counter(session.lap_number, session.laps, format_time(total), format_time(lap_time))
+        hud.lap_counter(session.lap_number, session.laps, format_time(total))
         hud.countdown(session.frame, COUNTDOWN_FRAMES, 60)
         age = session.banner_age()
         if age is not None:

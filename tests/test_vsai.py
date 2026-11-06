@@ -114,7 +114,7 @@ def test_race_hud_draws_every_piece_without_errors(tiny_app):
     for place in (1, 2, 4):
         hud.position(place, 4, 0.05)
         hud.position(place, 4, 5.0)
-    hud.lap_counter(2, 3, "1:02.50", "0:31.20")
+    hud.lap_counter(2, 3, "1:02.50")
     for frame in (0, 60, 120, 179, 180, 200, 400):
         hud.countdown(frame, 180, 60)
     hud.banner("ÚLTIMA VUELTA", 0.1)

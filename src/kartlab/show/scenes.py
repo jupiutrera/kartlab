@@ -966,7 +966,6 @@ class HumanRaceScene(Scene):
             min(self.me.laps_done + 1, self.laps),
             self.laps,
             format_time(self.ended_at if self.ended_at is not None else t),
-            format_time(self.me.lap_time_at(t)),
         )
         hud.countdown(self.frame_no, self.start_frames, FPS)
         if self.banner is not None:

@@ -42,7 +42,7 @@ GLYPHS: dict[str, tuple[str, ...]] = {
     "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
     "V": ("10001", "10001", "10001", "10001", "01010", "01010", "00100"),
     "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
-    "Ú": ("00100", "10001", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "Ú": ("00100", "00000", "00000", "10001", "10001", "10001", "10001", "10001", "10001", "01110"),
     "/": ("00001", "00001", "00010", "00100", "01000", "10000", "10000"),
     "!": ("00100", "00100", "00100", "00100", "00100", "00000", "00100"),
     "¡": ("00100", "00000", "00100", "00100", "00100", "00100", "00100"),
@@ -219,19 +219,23 @@ class RaceHud:
         ov.screen.blit(ordinal_mark, (x + number.get_width() - cell, top))
         ov.screen.blit(of, (x + number.get_width() - cell, bottom - of.get_height()))
 
-    def lap_counter(self, lap: int, laps: int, total_time: str, lap_time: str) -> None:
-        """ "VUELTA 1/3" in small pixel art at the top centre, with the two clocks under it."""
+    def lap_counter(self, lap: int, laps: int, total_time: str) -> None:
+        """ "VUELTA 1/3" in small pixel art at the top centre, with the total time beside it.
+        One row, so the notices of the 3D view (drawn just below) stay readable."""
         ov, u = self.ov, self.ov.unit
         game = ov.game
         sign = self.pixels.get(f"VUELTA {lap}/{laps}", self.small_cell, PAPER)
-        clock = game.small.get(f"Total {total_time}  ·  Vuelta {lap_time}", WHITE)
-        w = max(sign.get_width(), clock.get_width()) + u
-        h = sign.get_height() + clock.get_height() + u // 2
+        clock = game.small.get(total_time, WHITE)
+        gap = u
+        w = sign.get_width() + gap + clock.get_width() + u
+        h = sign.get_height() + u // 4
         x = (ov.size[0] - w) // 2
-        y = game.world_rect.y + u // 2
+        y = game.world_rect.y + u // 4
         ov.screen.blit(ov.panel(w, h), (x, y))
-        ov.screen.blit(sign, (x + (w - sign.get_width()) // 2, y + u // 5))
-        ov.screen.blit(clock, (x + (w - clock.get_width()) // 2, y + u // 5 + sign.get_height()))
+        ov.screen.blit(sign, (x + u // 2, y + u // 8))
+        ov.screen.blit(
+            clock, (x + u // 2 + sign.get_width() + gap, y + (h - clock.get_height()) // 2)
+        )
 
     # -- events ------------------------------------------------------------------------------
 
