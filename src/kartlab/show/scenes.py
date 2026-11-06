@@ -456,8 +456,11 @@ class RaceScene(Scene):
     def frame(self):
         if not self.entries:
             return None
+        # No labels under the countdown digit: the standings panel says who is who.
+        racing = self.frame_no >= round(COUNTDOWN_SECONDS * FPS)
+        label = short_label if racing else (lambda _steps: None)
         visuals = [
-            visual_of(e.driver, e.ramp, short_label(e.steps), ghost=i != self.focus)
+            visual_of(e.driver, e.ramp, label(e.steps), ghost=i != self.focus)
             for i, e in enumerate(self.entries)
         ]
         followed = self.entries[self.focus]

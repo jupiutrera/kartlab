@@ -381,7 +381,12 @@ def render_race(
                 if end_frame is None and (best.laps_done >= laps or frame + 1 >= max_frames):
                     end_frame = frame + round(FINISH_SECONDS * FPS)
             visuals = [
-                visual_of(r.driver, r.ramp, _short_label(r.steps), ghost=r is not best)
+                visual_of(
+                    r.driver,
+                    r.ramp,
+                    None if not racing else _short_label(r.steps),
+                    ghost=r is not best,
+                )  # no labels under the countdown digit
                 for r in racers
             ]
             racer = best.driver.racer

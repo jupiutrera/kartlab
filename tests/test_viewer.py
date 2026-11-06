@@ -458,3 +458,13 @@ def test_video_tool_reports_a_missing_run_and_a_bogus_track(tiny_run, tmp_path):
     with pytest.raises(SystemExit) as bad_track:
         video_main(["demo", "--run", str(tiny_run.root), "--track", "bogus"])
     assert "Circuito no válido" in str(bad_track.value)
+
+
+def test_race_labels_wait_for_the_end_of_the_countdown(app):
+    viewer = app(mode="race")
+    viewer.run_loop(30)
+    visuals, _, _ = viewer.scene.frame()
+    assert all(v.label is None for v in visuals)  # the digit would sit on top of them
+    viewer.run_loop(200)
+    visuals, _, _ = viewer.scene.frame()
+    assert all(v.label for v in visuals)
