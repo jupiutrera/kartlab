@@ -239,6 +239,16 @@ def wrap(text: str, max_width: int, scale: int = 1) -> list[str]:
     return lines
 
 
+def wrap_clip(text: str, max_width: int, max_lines: int, scale: int = 1) -> list[str]:
+    """``wrap`` into at most ``max_lines`` lines; what does not fit ends the last one in an
+    ellipsis (so a name is split in two or three lines before anything is cut off)."""
+    lines = wrap(text, max_width, scale)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = ellipsize(lines[-1] + " …", max_width, scale)
+    return lines
+
+
 def ellipsize(text: str, max_width: int, scale: int = 1, keep: str = "start") -> str:
     """``text`` shortened with an ellipsis to fit ``max_width``; ``keep`` says which end
     stays: ``start`` for names, ``end`` for paths (the file name matters most)."""

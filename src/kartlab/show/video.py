@@ -21,6 +21,7 @@ from typing import NamedTuple
 import imageio_ffmpeg
 import pygame
 
+from kartlab.render import pixelui as ui
 from kartlab.render.scene import KartVisual
 from kartlab.render.topdown import KART_COLOR, format_time
 from kartlab.render.view import GameView, HudInfo
@@ -392,7 +393,10 @@ def render_race(
                 best_lap=best.driver.best_lap,
                 speed=racer.speed,
                 label="Carrera de versiones",
-                extra=[track.name, f"{laps} vueltas, cámara de retransmisión"],
+                extra=[
+                    track.name,
+                    f"{ui.plural(laps, 'vuelta', 'vueltas')}, cámara de retransmisión",
+                ],
             )
             comp.draw_world(visuals, 0, info)
             order = sorted(racers, key=lambda r: -r.driver.racer.progress.distance)
@@ -406,7 +410,7 @@ def render_race(
                 age = frame - (end_frame - round(FINISH_SECONDS * FPS))
                 comp.card(
                     f"Ganador: {version_name(order[0].steps)}",
-                    [f"{track.name}, {laps} vueltas"],
+                    [f"{track.name}, {ui.plural(laps, 'vuelta', 'vueltas')}"],
                     age=age / FPS,
                     life=FINISH_SECONDS,
                 )
@@ -477,9 +481,11 @@ def render_demo(
                 if best is not None:
                     lines.append(f"Mejor vuelta  {format_time(best)}")
                 comp.card(
-                    f"{len(lap_times)} de {laps} vueltas", lines or ["Sin vueltas"],
-                    age=age / FPS, life=summary_frames / FPS,
-                )  # fmt: skip
+                    f"{len(lap_times)} de {ui.plural(laps, 'vuelta', 'vueltas')}",
+                    lines or ["Sin vueltas"],
+                    age=age / FPS,
+                    life=summary_frames / FPS,
+                )
             comp.dim(comp.segment_fade(frame, end_frame))
             comp.commit()
             frame += 1

@@ -135,12 +135,98 @@ def fit_cell(text: str, cell: int, share: float = 0.8, bold: bool = True) -> int
     return max(1, min(cell, int(ui.CANVAS_SIZE[0] * share / columns)))
 
 
+def sign_size(text: str, cell: int, bold: bool = SIGN_BOLD) -> tuple[int, int]:
+    """Pixel size of ``render(text, cell, ...)`` without drawing it."""
+    rows, cols = _grid(text, bold).shape
+    return (cols + 3) * cell, (rows + 3) * cell
+
+
+_slots: dict[tuple, tuple[int, int] | None] = {}
+
+
+def _free_center(
+    size: tuple[int, int], center: tuple[int, int], avoid: tuple[tuple[int, int, int, int], ...]
+) -> tuple[int, int] | None:
+    """The point nearest to ``center`` where a ``size`` rectangle touches no ``avoid`` one and
+    stays on the canvas (None if there is none). Searched on a 2 px lattice and cached."""
+    key = (size, center, avoid)
+    if key in _slots:
+        return _slots[key]
+    w, h = size
+    cw, ch = ui.CANVAS_SIZE
+    margin = 2
+    rects = [pygame.Rect(r) for r in avoid]
+    found = None
+    if w <= cw - 2 * margin and h <= ch - 2 * margin:
+        xs = range(margin + w // 2, cw - margin - w // 2 + 1, 2)
+        ys = range(margin + h // 2, ch - margin - h // 2 + 1, 2)
+        points = sorted(
+            ((x, y) for x in xs for y in ys),
+            key=lambda p: (p[0] - center[0]) ** 2 + (p[1] - center[1]) ** 2,
+        )
+        for x, y in points:
+            box = pygame.Rect(x - w // 2, y - h // 2, w, h)
+            if box.collidelist(rects) < 0:
+                found = (x, y)
+                break
+    if len(_slots) >= 256:
+        _slots.clear()
+    _slots[key] = found
+    return found
+
+
+def place_sign(
+    text: str,
+    cell: int,
+    pop: int,
+    share: float,
+    center: tuple[int, int],
+    avoid=(),
+    bold: bool = SIGN_BOLD,
+) -> tuple[int, tuple[int, int]]:
+    """Where and how big a sign is drawn so that it covers no panel: ``(cell, centre)``.
+
+    The settled size (without the pop) looks for the free spot nearest to ``center``, shrinking
+    the cell until one exists; the centre then stays put while the pop grows the cell, as far
+    as it still fits there. With nothing free at the smallest cell, the default spot is used."""
+    rects = tuple(tuple(r) for r in avoid)
+    settled = fit_cell(text, cell, share, bold)
+    for c in range(settled, 1, -1):
+        size = sign_size(text, c, bold)
+        spot = center if _clear_at(size, center, rects) else _free_center(size, center, rects)
+        if spot is not None:
+            break
+    else:
+        return 1, center
+    for grown in range(fit_cell(text, cell + pop, share, bold), c, -1):
+        if _clear_at(sign_size(text, grown, bold), spot, rects):
+            return grown, spot
+    return c, spot
+
+
+def _clear_at(
+    size: tuple[int, int], center: tuple[int, int], avoid: tuple[tuple[int, int, int, int], ...]
+) -> bool:
+    """Whether a ``size`` rectangle centred on ``center`` touches none of ``avoid``. Checked
+    directly, not on the search lattice of ``_free_center``: the lattice depends on the
+    parity of the size, so a size that fits right there could look as if it did not."""
+    w, h = size
+    box = pygame.Rect(center[0] - w // 2, center[1] - h // 2, w, h)
+    return box.collidelist([pygame.Rect(r) for r in avoid]) < 0
+
+
 def countdown(
-    canvas: pygame.Surface, frame: int, start_frames: int, fps: int, y: int | None = None
-) -> None:
-    """3, 2, 1 in big digits at the centre, then "¡YA!" for a moment."""
+    canvas: pygame.Surface,
+    frame: int,
+    start_frames: int,
+    fps: int,
+    y: int | None = None,
+    avoid=(),
+) -> pygame.Rect | None:
+    """3, 2, 1 in big digits at the centre, then "¡YA!" for a moment. It keeps clear of the
+    rectangles in ``avoid`` (the panels) and returns where it was drawn."""
     if frame >= start_frames + round(0.9 * fps):
-        return
+        return None
     if frame < start_frames:
         left = (start_frames - frame) / fps
         number = math.ceil(left)
@@ -149,15 +235,9 @@ def countdown(
     else:
         text, look = "¡YA!", GREEN
         age = (frame - start_frames) / fps
-    cell = fit_cell(text, 6 + pop_extra(age), 0.7, SIGN_BOLD)
-    draw(
-        canvas,
-        text,
-        cell,
-        look,
-        center=(ui.CANVAS_SIZE[0] // 2, 68 if y is None else y),
-        bold=SIGN_BOLD,
-    )
+    center = (ui.CANVAS_SIZE[0] // 2, 68 if y is None else y)
+    cell, center = place_sign(text, 6, pop_extra(age), 0.7, center, avoid)
+    return draw(canvas, text, cell, look, center=center, bold=SIGN_BOLD)
 
 
 def banner(
@@ -167,17 +247,13 @@ def banner(
     life: float = 2.5,
     look: Look = AMBER,
     y: int | None = None,
-) -> None:
-    """A word across the upper half ("ÚLTIMA VUELTA", "¡META!"): pops in, holds, leaves."""
+    avoid=(),
+) -> pygame.Rect | None:
+    """A word across the upper half ("ÚLTIMA VUELTA", "¡META!"): pops in, holds, leaves. It
+    keeps clear of the rectangles in ``avoid`` (the panels) and returns where it was drawn."""
     if age < 0.0 or age >= life:
-        return
-    cell = fit_cell(text, 4 + pop_extra(age), 0.85, SIGN_BOLD)
+        return None
+    center = (ui.CANVAS_SIZE[0] // 2, 56 if y is None else y)
+    cell, center = place_sign(text, 4, pop_extra(age), 0.85, center, avoid)
     slide = 0 if age < life - 0.4 else round((age - (life - 0.4)) / 0.4 * ui.CANVAS_SIZE[0] / 2)
-    draw(
-        canvas,
-        text,
-        cell,
-        look,
-        center=(ui.CANVAS_SIZE[0] // 2 + slide, 56 if y is None else y),
-        bold=SIGN_BOLD,
-    )
+    return draw(canvas, text, cell, look, center=(center[0] + slide, center[1]), bold=SIGN_BOLD)

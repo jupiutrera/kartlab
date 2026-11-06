@@ -499,3 +499,126 @@ def test_the_top_down_signs_sit_clear_of_the_data_panels(tmp_path):
             assert not any(sign.colliderect(plate) for plate in plates), (sign, plates)
     finally:
         pygame.quit()
+
+
+# -- the big lettering and the results card keep clear of the panels ------------------------------
+
+
+def test_the_countdown_and_the_banners_cover_no_panel_with_seven_versions_racing(view):
+    ov = Overlays(view)
+    hud = RaceHud(ov)
+    rows = [(i, f"{(i + 1) * 100}k pasos", "1/2") for i in range(7)]
+    info = HudInfo(
+        laps=0,
+        lap_time=0.0,
+        best_lap=None,
+        speed=0.0,
+        label="Carrera de versiones",
+        extra=["Puerto", "2 vueltas", "Sigues a 1,5M pasos"],
+        lap_panel=False,
+    )
+    drawn = 0
+    for age in (0.0, 0.05, 0.1, 0.2, 0.5, 1.0):
+        for step in range(0, 241, 5):
+            frame(view, info)
+            ov.standings(rows, (3, 3), 1)
+            rect = hud.countdown(step, 180, 60)
+            if rect is not None:
+                drawn += 1
+                assert not overlaps(view, rect), (step, rect, view.hud.reserved)
+        for text in ("ÚLTIMA VUELTA", "¡META!"):
+            frame(view, info)
+            ov.standings(rows, (3, 3), 1)
+            rect = hud.banner(text, age)
+            assert rect is not None and not overlaps(view, rect), (text, age, rect)
+    assert drawn > 20
+
+
+def test_the_big_lettering_only_shrinks_when_no_room_is_left():
+    avoid = [(0, 0, 320, 120)]  # a panel over the top two thirds of the canvas
+    cell, center = bigtext.place_sign("¡YA!", 6, 0, 0.7, (160, 68), avoid)
+    width, height = bigtext.sign_size("¡YA!", cell)
+    assert cell < 6 and center[1] - height // 2 >= 120  # it dropped below the panel and shrank
+    cell, center = bigtext.place_sign("¡YA!", 6, 0, 0.7, (160, 68), ())
+    assert cell == 6 and center == (160, 68)  # with room it stays where it was
+
+
+def test_with_nothing_in_the_way_the_pop_reaches_its_full_size():
+    # The pop used to be checked on the search lattice, whose points depend on the parity of
+    # the size, so a size that fitted right there was thrown away and the sign looked smaller.
+    for text in ("3", "2", "1", "¡YA!", "¡META!", "ÚLTIMA VUELTA"):
+        for cell in (4, 5, 6, 7):
+            for pop in range(0, 9):
+                got, center = bigtext.place_sign(text, cell, pop, 0.7, (160, 68), ())
+                assert center == (160, 68), (text, cell, pop)
+                assert got == bigtext.fit_cell(text, cell + pop, 0.7), (text, cell, pop)
+
+
+def test_the_results_card_of_the_top_down_trial_covers_no_panel(trial_app, monkeypatch):
+    app = trial_app()
+    app.run(max_frames=5)
+    pilot = Autopilot(showcase_track("harbor"))
+    monkeypatch.setattr(
+        "kartlab.show.drive.keyboard_controls", lambda pressed: pilot.act(app.racer)
+    )
+    for _ in range(60 * 400):
+        app.physics_step()
+        if app.session.finished:
+            break
+    assert app.session.finished
+    for autopilot in (False, True):  # the right panel is longer with the autopilot label
+        app.autopilot_on = autopilot
+        app.run(max_frames=60 * 4)
+        hud = app.race_hud
+        card = hud.card
+        assert card is not None and pygame.Rect(0, 0, 320, 180).contains(card)
+        others = [p for p in hud.panels if p != card]
+        assert len(others) >= 3  # the two data blocks and the lap bar
+        assert not any(card.colliderect(p) for p in others), (card, others)
+
+
+def test_a_long_track_name_is_split_in_lines_in_the_top_down_panel(tmp_path, monkeypatch):
+    from kartlab.sim.trackfile import load_track_file
+
+    track = load_track_file("tracks/ocho_puente.json")
+    seen = []
+    original = ui.text
+
+    def spy(target, value, *args, **kwargs):
+        seen.append(value)
+        return original(target, value, *args, **kwargs)
+
+    monkeypatch.setattr(ui, "text", spy)
+    app = DriveApp(track, scale=2, realtime=False, view="topdown", records_dir=tmp_path)
+    try:
+        app.run(max_frames=3)
+    finally:
+        pygame.quit()
+    assert not any("…" in line for line in seen)
+    assert {"LAZO DEL", "MOLINO -", "PUENTE"} <= {line.upper() for line in seen}
+
+
+def test_the_time_trial_panel_has_a_fixed_width_and_never_reaches_the_lap_bar(view):
+    hud = RaceHud(Overlays(view))
+    widths = set()
+    for record, last, delta in (
+        (None, None, None),
+        (46.22, 46.22, -0.42),
+        (71.11, 111.11, 12.34),
+        (60.0, 59.99, 0.0),
+    ):
+        info = HudInfo(
+            lap_panel=False,
+            trial=TrialHud(record=record, last=last, delta=delta),
+        )
+        frame(view, info)
+        trial = view.hud.reserved[0]  # the first panel of the frame is the time-trial one
+        for laps in (1, 3):
+            frame(view, info)
+            hud.lap_counter(laps, 3, "2:19,78", "0:46,22", "0:46,22")
+            panels = view.hud.reserved
+            for i, a in enumerate(panels):
+                for b in panels[i + 1 :]:
+                    assert not a.colliderect(b), (record, last, laps, a, b)
+        widths.add(trial.w)
+    assert len(widths) == 1  # whatever the times, the panel is as wide as always

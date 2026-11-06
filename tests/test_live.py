@@ -253,3 +253,79 @@ def test_the_live_notice_does_not_cover_the_chart_the_brain_or_the_model_panel(t
         assert not [r for r in hud.reserved if r.colliderect(hud.notice_rect)]
     finally:
         pygame.quit()
+
+
+def _drawn_texts(monkeypatch):
+    """Every string the interface draws from now on (a list that grows)."""
+    from kartlab.render import pixelui as ui
+
+    seen: list[str] = []
+    original = ui.text
+
+    def spy(target, value, *args, **kwargs):
+        seen.append(value)
+        return original(target, value, *args, **kwargs)
+
+    monkeypatch.setattr(ui, "text", spy)
+    return seen
+
+
+def test_a_long_track_name_is_split_in_lines_in_the_live_panel(tiny_run, monkeypatch):
+    track = load_track_file("tracks/ocho_puente.json")
+    assert track.name == "Lazo del Molino - puente"
+    seen = _drawn_texts(monkeypatch)
+    app = LiveApp(
+        tiny_run,
+        track_choice="harbor",
+        ghosts=0,
+        scale=2,
+        realtime=False,
+        view="topdown",
+        track=track,
+    )
+    try:
+        app.preload_ghosts()
+        app.loader.poll_once()
+        app.run(max_frames=5)
+    finally:
+        pygame.quit()
+    assert not any("…" in line and "MOL" in line.upper() for line in seen)
+    assert {"LAZO DEL MOLINO", "- PUENTE"} <= {line.upper() for line in seen}
+
+
+def test_wrap_clip_splits_before_it_cuts():
+    from kartlab.render import pixelui as ui
+
+    name = "Lazo del Molino - puente"
+    assert ui.wrap_clip(name, 88, 3) == ["Lazo del Molino", "- puente"]
+    assert ui.wrap_clip(name, 76, 3) == ["Lazo del", "Molino -", "puente"]
+    clipped = ui.wrap_clip("uno dos tres cuatro cinco seis siete", 40, 2)
+    assert len(clipped) == 2 and clipped[-1].endswith("…")
+    assert ui.wrap_clip("Puerto", 88, 3) == ["Puerto"]
+
+
+def test_the_ghost_labels_stay_whole_inside_the_map_even_at_its_edges():
+    from kartlab.show.live import place_label
+
+    bounds = pygame.Rect(0, 0, 224, 180)  # the map: the side panel starts at its right edge
+    widths = [72, 78, 66, 84]  # "160K PASOS", "500K PASOS"...
+    spots = [(222, 90), (221, 92), (220, 91), (219, 93)]  # four karts at the right edge
+    spots += [(2, 90), (110, 1), (110, 178), (1, 1), (223, 179)]
+    for kart in spots:
+        placed = []
+        for width in widths:
+            rect = place_label(width, kart, bounds, placed)
+            assert bounds.contains(rect), (kart, width, rect)
+            assert rect.collidelist(placed) == -1, (kart, width, rect, placed)
+            placed.append(rect)
+    # Karts bunched up near the top or the bottom edge: the labels stack away from that edge
+    # instead of poking out of the map (at the start of a race the karts are side by side).
+    for kart in [(110, 12), (110, 20), (110, 168), (110, 160), (5, 14), (219, 166)]:
+        placed = []
+        for width in widths:
+            rect = place_label(width, kart, bounds, placed)
+            assert bounds.contains(rect), (kart, width, rect)
+            placed.append(rect)
+    # With room all round the label is centred above its kart, as always.
+    rect = place_label(60, (100, 90), bounds, [])
+    assert rect.midbottom == (100, 85)

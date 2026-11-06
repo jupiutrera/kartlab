@@ -631,7 +631,7 @@ class ViewerApp:
         steps = self.library.steps
         last = format_steps(steps[-1])
         first = "sin entrenar" if steps[0] == 0 else format_steps(steps[0])
-        versions = f"{len(steps)} versiones, de {first} a {last} pasos"
+        versions = f"{ui.plural(len(steps), 'versión', 'versiones')}, de {first} a {last} pasos"
         self.title.draw(canvas, self.t, "", versions, "↑↓ elegir, Intro empezar, H ayuda")
 
     def _draw_loading(self, canvas: pygame.Surface, text: str) -> None:

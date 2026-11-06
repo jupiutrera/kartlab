@@ -36,7 +36,11 @@ def ease_in_out(t: float) -> float:
 
 
 def version_name(steps: int) -> str:
-    return "Sin entrenar" if steps == 0 else f"{format_steps(steps)} pasos"
+    return (
+        "Sin entrenar"
+        if steps == 0
+        else f"{format_steps(steps)} {'paso' if steps == 1 else 'pasos'}"
+    )
 
 
 def count_steps(steps: int) -> str:
@@ -185,9 +189,12 @@ class Overlays:
                 ui.hline(self.canvas, cursor, y + 11, widths[i], ui.YELLOW)
             cursor += widths[i] + gap
 
-    def countdown(self, frame: int, start_frames: int, fps: int) -> None:
-        """3, 2, 1 before ``start_frames`` and "¡YA!" right after, in big letters."""
-        bigtext.countdown(self.canvas, frame, start_frames, fps)
+    def countdown(self, frame: int, start_frames: int, fps: int) -> pygame.Rect | None:
+        """3, 2, 1 before ``start_frames`` and "¡YA!" right after, in big letters, clear of
+        the panels of the frame."""
+        return bigtext.countdown(
+            self.canvas, frame, start_frames, fps, avoid=self.game.hud.reserved
+        )
 
 
 def build_help(title: str | None, columns: list[list[tuple[str, str, bool]]]) -> pygame.Surface:

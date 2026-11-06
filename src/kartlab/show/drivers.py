@@ -41,7 +41,7 @@ class Version:
 
     @property
     def label(self) -> str:
-        return f"{format_steps(self.steps)} pasos"
+        return f"{format_steps(self.steps)} {'paso' if self.steps == 1 else 'pasos'}"
 
 
 def model_value(model, vecnormalize_path: Path | None = None):

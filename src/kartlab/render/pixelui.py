@@ -33,6 +33,7 @@ from kartlab.render.pixelfont import (
     measure,
     text_mask,
     wrap,
+    wrap_clip,
 )
 
 __all__ = [
@@ -54,11 +55,13 @@ __all__ = [
     "keycap",
     "measure",
     "plate",
+    "plural",
     "rgb",
     "tag",
     "text",
     "vline",
     "wrap",
+    "wrap_clip",
 ]
 
 CANVAS_SIZE = (320, 180)  # the logical resolution of the world and of the interface
@@ -117,6 +120,11 @@ def fmt_clock(seconds: float | None, digits: int = 2) -> str:
     minutes, rest = divmod(seconds, 60.0)
     width = digits + 3 if digits else 2
     return comma(f"{int(minutes)}:{rest:0{width}.{digits}f}")
+
+
+def plural(count: int, one: str, many: str) -> str:
+    """``count`` with its noun in the right number: ``1 vuelta``, ``3 vueltas``."""
+    return f"{count} {one if count == 1 else many}"
 
 
 def fmt_count(value: int) -> str:
