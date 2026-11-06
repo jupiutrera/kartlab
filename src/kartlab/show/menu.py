@@ -482,11 +482,11 @@ class OptionsScreen(Screen):
 
         def cycle_scale(d: int) -> None:
             i = SCALES.index(s.scale)
-            s.scale = SCALES[(i + d) % len(SCALES)]
+            s.scale = self.hub.scale = SCALES[(i + d) % len(SCALES)]
             self.hub.apply_window()
 
         def cycle_fullscreen(d: int) -> None:
-            s.fullscreen = not s.fullscreen
+            s.fullscreen = self.hub.fullscreen = not s.fullscreen
             self.hub.apply_window()
 
         def cycle_light(d: int) -> None:

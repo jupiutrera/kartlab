@@ -10,6 +10,7 @@ art; the circuit cards draw the centerline in small.
 from __future__ import annotations
 
 import math
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
     from kartlab.show.hub import KartLabApp
 
 PREVIEW_ELEVATION = ELEVATIONS[2]  # 35 degrees: the kart seen from above and behind
+RANDOM_CACHE = 16  # random circuits kept (each "R" makes a new one)
 SPIN_SECONDS = 7.0  # one turn of the kart on its turntable
 
 
@@ -204,6 +206,7 @@ class TrackCatalog:
         self.random_seed = self.new_seed()
         self.eval_index = 0
         self._cache: dict[tuple, Track] = {}
+        self._random: OrderedDict[int, Track] = OrderedDict()  # LRU: a seed per "otro aleatorio"
 
     def new_seed(self) -> int:
         from kartlab.sim.tracksets import sample_train_seed
@@ -247,7 +250,11 @@ class TrackCatalog:
         return options
 
     def random(self) -> TrackOption:
-        track = self._cached(("r", self.random_seed), lambda: train_track(self.random_seed))
+        seed = self.random_seed
+        track = self._random.pop(seed, None) or train_track(seed)
+        self._random[seed] = track  # most recently used last
+        while len(self._random) > RANDOM_CACHE:
+            self._random.popitem(last=False)
         return TrackOption("random", "Aleatorio", track, seed=self.random_seed)
 
     def evaluation(self) -> TrackOption:
@@ -267,11 +274,16 @@ class TrackCatalog:
 
         if choice in SHOWCASE:
             return showcase_track(choice)
-        if choice.startswith("file:"):
+        if choice.startswith("file:") or choice.lower().endswith(".json"):
             path = Path(choice.removeprefix("file:"))
-            return load_track_file(path if path.is_absolute() else self.root / path)
+            if not path.is_absolute() and (self.root / path).exists():
+                path = self.root / path  # relative to the repository, else to the working folder
+            return load_track_file(path)
         if choice.startswith("eval:"):
-            return eval_track(int(choice.removeprefix("eval:")) - 1)
+            number = int(choice.removeprefix("eval:"))
+            if not 1 <= number <= len(EVAL_SEEDS):
+                raise ValueError(f"evaluación fuera de rango: {number}")
+            return eval_track(number - 1)
         if choice.startswith("random"):
             seed = int(choice.partition(":")[2] or self.new_seed())
             return train_track(seed)

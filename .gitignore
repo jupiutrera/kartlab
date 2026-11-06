@@ -25,6 +25,7 @@ records/
 
 # Menú principal: ajustes del jugador y registros de los entrenamientos que lanza
 settings.json
+.settings.json.*.tmp
 logs/
 
 # Vídeos y capturas generadas

@@ -39,7 +39,7 @@ class Settings:
         settings = cls()
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
-        except (OSError, ValueError):  # no file, no permission, not UTF-8, not JSON
+        except (OSError, ValueError, RecursionError):  # no file, not UTF-8, not JSON, too deep
             return settings
         if not isinstance(data, dict):
             return settings

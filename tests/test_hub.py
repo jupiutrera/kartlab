@@ -776,3 +776,60 @@ def test_an_activity_that_fails_shows_a_message_and_the_menu_keeps_working(make_
     assert "se ha roto" in app.dialog.text
     assert app.current is app.main_screen and app.screen.get_size() == (640, 360)
     capsys.readouterr()  # the traceback went to stderr, not to the player
+
+
+# -- fixes after the independent review --------------------------------------------------------
+
+
+def test_open_accepts_a_plain_json_path_and_rejects_evaluation_out_of_range(make_hub):
+    app = make_hub()
+    track = app.catalog.resolve("tracks/ejemplo.json")  # no "file:" prefix
+    assert track.name == "Bahía del Faro"
+    assert app.catalog.resolve("file:tracks/ejemplo.json").name == track.name
+    assert app.catalog.resolve("eval:1").name == "Evaluación 1"
+    assert app.catalog.resolve("eval:20").name == "Evaluación 20"
+    for bad in ("eval:0", "eval:21", "eval:-3"):
+        with pytest.raises(ValueError, match="fuera de rango"):
+            app.catalog.resolve(bad)
+        with pytest.raises(hub_module.ActivityError, match="Circuito no válido"):
+            app.resolve_track(bad)
+
+
+def test_open_with_a_json_track_path_runs_the_game(make_hub):
+    app = make_hub()
+    app.open_direct("conduccion", track="tracks/ejemplo.json")
+    app.run(2)
+    assert app.dialog is None and app.current is app.main_screen
+
+
+def test_f11_and_the_options_keep_the_scale_of_the_session(make_hub):
+    app = make_hub(scale=2)
+    key(app, pygame.K_F11)
+    key(app, pygame.K_F11)  # fullscreen on and off again
+    assert app.screen.get_size() == (640, 360)  # not the automatic (largest) scale
+    assert app.scale == 2 and app.settings.fullscreen is False
+    select(app, "opciones")
+    key(app, pygame.K_RETURN)
+    key(app, pygame.K_DOWN)
+    key(app, pygame.K_RIGHT)
+    key(app, pygame.K_RIGHT)  # fullscreen on, off
+    assert app.scale == 2 and app.screen.get_size() == (640, 360)
+
+
+def test_a_deeply_nested_settings_file_is_ignored(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+    assert Settings.load(path) == Settings()
+
+
+def test_the_atomic_write_temporaries_are_ignored_by_git(tmp_path):
+    ignored = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").split()
+    assert ".settings.json.*.tmp" in ignored
+
+
+def test_the_random_circuit_cache_is_bounded(make_hub):
+    app = make_hub()
+    for _ in range(40):
+        app.catalog.random_seed = app.catalog.new_seed()
+        app.catalog.random()
+    assert len(app.catalog._random) == 16

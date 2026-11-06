@@ -423,7 +423,7 @@ class KartLabApp:
         self.current.layout()
 
     def apply_window(self) -> None:
-        self.scale, self.fullscreen = self.settings.scale, self.settings.fullscreen
+        """Apply ``self.scale`` and ``self.fullscreen`` (the session's values) to the window."""
         self.screen = set_window_mode(self.scale, self.fullscreen)
         self.layout()
 
@@ -434,9 +434,9 @@ class KartLabApp:
         pass  # the backdrop reads the colour from the settings every frame
 
     def toggle_fullscreen(self) -> None:
-        self.settings.fullscreen = not self.fullscreen
+        self.fullscreen = self.settings.fullscreen = not self.fullscreen
         self.save_settings()
-        self.apply_window()
+        self.apply_window()  # keeps the scale the session started with (--scale)
 
     def restore_window(self) -> None:
         """After an activity: its window mode, caption, cursor and queued events are gone."""
