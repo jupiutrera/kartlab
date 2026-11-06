@@ -37,10 +37,10 @@ from kartlab.render.topdown import (
 )
 from kartlab.render.view import GameView, HudInfo
 from kartlab.show.charts import MetricsReader, RewardChart
+from kartlab.show.cli import existing_run_or_exit, resolve_track_or_exit
 from kartlab.show.drivers import PolicyDriver, Version, format_steps, load_version
 from kartlab.sim.kart import DT
 from kartlab.sim.track import Track
-from kartlab.sim.trackfile import TrackFileError, load_track_file
 from kartlab.sim.tracksets import resolve_track
 from kartlab.train.config import TrainConfig
 from kartlab.train.run import Checkpoint, RunPaths, latest_run
@@ -75,8 +75,8 @@ class ModelLoader:
             return
         try:
             version = load_version(latest)
-        except (OSError, ValueError, EOFError, KeyError):
-            return  # replaced while reading: try again next time
+        except Exception:  # replaced or half written while reading: try again next time
+            return
         self.loaded_steps = latest.steps
         self.versions.put(version)
 
@@ -447,15 +447,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--screenshot", type=Path, help="guarda el último fotograma en este PNG")
     args = parser.parse_args(argv)
 
-    run = RunPaths(args.run) if args.run else latest_run()
+    run = existing_run_or_exit(args.run) if args.run else latest_run()
     if run is None:
         raise SystemExit("No hay ningún run en runs/. Lanza antes scripts/train.py.")
     if not run.config.exists():
         raise SystemExit(f"{run.root} no tiene config.yaml")
-    try:
-        track = load_track_file(args.track_file) if args.track_file else None
-    except TrackFileError as error:
-        raise SystemExit(f"Circuito no válido:\n{error}") from None
+    track = None
+    if args.track_file:
+        track = resolve_track_or_exit(str(args.track_file))
+    elif args.track:
+        track = resolve_track_or_exit(args.track)
     realtime = args.frames is None
     app = LiveApp(
         run,

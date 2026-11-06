@@ -10,10 +10,11 @@ right away and the result is identical.
 from __future__ import annotations
 
 import math
-import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 
 from kartlab.show.drivers import Version, load_version
+from kartlab.show.overlays import version_name
+from kartlab.train.config import TrainConfig
 from kartlab.train.run import Checkpoint, RunPaths
 
 BEST = -1  # key of best_model.zip, the best evaluated policy
@@ -67,10 +68,14 @@ class VersionLibrary:
         self.run = run
         self.synchronous = synchronous
         self.checkpoints: list[Checkpoint] = run.list_checkpoints()
+        try:
+            self.normalize_obs = TrainConfig.from_yaml(run.config).normalize_obs
+        except (OSError, ValueError, KeyError, TypeError):
+            self.normalize_obs = False
         self._cache: dict[int, Version] = {}
         self._futures: dict[int, Future] = {}
         self._failed: dict[int, str] = {}
-        self._lock = threading.Lock()
+        self.notices: list[str] = []  # for the viewer to show once (read from any thread)
         self._pool: ThreadPoolExecutor | None = None
         self._since_refresh = 0.0
         if not synchronous:
@@ -109,12 +114,23 @@ class VersionLibrary:
     def _load(self, steps: int) -> Version:
         if steps == BEST:
             if self.run.best_model.exists():
+                self._check_stats(self.run.best_vecnormalize, "best_model")
                 return load_best_version(self.run)
             steps = self.checkpoints[-1].steps  # no best model: the latest version
         checkpoint = self.checkpoint(steps)
         if checkpoint is None:
             raise FileNotFoundError(f"no existe el checkpoint de {steps} pasos")
+        self._check_stats(checkpoint.vecnormalize, version_name(checkpoint.steps))
         return load_version(checkpoint)
+
+    def _check_stats(self, path, name: str) -> None:
+        """A missing VecNormalize file is harmless when observations are not normalised (the
+        default: they are already in [-1, 1] and only rewards are normalised); if the run did
+        normalise them, the policy would see wrong inputs, so say so."""
+        if self.normalize_obs and not path.exists():
+            self.notices.append(
+                f"Falta {path.name}: {name} se verá con observaciones sin normalizar"
+            )
 
     def cached(self, steps: int) -> Version | None:
         return self._cache.get(steps)
@@ -155,7 +171,7 @@ class VersionLibrary:
             return self._load(steps)
         except SystemExit as error:  # load_best_version reports with SystemExit
             return str(error)
-        except (OSError, ValueError, EOFError, KeyError, RuntimeError) as error:
+        except Exception as error:  # a corrupt zip or pickle must never reach the main loop
             return str(error) or type(error).__name__
 
     def _finish(self, steps: int, result: Version | str) -> None:

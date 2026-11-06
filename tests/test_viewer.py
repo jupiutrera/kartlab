@@ -376,3 +376,85 @@ def test_function_keys_do_not_start_a_mode_from_the_title(app):
     press(viewer, pygame.K_x)  # any other key does
     viewer.run_loop(60)
     assert viewer.state == "scene"
+
+
+# -- bad input never ends in a traceback ---------------------------------------------------------
+
+
+def test_a_corrupt_vecnormalize_file_marks_the_version_unreadable(tmp_path, tiny_run):
+    run_dir = tmp_path / "2026-06-01_0000_corrupt"
+    shutil.copytree(tiny_run.root, run_dir)
+    run = type(tiny_run)(run_dir)
+    run.checkpoint(256).vecnormalize.write_bytes(b"this is not a pickle")
+    library = VersionLibrary(run)  # asynchronous: the error must stay in the worker
+    try:
+        library.request(256)
+        deadline = time.monotonic() + 60
+        while library.is_loading(256) and time.monotonic() < deadline:
+            library.poll()  # must not raise
+            time.sleep(0.02)
+        assert library.cached(256) is None and library.failed(256)
+    finally:
+        library.close()
+
+
+def test_the_viewer_skips_an_unreadable_version_with_a_notice(tmp_path, tiny_run):
+    run_dir = tmp_path / "2026-06-02_0000_corrupt"
+    shutil.copytree(tiny_run.root, run_dir)
+    run = type(tiny_run)(run_dir)
+    run.checkpoint(256).vecnormalize.write_bytes(b"this is not a pickle")
+    viewer = ViewerApp(run, scale=2, realtime=False, mode="watch", version=0)
+    try:
+        viewer.run_loop(5)
+        scene = viewer.scene
+        assert scene.shown == 0
+        press(viewer, pygame.K_RIGHT)  # towards the broken one
+        viewer.run_loop(30)
+        assert scene.shown == 0 and scene.steps[scene.index] == 0  # stayed, did not crash
+        assert viewer.game._notice is not None and "256" in viewer.game._notice[0]
+        press(viewer, pygame.K_RIGHT)
+        press(viewer, pygame.K_RIGHT)  # the next ones still load
+        viewer.run_loop(60)
+        assert scene.shown == 512
+    finally:
+        viewer.close()
+        pygame.quit()
+
+
+def test_a_missing_normalisation_file_warns_only_if_observations_are_normalised(tmp_path, tiny_run):
+    run_dir = tmp_path / "2026-06-03_0000_nostats"
+    shutil.copytree(tiny_run.root, run_dir)
+    run = type(tiny_run)(run_dir)
+    run.checkpoint(256).vecnormalize.unlink()
+    library = VersionLibrary(run, synchronous=True)
+    assert library.request(256) is not None and library.notices == []  # rewards only: harmless
+    text = run.config.read_text(encoding="utf-8")
+    assert "normalize_obs: false" in text
+    run.config.write_text(text.replace("normalize_obs: false", "normalize_obs: true"), "utf-8")
+    library = VersionLibrary(run, synchronous=True)
+    assert library.request(256) is not None  # still loads
+    assert library.notices and "vecnormalize_000000256.pkl" in library.notices[0]
+
+
+@pytest.mark.parametrize("kind", ["viewer", "live"])
+def test_a_bogus_track_or_a_missing_run_exit_with_a_message(kind, tiny_run, tmp_path):
+    from kartlab.show.live import main as live_main
+
+    entry = main if kind == "viewer" else live_main
+    with pytest.raises(SystemExit) as bad_track:
+        entry(["--run", str(tiny_run.root), "--track", "bogus", "--frames", "1"])
+    assert "Circuito no válido" in str(bad_track.value) and "bogus" in str(bad_track.value)
+    with pytest.raises(SystemExit) as missing:
+        entry(["--run", str(tmp_path / "no-existe"), "--frames", "1"])
+    assert "no existe" in str(missing.value)
+
+
+def test_video_tool_reports_a_missing_run_and_a_bogus_track(tiny_run, tmp_path):
+    from kartlab.show.video import main as video_main
+
+    with pytest.raises(SystemExit) as missing:
+        video_main(["demo", "--run", str(tmp_path / "no-existe")])
+    assert "no existe" in str(missing.value)
+    with pytest.raises(SystemExit) as bad_track:
+        video_main(["demo", "--run", str(tiny_run.root), "--track", "bogus"])
+    assert "Circuito no válido" in str(bad_track.value)

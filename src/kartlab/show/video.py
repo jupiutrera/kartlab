@@ -24,6 +24,7 @@ import pygame
 from kartlab.render.scene import KartVisual
 from kartlab.render.topdown import KART_COLOR, format_time
 from kartlab.render.view import SANS_REGULAR, GameView, HudInfo
+from kartlab.show.cli import existing_run_or_exit, resolve_track_or_exit
 from kartlab.show.drivers import PolicyDriver, format_steps, load_version
 from kartlab.show.overlays import (
     CARD_SECONDS,
@@ -528,9 +529,14 @@ def main(argv: list[str] | None = None) -> None:
 
     from kartlab.train.run import latest_run
 
-    run = RunPaths(args.run) if args.run else latest_run()
-    if run is None or not run.config.exists():
-        raise SystemExit("No hay ningún run válido. Usa --run runs/<carpeta>.")
+    if args.run:
+        run = existing_run_or_exit(args.run)
+    else:
+        run = latest_run()
+        if run is None or not run.config.exists():
+            raise SystemExit("No hay ningún run válido. Usa --run runs/<carpeta>.")
+    if args.track:
+        resolve_track_or_exit(args.track)  # fail now, not after loading the checkpoints
     if not args.normal_priority:
         from kartlab.common.system import lower_priority
 
