@@ -165,11 +165,12 @@ def format_clock(seconds: float) -> str:
 
 def live_run(runs_dir: Path, now: float | None = None):
     """The latest run whose ``metrics.csv`` changed in the last minute (a training is going
-    on, started from here or from a terminal), or ``None``."""
+    on, started from here or from a terminal), or ``None``. A run with ``summary.yaml`` has
+    finished (it is written last, also when stopped), so it never counts as alive."""
     from kartlab.train.run import latest_run
 
     run = latest_run(runs_dir)
-    if run is None:
+    if run is None or run.summary.exists():
         return None
     try:
         age = (now if now is not None else time.time()) - run.metrics.stat().st_mtime

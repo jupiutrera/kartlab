@@ -197,6 +197,18 @@ def test_live_run_needs_a_metrics_file_touched_in_the_last_minute(tmp_path):
     assert live_run(tmp_path / "runs", now + 120) is None
 
 
+def test_a_run_with_its_summary_written_is_not_alive_even_if_metrics_are_fresh(tmp_path):
+    run = tmp_path / "runs" / "2026-01-01_0000_x"
+    run.mkdir(parents=True)
+    (run / "config.yaml").write_text("name: x\n", encoding="utf-8")
+    metrics = run / "metrics.csv"
+    metrics.write_text("steps\n1\n", encoding="utf-8")
+    now = metrics.stat().st_mtime
+    assert live_run(tmp_path / "runs", now + 5).root == run
+    (run / "summary.yaml").write_text("steps: 1\ninterrupted: true\n", encoding="utf-8")
+    assert live_run(tmp_path / "runs", now + 5) is None  # stopped a moment ago: free to relaunch
+
+
 # -- adopting a trainer launched by an earlier session of the menu -----------------------------
 
 

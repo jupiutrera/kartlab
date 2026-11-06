@@ -908,10 +908,22 @@ def test_a_training_started_elsewhere_is_noticed_by_its_metrics_file(make_hub, t
     os.utime(metrics, (time.time() - 3600, time.time() - 3600))
     app = make_hub(runs_dir=tiny_run.root.parent)
     assert not app.training_alive() and app.status_line() == ""  # an hour old: not running
-    os.utime(metrics, None)  # touched just now
-    app.invalidate()
-    assert app.training_alive()
-    assert "Entrenando" in app.status_line()
+    # A training still going on has no summary.yaml yet (it is written last); the fixture's
+    # run has finished, so hide its summary while pretending it is still running.
+    summary = tiny_run.root / "summary.yaml"
+    hidden = summary.with_name("summary.yaml.hidden")
+    summary.replace(hidden)
+    try:
+        os.utime(metrics, None)  # touched just now
+        app.invalidate()
+        assert app.training_alive()
+        assert "Entrenando" in app.status_line()
+        hidden.replace(summary)  # finished: no longer alive, even with fresh metrics
+        app.invalidate()
+        assert not app.training_alive()
+    finally:
+        if hidden.exists():
+            hidden.replace(summary)
 
 
 # -- the player's colour --------------------------------------------------------------
