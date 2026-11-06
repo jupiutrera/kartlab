@@ -105,7 +105,7 @@ def test_trial_hud_hides_the_lap_panel_and_the_mode_panel_after_the_countdown(ma
     assert shown[-1] == (True, True)  # free driving keeps its panels
 
 
-def test_the_hop_works_in_the_session_but_not_during_the_countdown(make, monkeypatch):
+def test_shift_held_through_the_countdown_starts_no_sweep_until_released(make, monkeypatch):
     from collections import defaultdict
 
     def hold(*keys):
@@ -115,19 +115,18 @@ def test_the_hop_works_in_the_session_but_not_during_the_countdown(make, monkeyp
     app = make()
     hold(pygame.K_LSHIFT, pygame.K_UP)  # Shift pressed from the first frame
     app.run(max_frames=COUNTDOWN_FRAMES - 2)
-    assert app.session.counting and app.drift.height == 0.0 and app.racer.time == 0.0
-    peak = 0.0
-    for _ in range(40):
-        app.run(max_frames=1)
-        peak = max(peak, app.drift.height)
-    assert not app.session.counting and peak == 0.0  # held through the start: no hop
-    hold(pygame.K_UP)
+    assert app.session.counting and not app.drift.active and app.racer.time == 0.0
+    app.run(max_frames=90)  # the race is on, straight, Shift still down
+    assert not app.session.counting
+    assert app.racer.kart.forward_speed > app.drift.params.entry_speed
+    hold(pygame.K_LSHIFT, pygame.K_UP, pygame.K_LEFT)  # now the wheel: Shift was never released
+    app.run(max_frames=10)
+    assert not app.drift.active
+    hold(pygame.K_UP, pygame.K_LEFT)
     app.run(max_frames=3)
-    hold(pygame.K_LSHIFT, pygame.K_UP)
-    for _ in range(30):
-        app.run(max_frames=1)
-        peak = max(peak, app.drift.height)
-    assert peak > 0.4  # the hop works once the race is on
+    hold(pygame.K_LSHIFT, pygame.K_UP, pygame.K_LEFT)
+    app.run(max_frames=2)
+    assert app.drift.active  # pressed again: the sweep starts at once
 
 
 def test_free_driving_and_a_trial_without_the_format_have_no_countdown(make):

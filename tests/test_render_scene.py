@@ -107,7 +107,7 @@ def test_fog_colour_is_the_sky_at_the_horizon(world):
     assert FOG_COLOR["day"] == Ink.SKY_LOW
 
 
-# -- the hop ("brinco"): lift, shadow and dust ------------------------------------------------
+# -- a lifted kart: sprite, shadow and marks ------------------------------------------------
 
 
 def _kart_rows(world, pose, kart, lift):
@@ -166,24 +166,6 @@ def test_lift_zero_is_the_frame_of_always(track):
         raise AssertionError("the frame never settled")
     world.render(pose, [KartVisual(kart, 0, lift=0.0)], 0.0)
     assert pygame.image.tobytes(world.world, "RGB") == plain
-
-
-@pytest.mark.parametrize("grass", [False, True])
-def test_landing_puffs_dust_once(track, grass):
-    from kartlab.sim.drift import DriftState
-
-    world = WorldRenderer(track, CHASE)
-    kart = KartState(*track.pose_at(100.0))
-    drift = DriftState()
-    visual = KartVisual(kart, 0, on_grass=grass, drift=drift)
-    ink = Ink.BROWN if grass else Ink.MIST
-    world.update_effects([visual], DT)
-    assert not [p for p in world.particles.items if p[7] == ink]  # nothing without a landing
-    drift.land_id += 1
-    world.update_effects([visual], DT)
-    assert len([p for p in world.particles.items if p[7] == ink]) == 6
-    world.update_effects([visual], DT)  # the same landing does not puff again
-    assert len([p for p in world.particles.items if p[7] == ink]) == 6
 
 
 def test_a_kart_in_the_air_leaves_no_marks(track):

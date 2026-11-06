@@ -1,4 +1,3 @@
-import numpy as np
 import pygame
 import pytest
 
@@ -85,24 +84,3 @@ def test_hud_draws_panels_in_every_corner():
 )
 def test_format_time(seconds, text):
     assert format_time(seconds) == text
-
-
-def test_a_kart_in_the_air_is_drawn_larger_and_higher_with_its_shadow_below(track):
-    size = (640, 360)
-    view = TopDownView(track, size)
-    kart = Racer(track).kart
-    centre = (kart.x, kart.y)
-
-    def kart_rows(items):
-        target = pygame.Surface(size)
-        view.draw(target, items, centre, True)
-        pixels = pygame.surfarray.array3d(target).transpose(1, 0, 2)
-        rows = np.flatnonzero((pixels == KART_COLOR).all(axis=-1).any(axis=1))
-        return target, rows.min(), rows.max()
-
-    ground, ground_top, ground_bottom = kart_rows([(kart, KART_COLOR)])
-    same, _, _ = kart_rows([(kart, KART_COLOR, 0.0)])
-    assert pygame.image.tobytes(ground, "RGB") == pygame.image.tobytes(same, "RGB")
-    _, air_top, air_bottom = kart_rows([(kart, KART_COLOR, 0.5)])
-    assert air_top < ground_top and air_bottom < ground_bottom  # higher on the screen
-    assert air_bottom - air_top > ground_bottom - ground_top  # and a little bigger

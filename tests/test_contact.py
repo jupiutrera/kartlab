@@ -200,14 +200,7 @@ def test_no_contact_between_different_levels():
     assert resolve(flat, body(1.0, 0, level_z=1.0), PairState(), LATE) is None
     assert resolve(flat, body(1.0, 0, level_z=-1.5), PairState(), LATE) is None
     assert resolve(flat, body(1.0, 0, level_z=0.9), PairState(), LATE) is not None
-    # The level and the height add up: a hop over a bridge counts from the ground.
     assert resolve(body(0, 0, level_z=1.0), body(1.0, 0), PairState(), LATE) is None
-
-
-def test_no_contact_while_a_kart_is_in_the_air():
-    assert resolve(body(0, 0, height=0.3), body(1.0, 0), PairState(), LATE) is None
-    assert resolve(body(0, 0), body(1.0, 0, height=0.5), PairState(), LATE) is None
-    assert resolve(body(0, 0, height=0.2), body(1.0, 0), PairState(), LATE) is not None
 
 
 def test_grace_windows():

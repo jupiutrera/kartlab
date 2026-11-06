@@ -405,43 +405,22 @@ def hold_keys(monkeypatch, *keys):
     return pressed
 
 
-def test_a_hop_clears_the_other_kart(tiny_app):
-    app = tiny_app(mode="vsai")
-    scene = app.scene
-    app.run_loop(60 * 3 + 5)
-    scene.race_steps = 60 * 10  # past the grace of the start
-    ai = scene.drivers[0].racer
-    human = scene.human
-    moved = {}
-    for height in (0.0, 0.2, 0.4):
-        human.displace(ai.kart.x - human.kart.x, ai.kart.y - human.kart.y + 0.8)
-        human.kart.vx = human.kart.vy = 0.0
-        scene.drift.height = height
-        before = (human.kart.x, human.kart.y)
-        scene._bump(scene.race_time)
-        moved[height] = (human.kart.x - before[0], human.kart.y - before[1]) != (0.0, 0.0)
-    assert moved == {0.0: True, 0.2: True, 0.4: False}  # above 0.25 m the karts do not touch
-
-
-def test_a_real_hop_lifts_the_human_and_the_countdown_buffers_no_hop(tiny_app, monkeypatch):
+def test_shift_held_through_the_countdown_starts_no_sweep_until_released(tiny_app, monkeypatch):
     app = tiny_app(mode="vsai")
     scene = app.scene
     hold_keys(monkeypatch, pygame.K_LSHIFT, pygame.K_UP)
     app.run_loop(60 * 3 - 2)  # the countdown, with Shift down all the time
     assert scene.race_steps == 0 and scene.human.kart.vx == 0.0
-    heights = []
-    for _ in range(40):
-        app.run_loop(1)
-        heights.append(scene.drift.height)
-    assert scene.race_steps > 20 and max(heights) == 0.0  # held through the start: no hop
-    hold_keys(monkeypatch, pygame.K_UP)  # let go and press again
+    app.run_loop(90)  # the race is on, straight, Shift still down
+    assert scene.human.kart.forward_speed > scene.drift.params.entry_speed
+    hold_keys(monkeypatch, pygame.K_LSHIFT, pygame.K_UP, pygame.K_LEFT)  # now the wheel
+    app.run_loop(10)
+    assert not scene.drift.active  # Shift was never released: no sweep
+    hold_keys(monkeypatch, pygame.K_UP, pygame.K_LEFT)  # let go and press again
     app.run_loop(3)
-    hold_keys(monkeypatch, pygame.K_LSHIFT, pygame.K_UP)
-    peak = 0.0
-    for _ in range(30):
-        app.run_loop(1)
-        peak = max(peak, scene.drift.height)
-    assert peak > 0.25  # now it hops, high enough to clear a kart
+    hold_keys(monkeypatch, pygame.K_LSHIFT, pygame.K_UP, pygame.K_LEFT)
+    app.run_loop(2)
+    assert scene.drift.active  # the sweep starts at once
 
 
 def test_a_forced_restart_in_lap_two_never_lowers_the_standings(tiny_app):
