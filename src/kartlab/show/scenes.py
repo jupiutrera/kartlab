@@ -496,7 +496,7 @@ class RaceScene(Scene):
             label="Carrera de versiones",
             extra=[
                 self.app.track.name,
-                f"{self.laps} vueltas",
+                ui.plural(self.laps, "vuelta", "vueltas"),
                 f"Sigues a {version_name(followed.steps)}",
             ],
             ramp=followed.ramp,
@@ -520,7 +520,7 @@ class RaceScene(Scene):
             age = (self.frame_no - self.end_frame) / FPS
             ov.card(
                 f"Ganador: {version_name(order[0].steps)}",
-                [f"{app.track.name}, {self.laps} vueltas"],
+                [f"{app.track.name}, {ui.plural(self.laps, 'vuelta', 'vueltas')}"],
                 age=age,
                 life=FINISH_SECONDS,
             )
@@ -928,7 +928,7 @@ class HumanRaceScene(Scene):
             ramp=self.kart_ramp,
             extra=[
                 self.app.track.name,
-                f"{self.laps} vueltas, {self.difficulty.label}",
+                f"{ui.plural(self.laps, 'vuelta', 'vueltas')}, {self.difficulty.label}",
                 f"Colisiones: {'Sí' if self.collisions else 'No'}",
             ],
             lap_panel=False,  # the race HUD shows the laps and times

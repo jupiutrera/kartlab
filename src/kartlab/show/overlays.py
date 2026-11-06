@@ -36,7 +36,11 @@ def ease_in_out(t: float) -> float:
 
 
 def version_name(steps: int) -> str:
-    return "Sin entrenar" if steps == 0 else f"{format_steps(steps)} pasos"
+    return (
+        "Sin entrenar"
+        if steps == 0
+        else f"{format_steps(steps)} {'paso' if steps == 1 else 'pasos'}"
+    )
 
 
 def count_steps(steps: int) -> str:

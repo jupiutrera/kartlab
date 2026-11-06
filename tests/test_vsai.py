@@ -626,3 +626,32 @@ def bump_race(run, version, laps=3, track_name="plateau") -> dict:
         "worst_off_per_lap": max(off),
         "seconds": round(step / 60, 1),
     }
+
+
+def test_one_lap_is_not_called_laps_in_any_panel(tiny_app):
+    from kartlab.render import pixelui as ui
+    from kartlab.show.overlays import version_name
+
+    seen = []
+    original = ui.text
+
+    def spy(target, value, *args, **kwargs):
+        seen.append(value)
+        return original(target, value, *args, **kwargs)
+
+    ui.text = spy
+    try:
+        app = tiny_app(mode="vsai", vs_laps=1)
+        app.run_loop(30)
+        assert "1 vuelta, Normal" in app.scene.frame()[2].extra
+        app = tiny_app(mode="race", laps=1)
+        app.run_loop(30)
+        assert "1 vuelta" in app.scene.frame()[2].extra
+    finally:
+        ui.text = original
+    assert any("1 vuelta" in line.lower() for line in seen)
+    assert not any("1 vueltas" in line.lower() for line in seen)
+    assert ui.plural(1, "vuelta", "vueltas") == "1 vuelta"
+    assert ui.plural(0, "vuelta", "vueltas") == "0 vueltas"
+    assert ui.plural(3, "vuelta", "vueltas") == "3 vueltas"
+    assert version_name(1) == "1 paso" and version_name(300_000) == "300k pasos"
