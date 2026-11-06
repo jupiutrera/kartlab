@@ -406,6 +406,7 @@ class TextPrompt:
         self.text = text
         self.on_accept = on_accept
         self.max_length = max_length
+        self.selected = bool(text)  # the prefilled text is selected: typing replaces it
 
     @property
     def full(self) -> bool:
@@ -413,9 +414,14 @@ class TextPrompt:
 
     def insert(self, chars: str) -> None:
         chars = "".join(c for c in chars if c.isprintable())
+        if chars and self.selected:
+            self.text = ""
+        if chars:
+            self.selected = False
         self.text = (self.text + chars)[: self.max_length]
 
     def backspace(self) -> None:
+        self.selected = False  # Backspace edits the text as it is
         self.text = self.text[:-1]
 
 
@@ -1545,8 +1551,11 @@ class EditorApp:
         pygame.draw.rect(screen, PANEL_SOLID, field, border_radius=4)
         shown = self._fit(prompt.text, self.font, field.width - 16)
         text = self.font.render(shown, True, TEXT)
+        if prompt.selected:
+            mark = text.get_rect(topleft=(field.x + 8, field.y + 2)).inflate(6, 0)
+            pygame.draw.rect(screen, (70, 92, 140), mark, border_radius=3)
         screen.blit(text, (field.x + 8, field.y + 2))
-        if int(time.perf_counter() * 2) % 2 == 0:
+        if int(time.perf_counter() * 2) % 2 == 0 and not prompt.selected:
             cx = field.x + 8 + text.get_width() + 2
             pygame.draw.line(screen, TEXT, (cx, field.y + 4), (cx, field.bottom - 4), 2)
         if prompt.full:

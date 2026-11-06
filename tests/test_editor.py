@@ -855,3 +855,31 @@ def test_the_prompt_says_when_it_stops_accepting_characters(make_app):
     prompt.insert("x" * 500)
     assert len(prompt.text) == prompt.max_length and prompt.full
     app.draw()
+
+
+def test_the_first_keystroke_replaces_the_prefilled_text_and_backspace_edits_it(make_app):
+    app = make_app()
+    key(app, pygame.K_F2)
+    assert app.prompt.text == app.spec.name and app.prompt.selected
+    app.draw()  # the selection is drawn
+    app.handle_event(pygame.event.Event(pygame.TEXTINPUT, text="Valle"))
+    assert app.prompt.text == "Valle" and not app.prompt.selected
+    app.handle_event(pygame.event.Event(pygame.TEXTINPUT, text="s"))
+    assert app.prompt.text == "Valles"  # later keystrokes append
+    app.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0))
+    assert app.spec.name == "Valles"
+    key(app, pygame.K_F2)
+    app.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_BACKSPACE, mod=0))
+    assert app.prompt.text == "Valle" and not app.prompt.selected  # not a select-all delete
+    app.handle_event(pygame.event.Event(pygame.TEXTINPUT, text="y"))
+    assert app.prompt.text == "Valley"
+    key(app, pygame.K_ESCAPE)
+    assert app.spec.name == "Valles"
+
+
+def test_an_empty_prompt_and_unprintable_input_do_not_select_or_clear(make_app):
+    prompt = ed.TextPrompt("x", "", lambda text: None)
+    assert not prompt.selected
+    prompt = ed.TextPrompt("x", "abc", lambda text: None)
+    prompt.insert("")  # nothing printable: the selection stays
+    assert prompt.text == "abc" and prompt.selected
