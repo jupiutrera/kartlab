@@ -33,7 +33,7 @@ import pygame
 
 from kartlab.render.camera import CameraPose, Lens
 from kartlab.render.floor import Projection
-from kartlab.render.palette import FOG_LEVELS, Ink
+from kartlab.render.palette import Ink
 from kartlab.sim.levels import WALL_INSET
 from kartlab.sim.track import Track
 
@@ -434,9 +434,10 @@ class BridgeRenderer:
     # -- drawing -------------------------------------------------------------------------
 
     def _fog(self, depth: float) -> int:
-        lens = self._lens
-        fraction = (depth - lens.fog_start) / (lens.fog_end - lens.fog_start)
-        return int(min(max(fraction, 0.0), 1.0) * (FOG_LEVELS - 1))
+        """Fog level of a polygon. Like the scenery's sprites, the bridge is not fogged: a flat
+        polygon pushed to a fog level lands on odd palette entries (an olive stone), where the
+        floor hides that with a dither. Kept as a hook so it is one place to change."""
+        return 0
 
     def _draw_section(self, k: int, far: bool) -> None:
         frame = self._frame
