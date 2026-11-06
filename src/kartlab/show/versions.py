@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import math
 from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 
+import yaml
+
+from kartlab.common.io import read_yaml
 from kartlab.show.drivers import Version, load_version
 from kartlab.show.overlays import version_name
 from kartlab.train.config import TrainConfig
-from kartlab.train.run import Checkpoint, RunPaths
+from kartlab.train.run import RUNS_DIR, Checkpoint, RunPaths
 
 BEST = -1  # key of best_model.zip, the best evaluated policy
 PROGRESSION_TARGETS = (0, 10_000, 30_000, 100_000, 300_000, 1_000_000)
@@ -38,6 +42,41 @@ def pick_checkpoints(
         picks[best.steps] = best
     picks[final.steps] = final
     return [picks[s] for s in sorted(picks)]
+
+
+def latest_run_with_checkpoints(runs_dir: Path = RUNS_DIR) -> RunPaths | None:
+    """The most recent run that has a config and at least one checkpoint to show."""
+    for folder in sorted(runs_dir.glob("*"), reverse=True):
+        candidate = RunPaths(folder)
+        if candidate.config.exists() and candidate.list_checkpoints():
+            return candidate
+    return None
+
+
+def eval_success_rate(run: RunPaths) -> float | None:
+    """``success_rate`` of ``eval_best_model.yaml`` (written by ``evaluate.py`` on the reserved
+    tracks), or ``None`` if the run was not evaluated or the file is unreadable."""
+    try:
+        value = read_yaml(run.root / "eval_best_model.yaml")["success_rate"]
+        return None if isinstance(value, bool) else float(value)
+    except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
+        return None
+
+
+def best_generalist_run(runs_dir: Path = RUNS_DIR) -> RunPaths | None:
+    """The run to race against by default: the one with the highest success rate on the
+    reserved evaluation tracks (a ``best_model.zip`` that drives them all), the most recent
+    on a tie. Without any evaluated run, the latest one with checkpoints."""
+    scored = []
+    for folder in runs_dir.glob("*"):
+        run = RunPaths(folder)
+        rate = eval_success_rate(run)
+        usable = run.config.exists() and run.best_model.exists() and run.list_checkpoints()
+        if rate is not None and usable:
+            scored.append((rate, folder.name, run))
+    if scored:
+        return max(scored, key=lambda item: item[:2])[2]
+    return latest_run_with_checkpoints(runs_dir)
 
 
 def load_best_version(run: RunPaths) -> Version:

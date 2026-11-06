@@ -54,7 +54,11 @@ from kartlab.show.humanrace import (
 from kartlab.show.overlays import Overlays, ease_in_out
 from kartlab.show.scenes import SCENES, AttractScene, Scene, WatchScene
 from kartlab.show.title import MenuEntry, TitleScreen
-from kartlab.show.versions import VersionLibrary
+from kartlab.show.versions import (
+    VersionLibrary,
+    best_generalist_run,
+    latest_run_with_checkpoints,
+)
 from kartlab.sim.kart import DT, KartState
 from kartlab.sim.track import Track
 from kartlab.sim.tracksets import (
@@ -65,7 +69,7 @@ from kartlab.sim.tracksets import (
     train_track,
 )
 from kartlab.train.config import TrainConfig
-from kartlab.train.run import RUNS_DIR, RunPaths
+from kartlab.train.run import RunPaths
 
 TITLE = "KART LAB"
 MAX_PENDING = 0.1  # never simulate (or animate) more than this after a stall (s)
@@ -165,15 +169,6 @@ HELP_SECTIONS = (
         ),
     ),
 )
-
-
-def latest_run_with_checkpoints(runs_dir: Path = RUNS_DIR) -> RunPaths | None:
-    """The most recent run that has a config and at least one checkpoint to show."""
-    for folder in sorted(runs_dir.glob("*"), reverse=True):
-        candidate = RunPaths(folder)
-        if candidate.config.exists() and candidate.list_checkpoints():
-            return candidate
-    return None
 
 
 def speed_label(speed: float) -> str:
@@ -760,7 +755,11 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Visor de exhibición: pantalla de título y tres modos para enseñar un run."
     )
-    parser.add_argument("--run", type=Path, help="carpeta del run (por defecto, el último)")
+    parser.add_argument(
+        "--run",
+        type=Path,
+        help="carpeta del run (por defecto, el último; en vsai, el mejor generalista)",
+    )
     parser.add_argument(
         "--track",
         default="harbor",
@@ -819,7 +818,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--screenshot", type=Path, help="guarda el último fotograma en este PNG")
     args = parser.parse_args(argv)
 
-    run = existing_run_or_exit(args.run) if args.run else latest_run_with_checkpoints()
+    if args.run:
+        run = existing_run_or_exit(args.run)
+    elif args.mode == "vsai":  # the AI to race against: the best generalist, not the latest
+        run = best_generalist_run()
+    else:
+        run = latest_run_with_checkpoints()
     if run is None:
         raise SystemExit(
             "No hay ningún run con checkpoints en runs/. Lanza antes scripts/train.py."

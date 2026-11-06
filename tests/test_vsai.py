@@ -394,6 +394,66 @@ def test_cli_runs_the_mode_with_its_options(tiny_run, tmp_path):
     assert shot.exists() and shot.stat().st_size > 0
 
 
+# -- which run the AI comes from -------------------------------------------------------------------
+
+
+def make_run(root, tiny_run, name, success=None, best=True):
+    import shutil
+
+    folder = root / name
+    shutil.copytree(tiny_run.root, folder)
+    if not best:
+        (folder / "best_model.zip").unlink()
+    if success is not None:
+        (folder / "eval_best_model.yaml").write_text(
+            f"model: best_model.zip\nsuccess_rate: {success}\n", encoding="utf-8", newline="\n"
+        )
+    return folder
+
+
+def test_default_opponent_is_the_best_evaluated_generalist(tmp_path, tiny_run):
+    from kartlab.show.versions import best_generalist_run
+
+    make_run(tmp_path, tiny_run, "2026-01-01_0000_fixed", success=0.55)
+    best = make_run(tmp_path, tiny_run, "2026-01-02_0000_random", success=1.0)
+    make_run(tmp_path, tiny_run, "2026-01-03_0000_weak", success=0.33)
+    make_run(tmp_path, tiny_run, "2026-01-04_0000_unevaluated")  # newest, never evaluated
+    assert best_generalist_run(tmp_path).root == best
+    tie = make_run(tmp_path, tiny_run, "2026-01-05_0000_random2", success=1.0)
+    assert best_generalist_run(tmp_path).root == tie  # a tie goes to the most recent
+    # A run that scored well but has no best_model.zip cannot be raced against.
+    make_run(tmp_path, tiny_run, "2026-01-06_0000_nobest", success=1.0, best=False)
+    assert best_generalist_run(tmp_path).root == tie
+
+
+def test_default_opponent_falls_back_to_the_latest_run_when_nothing_was_evaluated(
+    tmp_path, tiny_run
+):
+    from kartlab.show.versions import best_generalist_run
+
+    make_run(tmp_path, tiny_run, "2026-01-01_0000_a")
+    newest = make_run(tmp_path, tiny_run, "2026-01-02_0000_b")
+    broken = make_run(tmp_path, tiny_run, "2026-01-03_0000_c")
+    (broken / "eval_best_model.yaml").write_text("success_rate: [oops", encoding="utf-8")
+    assert best_generalist_run(tmp_path).root == broken  # unreadable file: not evaluated
+    assert best_generalist_run(tmp_path / "nothing") is None
+    assert newest.exists()
+
+
+def test_the_run_flag_beats_the_default_opponent(tiny_run, tmp_path, monkeypatch):
+    import kartlab.show.viewer as viewer
+
+    monkeypatch.setattr(viewer, "best_generalist_run", lambda: pytest.fail("not asked for"))
+    shot = tmp_path / "x.png"
+    main(
+        [
+            "--run", str(tiny_run.root), "--mode", "vsai", "--scale", "1", "--frames", "5",
+            "--screenshot", str(shot),
+        ]
+    )  # fmt: skip
+    assert shot.exists()
+
+
 # -- the reference policy, if there is one ------------------------------------------------------
 
 
@@ -401,9 +461,9 @@ def reference_run() -> RunPaths | None:
     env = os.environ.get("KARTLAB_REFERENCE_RUN")
     if env:
         return RunPaths(Path(env))
-    from kartlab.show.viewer import latest_run_with_checkpoints
+    from kartlab.show.versions import best_generalist_run
 
-    return latest_run_with_checkpoints(REPO_ROOT / "runs")
+    return best_generalist_run(REPO_ROOT / "runs")
 
 
 def test_two_hundred_bumps_do_not_throw_the_reference_policy_off():
