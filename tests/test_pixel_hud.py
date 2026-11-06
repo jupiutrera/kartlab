@@ -564,3 +564,24 @@ def test_the_results_card_of_the_top_down_trial_covers_no_panel(trial_app, monke
         others = [p for p in hud.panels if p != card]
         assert len(others) >= 3  # the two data blocks and the lap bar
         assert not any(card.colliderect(p) for p in others), (card, others)
+
+
+def test_a_long_track_name_is_split_in_lines_in_the_top_down_panel(tmp_path, monkeypatch):
+    from kartlab.sim.trackfile import load_track_file
+
+    track = load_track_file("tracks/ocho_puente.json")
+    seen = []
+    original = ui.text
+
+    def spy(target, value, *args, **kwargs):
+        seen.append(value)
+        return original(target, value, *args, **kwargs)
+
+    monkeypatch.setattr(ui, "text", spy)
+    app = DriveApp(track, scale=2, realtime=False, view="topdown", records_dir=tmp_path)
+    try:
+        app.run(max_frames=3)
+    finally:
+        pygame.quit()
+    assert not any("…" in line for line in seen)
+    assert {"LAZO DEL", "MOLINO -", "PUENTE"} <= {line.upper() for line in seen}

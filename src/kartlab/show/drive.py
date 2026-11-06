@@ -580,10 +580,12 @@ class DriveApp:
                 ("DIF.", gap, ui.TEXT),
             ]
         w = 84
-        h = 5 + 9 * (len(rows) + 1)
+        name = ui.wrap_clip(self.track.name, w - 8, 3)  # a long name takes two or three lines
+        h = 5 + 9 * (len(name) + len(rows))
         ui.plate(canvas, reserve((3, top, w, h)), ui.SLATE)
-        ui.text(canvas, ui.ellipsize(self.track.name, w - 8), 7, top + 4, ui.WHITE)
-        for i, (label, value, ink) in enumerate(rows, start=1):
+        for i, line in enumerate(name):
+            ui.text(canvas, line, 7, top + 4 + 9 * i, ui.WHITE)
+        for i, (label, value, ink) in enumerate(rows, start=len(name)):
             ui.text(canvas, label, 7, top + 4 + 9 * i, ui.STONE_LIGHT)
             ui.text(canvas, value, 3 + w - 4, top + 4 + 9 * i, ink, align="right", tabular=True)
         state = [
