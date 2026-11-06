@@ -485,6 +485,7 @@ def app_factory(tmp_path):
         kwargs.setdefault("scale", 2)
         kwargs.setdefault("realtime", False)
         kwargs.setdefault("time_trial", True)
+        kwargs.setdefault("race_format", False)  # these tests drive from the first frame
         kwargs.setdefault("records_dir", tmp_path)
         app = DriveApp(showcase_track("harbor"), **kwargs)
         apps.append(app)
