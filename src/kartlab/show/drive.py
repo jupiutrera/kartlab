@@ -415,6 +415,9 @@ class DriveApp:
             drift=None if self.autopilot_on else self.drift,
             trial=self.hud_trial,
         )
+        if self.session is not None:  # the race HUD shows the laps; the mode panel only at first
+            info.lap_panel = False
+            info.label_panel = self.session.counting or self.show_help or self.paused
         fps = self.clock.get_fps() if self.realtime else None
         self.game.draw(self.screen, pose, visuals, info, dt, fps)
         if self.show_help:
@@ -431,7 +434,13 @@ class DriveApp:
             self.race_hud = RaceHud(self.overlays)
         hud, racer = self.race_hud, self.racer
         total = session.total if session.finished else racer.time
-        hud.lap_counter(session.lap_number, session.laps, format_time(total))
+        hud.lap_counter(
+            session.lap_number,
+            session.laps,
+            format_time(total),
+            format_time(0.0 if session.finished else racer.lap_time),
+            None if racer.best_lap is None else format_time(racer.best_lap),
+        )
         hud.countdown(session.frame, COUNTDOWN_FRAMES, 60)
         age = session.banner_age()
         if age is not None:

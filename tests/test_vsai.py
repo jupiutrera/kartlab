@@ -114,7 +114,8 @@ def test_race_hud_draws_every_piece_without_errors(tiny_app):
     for place in (1, 2, 4):
         hud.position(place, 4, 0.05)
         hud.position(place, 4, 5.0)
-    hud.lap_counter(2, 3, "1:02.50")
+    hud.lap_counter(2, 3, "1:02.50", "0:31.20", "0:30.90")
+    hud.lap_counter(1, 3, "0:05.00", "0:05.00")
     for frame in (0, 60, 120, 179, 180, 200, 400):
         hud.countdown(frame, 180, 60)
     hud.banner("ÚLTIMA VUELTA", 0.1)
@@ -267,6 +268,22 @@ def test_countdown_freezes_everybody_then_the_race_starts(tiny_app):
     # The human starts on the last grid slot, the AI ahead.
     assert scene.me.name == "Tú"
     assert all(e.distance > scene.me.distance - 20.0 for e in scene.entrants[1:])
+
+
+def test_race_hud_replaces_the_lap_panel_and_the_mode_panel_hides_after_the_countdown(tiny_app):
+    app = tiny_app(mode="vsai")
+    scene = app.scene
+    app.run_loop(100)  # counting down
+    info = scene.frame()[2]
+    assert not info.lap_panel and info.label_panel
+    app.run_loop(100)  # racing
+    assert not scene.frame()[2].label_panel
+    app.handle_key(pygame.K_h)  # H brings it back (with the help)
+    assert scene.frame()[2].label_panel
+    app.handle_key(pygame.K_h)
+    assert not scene.frame()[2].label_panel
+    app.handle_key(pygame.K_p)  # and so does the pause
+    assert scene.frame()[2].label_panel
 
 
 def test_grid_is_two_by_two_with_the_human_last():

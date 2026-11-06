@@ -82,6 +82,29 @@ def test_the_controls_are_frozen_during_the_countdown(make, monkeypatch):
     assert not app.session.counting and app.racer.time > 0.0
 
 
+def test_trial_hud_hides_the_lap_panel_and_the_mode_panel_after_the_countdown(make):
+    app = make()
+    shown = []
+    real_draw = app.game.draw
+
+    def spy(screen, pose, visuals, info, *args, **kwargs):
+        shown.append((info.lap_panel, info.label_panel))
+        return real_draw(screen, pose, visuals, info, *args, **kwargs)
+
+    app.game.draw = spy
+    app.run(max_frames=10)
+    assert shown[-1] == (False, True)  # counting down
+    app.run(max_frames=COUNTDOWN_FRAMES)
+    assert shown[-1] == (False, False)
+    app.handle_key(pygame.K_h)
+    app.run(max_frames=2)
+    assert shown[-1] == (False, True)
+    plain = make(time_trial=False)
+    plain.game.draw = spy
+    plain.run(max_frames=3)
+    assert shown[-1] == (True, True)  # free driving keeps its panels
+
+
 def test_free_driving_and_a_trial_without_the_format_have_no_countdown(make):
     free = make(time_trial=False)
     free.run(max_frames=5)

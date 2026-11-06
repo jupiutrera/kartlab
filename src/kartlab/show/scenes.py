@@ -941,6 +941,9 @@ class HumanRaceScene(Scene):
                 "Choques activados" if self.collisions else "Sin choques",
             ],
             drift=self.drift if manual else None,
+            lap_panel=False,  # the race HUD shows the laps and times
+            # The mode panel is only for the countdown (and while paused, or H is pressed).
+            label_panel=self.frame_no < self.start_frames or self.app.paused or self.app.help_open,
         )
         return visuals, 0, info
 
@@ -959,13 +962,17 @@ class HumanRaceScene(Scene):
             for e in order
         ]
         ov.standings(
-            rows, (app.game.world_rect.x + ov.unit // 2, ov.unit * 7), order.index(self.me)
+            rows,
+            (app.game.world_rect.x + ov.unit // 2, app.game.world_rect.y + ov.unit // 2),
+            order.index(self.me),
         )
         hud.position(self.place, len(self.entrants), t - self.place_since)
         hud.lap_counter(
             min(self.me.laps_done + 1, self.laps),
             self.laps,
             format_time(self.ended_at if self.ended_at is not None else t),
+            format_time(self.me.lap_time_at(t)),
+            format_time(self.me.best_lap) if self.me.best_lap is not None else None,
         )
         hud.countdown(self.frame_no, self.start_frames, FPS)
         if self.banner is not None:

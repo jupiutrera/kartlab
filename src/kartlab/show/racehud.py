@@ -219,13 +219,19 @@ class RaceHud:
         ov.screen.blit(ordinal_mark, (x + number.get_width() - cell, top))
         ov.screen.blit(of, (x + number.get_width() - cell, bottom - of.get_height()))
 
-    def lap_counter(self, lap: int, laps: int, total_time: str) -> None:
-        """ "VUELTA 1/3" in small pixel art at the top centre, with the total time beside it.
-        One row, so the notices of the 3D view (drawn just below) stay readable."""
+    def lap_counter(
+        self, lap: int, laps: int, total_time: str, lap_time: str, best: str | None = None
+    ) -> None:
+        """ "VUELTA 1/3" in small pixel art at the top centre, with the total time, the time of
+        this lap and the best one beside it. One row, so the notices of the 3D view (drawn
+        just below) stay readable. It replaces the lap panel of the view (``lap_panel``)."""
         ov, u = self.ov, self.ov.unit
         game = ov.game
         sign = self.pixels.get(f"VUELTA {lap}/{laps}", self.small_cell, PAPER)
-        clock = game.small.get(total_time, WHITE)
+        text = f"Total {total_time}  ·  Vuelta {lap_time}"
+        if best is not None:
+            text += f"  ·  Mejor {best}"
+        clock = game.small.get(text, WHITE)
         gap = u
         w = sign.get_width() + gap + clock.get_width() + u
         h = sign.get_height() + u // 4
