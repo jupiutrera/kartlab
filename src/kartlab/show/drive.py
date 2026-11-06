@@ -411,7 +411,7 @@ class DriveApp:
         self.game.set_rays(visual if self.show_rays else None)
         extra = [self.track.name]
         if self.trial is not None:
-            extra.append("Contrarreloj, fantasma" if self.show_ghost else "Contrarreloj")
+            extra.append("Fantasma: Sí" if self.show_ghost else "Fantasma: No")
         if self.paused:
             extra.append("PAUSA")
         if not self.show_help:
@@ -421,7 +421,7 @@ class DriveApp:
             lap_time=racer.lap_time,
             best_lap=racer.best_lap,
             speed=racer.speed,
-            label="Piloto automático" if self.autopilot_on else "Conducción libre",
+            label=self.mode_label(),
             extra=extra,
             trial=self.hud_trial,
         )
@@ -507,6 +507,12 @@ class DriveApp:
         cx, cy = self.camera
         self.camera = (cx + (tx - cx) * k, cy + (ty - cy) * k)
 
+    def mode_label(self) -> str:
+        """What the mode panel calls the current mode."""
+        if self.autopilot_on:
+            return "Piloto automático"
+        return "Contrarreloj" if self.trial is not None else "Conducción libre"
+
     def draw_topdown(self) -> None:
         racer = self.racer
         canvas = self.canvas
@@ -573,7 +579,7 @@ class DriveApp:
             ui.text(canvas, label, 7, top + 4 + 9 * i, ui.STONE_LIGHT)
             ui.text(canvas, value, 3 + w - 4, top + 4 + 9 * i, ink, align="right", tabular=True)
         state = [
-            ("Piloto automático" if self.autopilot_on else "Conducción libre", ui.YELLOW),
+            (self.mode_label(), ui.YELLOW),
             (f"Cámara: {'seguimiento' if self.follow else 'circuito'}", ui.STONE_LIGHT),
         ]
         if self.clock.get_fps():
