@@ -69,6 +69,22 @@ class Racer:
             return self._grass
         return abs(self.position.lateral) > self.track.half_width
 
+    @property
+    def level_z(self) -> float:
+        """Height of the road under the kart (m). Flat everywhere for now; a track with a
+        bridge will report the deck height here."""
+        return 0.0
+
+    def displace(self, dx: float, dy: float) -> None:
+        """Move the kart by ``(dx, dy)`` metres outside of the physics step (a nudge from
+        another kart, a put-back) and relocate it on the track and its surface. Progress
+        is untouched: the next step credits whatever distance the nudge moved it."""
+        self.kart.x += dx
+        self.kart.y += dy
+        self._keep_in_world()
+        self.position = self.track.locate(self.kart.x, self.kart.y, hint=self.position.index)
+        self._update_surface()
+
     def _update_surface(self) -> None:
         if self.track.crossings:
             self._grass = not self.track.contains(self.kart.x, self.kart.y)
