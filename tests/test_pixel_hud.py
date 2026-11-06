@@ -61,6 +61,9 @@ def view():
     pygame.init()
     pygame.display.set_mode((64, 64))
     game = GameView(showcase_track("plateau"), (1280, 720))
+    # The panels slide in during the first 0.7 s by the wall clock; a fixed time well after
+    # that keeps every frame of these tests the same however slow the machine is.
+    game.fixed_time = 10.0
     yield game
     pygame.quit()
 
