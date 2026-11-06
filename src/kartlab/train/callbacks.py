@@ -7,6 +7,7 @@ import json
 import time
 from collections import deque
 from collections.abc import Sequence
+from pathlib import Path
 
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
@@ -84,6 +85,25 @@ class CheckpointCallback(BaseCallback):
         }
         write_text_atomic(self.run.latest, json.dumps(latest))
         self.saved.append(steps)
+
+
+class StopFileCallback(BaseCallback):
+    """Stop training cleanly when ``path`` exists (the main menu's "Parar" button creates it).
+
+    ``stopped`` tells ``train`` the run was cut short on purpose: it still saves the last
+    checkpoint and the summary, but skips the final evaluation.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__()
+        self.path = Path(path)
+        self.stopped = False
+
+    def _on_step(self) -> bool:
+        if self.path.exists():
+            self.stopped = True
+            return False
+        return True
 
 
 class MetricsCallback(BaseCallback):
