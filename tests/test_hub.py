@@ -422,11 +422,45 @@ def test_the_kart_is_chosen_with_arrows_or_the_mouse(make_hub):
     key(app, pygame.K_LEFT)
     assert screen.selected == 7
     motion(app, screen.swatches[3].center)
-    assert screen.selected == 3
+    assert screen.selected == 7  # hovering does not select
     click(app, screen.swatches[3].center)
+    assert screen.selected == 3  # a click only selects: the big kart turns that colour
+    assert type(app.current).__name__ == "KartScreen" and app.settings.kart_ramp == 0
+    click(app, screen.swatches[3].center)  # a second click on the same colour confirms
     assert app.settings.kart_ramp == 3 and type(app.current).__name__ == "TrackScreen"
     saved = json.loads(app.settings_path.read_text(encoding="utf-8"))
     assert saved["kart_ramp"] == 3
+
+
+def test_the_accept_button_confirms_and_clicking_the_kart_does_not(make_hub):
+    app = make_hub()
+    key(app, pygame.K_RETURN)
+    screen = app.current
+    click(app, screen.swatches[5].center)
+    click(app, (screen.ground[0], screen.ground[1] - 40))  # on the big kart
+    assert type(app.current).__name__ == "KartScreen"
+    click(app, screen.accept.center)
+    assert type(app.current).__name__ == "TrackScreen" and app.settings.kart_ramp == 5
+
+
+def test_the_backdrop_kart_is_hidden_on_the_kart_screen_only(make_hub, monkeypatch):
+    app = make_hub(background=True)
+    app.run(3)  # builds the backdrop after the first frame
+    assert app.backdrop.game is not None
+    seen = []
+    draw = app.backdrop.game.draw
+
+    def counting_draw(screen, pose, visuals, *args, **kwargs):
+        seen.append(len(visuals))
+        return draw(screen, pose, visuals, *args, **kwargs)
+
+    monkeypatch.setattr(app.backdrop.game, "draw", counting_draw)
+    app.run(1)
+    key(app, pygame.K_RETURN)  # the kart screen
+    app.run(1)
+    key(app, pygame.K_ESCAPE)
+    app.run(1)
+    assert seen == [1, 0, 1]
 
 
 @pytest.mark.parametrize("ramp", range(8))

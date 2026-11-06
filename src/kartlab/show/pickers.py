@@ -41,7 +41,8 @@ SPIN_SECONDS = 7.0  # one turn of the kart on its turntable
 
 class KartScreen(Screen):
     dim = 110
-    hint = "← → elegir color · Intro o clic confirmar · Esc volver"
+    hide_backdrop_kart = True  # the autopilot's kart would get in the way of the big one
+    hint = "← → o clic: elegir color · Intro, segundo clic o Aceptar: confirmar · Esc volver"
 
     def __init__(self, hub: KartLabApp, flow: Flow) -> None:
         super().__init__(hub)
@@ -63,8 +64,10 @@ class KartScreen(Screen):
         gap = round(u * 0.7)
         total = 8 * side + 7 * gap
         x = (w - total) // 2
-        y = round(h * 0.82)
+        y = round(h * 0.77)
         self.swatches = [pygame.Rect(x + i * (side + gap), y, side, side) for i in range(8)]
+        self.accept = pygame.Rect(0, 0, round(u * 9), round(u * 2.3))
+        self.accept.midtop = (w // 2, y + side + round(u * 0.9))
         self.ground = (w // 2, round(h * 0.53))
         self.arrow_left = pygame.Rect(0, 0, round(u * 4), round(u * 6))
         self.arrow_left.center = (round(w * 0.24), self.ground[1] - round(h * 0.08))
@@ -93,29 +96,28 @@ class KartScreen(Screen):
         elif key in CONFIRM_KEYS:
             self.confirm()
 
-    def on_motion(self, pos) -> None:
-        for i, rect in enumerate(self.swatches):
-            if rect.collidepoint(pos):
-                self.selected = i
-
     def on_click(self, pos) -> None:
+        """A click on a colour only selects it (the big kart turns that colour); a second click
+        on the selected one, Intro or the Aceptar button confirm."""
         if self.arrow_left.collidepoint(pos):
             self.move(-1)
         elif self.arrow_right.collidepoint(pos):
             self.move(1)
-        elif any(
-            rect.collidepoint(pos) for rect in self.swatches
-        ) or self._preview_rect().collidepoint(pos):
+        elif self.accept.collidepoint(pos):
             self.confirm()
+        else:
+            for i, rect in enumerate(self.swatches):
+                if rect.collidepoint(pos):
+                    if i == self.selected:
+                        self.confirm()
+                    else:
+                        self.selected = i
+                    return
 
     def on_wheel(self, dy: int) -> None:
         self.move(-1 if dy > 0 else 1)
 
     # -- drawing -------------------------------------------------------------------------
-
-    def _preview_rect(self) -> pygame.Rect:
-        w, h = self.hub.ui.size
-        return pygame.Rect(round(w * 0.30), round(h * 0.18), round(w * 0.40), round(h * 0.46))
 
     def _kart_surface(self, angle: float) -> tuple[pygame.Surface, tuple[float, float]]:
         bank = self.hub.sprites
@@ -174,6 +176,12 @@ class KartScreen(Screen):
             pygame.draw.rect(screen, (6, 8, 16), rect.inflate(u // 3, u // 3))
             pygame.draw.rect(screen, kart_color_rgb(i), rect)
             pygame.draw.rect(screen, (255, 255, 255), (rect.x, rect.y, rect.w, max(u // 8, 2)))
+        pygame.draw.rect(screen, ACCENT, self.accept)
+        pygame.draw.rect(
+            screen, (255, 255, 255), (*self.accept.topleft, self.accept.w, max(u // 8, 2))
+        )
+        text = ui.name.get("Aceptar", DARK)
+        screen.blit(text, text.get_rect(center=self.accept.center))
         self.draw_hint(screen)
 
 

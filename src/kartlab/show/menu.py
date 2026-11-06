@@ -169,6 +169,7 @@ class Screen:
 
     hint = ""
     dim = 0  # extra darkness (0-255) over the backdrop, for screens with a lot to read
+    hide_backdrop_kart = False  # the autopilot kart of the 3D backdrop is not drawn
     show_status = True  # the training line («Entrenando X · N/M · 3:12») in the top corner
 
     def __init__(self, hub: KartLabApp) -> None:

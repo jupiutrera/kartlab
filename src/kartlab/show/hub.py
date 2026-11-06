@@ -323,7 +323,7 @@ class Backdrop:
             self.racer.step(steer, self.throttle)
             self.pending -= DT
 
-    def draw(self, screen: pygame.Surface, dt: float) -> bool:
+    def draw(self, screen: pygame.Surface, dt: float, hide_kart: bool = False) -> bool:
         if self.game is None:
             return False
         racer = self.racer
@@ -335,7 +335,8 @@ class Backdrop:
         )
         pose = self.game.update([visual], dt)
         self.game.fixed_time = None if self.hub.realtime else self.hub.t
-        self.game.draw(screen, pose, [visual], HudInfo(), dt, None, hud=False)
+        shown = [] if hide_kart else [visual]  # the camera still follows it
+        self.game.draw(screen, pose, shown, HudInfo(), dt, None, hud=False)
         return True
 
 
@@ -736,7 +737,7 @@ class KartLabApp:
 
     def draw(self, dt: float) -> None:
         screen = self.screen
-        if not self.backdrop.draw(screen, dt):
+        if not self.backdrop.draw(screen, dt, self.current.hide_backdrop_kart):
             screen.fill((14, 14, 22))
         self.ui.draw_veil(screen, self.current.dim)
         self.current.draw(screen)
