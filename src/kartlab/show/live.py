@@ -3,7 +3,8 @@
 Run with ``uv run python scripts/live.py`` (latest run) or ``--run runs/<folder>``.
 It is a separate process: closing it never affects training, and when training ends
 it keeps showing the last version. It uses the pseudo-3D view (broadcast camera by
-default, steady even with erratic early versions); T switches to the top-down view.
+default, steady even with erratic early versions); T switches to the top-down view;
+B opens the brain panel (what the current version sees and decides) and G draws its rays.
 New checkpoints load in a background thread and enter at the end of a lap (or when
 the kart is restarted after getting stuck).
 """
@@ -35,7 +36,8 @@ from kartlab.render.topdown import (
     format_time,
     load_fonts,
 )
-from kartlab.render.view import GameView, HudInfo
+from kartlab.render.view import GameView, HudInfo, unit_for
+from kartlab.show.brain import BrainPanel
 from kartlab.show.charts import MetricsReader, RewardChart
 from kartlab.show.cli import existing_run_or_exit, resolve_track_or_exit
 from kartlab.show.drivers import PolicyDriver, Version, format_steps, load_version
@@ -106,8 +108,15 @@ class LiveApp:
         camera: str = "broadcast",
         variant: str = "day",
         track: Track | None = None,
+        rays: bool = False,
+        brain: bool = False,
     ) -> None:
         self.run_paths = run
+        self.rays = rays
+        self.brain = brain  # the brain panel (B)
+        self.brain_panel: BrainPanel | None = None
+        self._brain_target: PolicyDriver | None = None  # the driver whose V(s) is tracked
+        self._brain_ms = 0.0
         self.view_mode = view
         self.camera = camera
         self.variant = variant
@@ -148,6 +157,7 @@ class LiveApp:
         self.pad = pad
         chart_h = int(height * 0.34)
         self.chart = RewardChart((panel_w - 2 * pad, chart_h), regular)
+        self.brain_panel = None  # rebuilt for the new size on the next frame
         self.panel_bg = pygame.Surface(self.panel_rect.size, pygame.SRCALPHA)
         self.panel_bg.fill(PANEL)
         if self.view_mode == "3d" and self.game is None:
@@ -242,6 +252,7 @@ class LiveApp:
                         pending_time -= DT
                 else:
                     self.physics_step()
+                self._sync_brain()
                 now = time.perf_counter()
                 if now - self._metrics_checked > METRICS_POLL_SECONDS:
                     self.metrics.refresh()
@@ -262,9 +273,42 @@ class LiveApp:
             self.camera = self.game.cycle_camera()
         elif key == pygame.K_v and self.game is not None:
             self.variant = self.game.cycle_variant()
+        elif key == pygame.K_b:
+            self.brain = not self.brain
+            if self.brain and self.brain_panel is not None:
+                self.brain_panel.open(time.perf_counter())
+        elif key == pygame.K_g:
+            self.rays = not self.rays
         elif key == pygame.K_t:
             self.view_mode = "topdown" if self.view_mode == "3d" else "3d"
             self._layout()
+
+    def _sync_brain(self) -> None:
+        """V(s) is only computed for the current version, and only while the panel is open."""
+        wanted = self.current if self.brain else None
+        if wanted is not self._brain_target:
+            if self._brain_target is not None:
+                self._brain_target.set_tracking(False)
+            if wanted is not None:
+                wanted.set_tracking(True)
+            self._brain_target = wanted
+
+    def _draw_brain(self, area: pygame.Rect, top: int, bottom: int, unit: int, now: float) -> None:
+        if not self.brain or self.current is None:
+            return
+        t0 = time.perf_counter()
+        panel = self.brain_panel
+        if panel is None:
+            config = self.env_config
+            panel = self.brain_panel = BrainPanel(
+                unit, config.ray_count, config.ray_fov_deg, config.ray_range
+            )
+            panel.open(now)
+        pos = panel.position(area, "left", top, bottom, now)
+        panel.draw(self.screen, pos, self.current)
+        self._brain_ms = self._brain_ms * 0.9 + (time.perf_counter() - t0) * 1000 * 0.1
+        if self.game is not None:
+            self.game.timings["cerebro"] = self._brain_ms
 
     def _watch_fps(self) -> None:
         if not self.realtime or self.view_mode == "3d":
@@ -297,6 +341,9 @@ class LiveApp:
                 rect.move_ip(0, -rect.height)
             placed.append(rect)
             view_surface.blit(label, rect)
+        height = self.screen.get_height()
+        unit = unit_for(self.screen.get_size())
+        self._draw_brain(self.view_rect, unit, height - unit, unit, time.perf_counter())
         self._draw_panel()
         self._draw_notice()
 
@@ -321,6 +368,7 @@ class LiveApp:
             for d in drivers
         ]
         pose = game.update(visuals, self._dt, focus=len(visuals) - 1)
+        game.set_rays(visuals[-1] if self.rays else None)
         rows = self.metrics.rows
         last = rows[-1] if rows else None
         extra = [self.run_paths.root.name, self._status()[0]]
@@ -352,6 +400,12 @@ class LiveApp:
         background.fill(PANEL)
         self.screen.blit(background, (x - pad, y - pad))
         self.screen.blit(chart, (x, y))
+        if self.brain:
+            top = game.world_rect.y + round(game.unit * 5.8)
+            bottom = game.world_rect.bottom - game._minimap[0].get_height() - game.unit
+            self._draw_brain(game.world_rect, top, bottom, game.unit, game.now())
+        else:
+            game.timings.pop("cerebro", None)
 
     def _status(self) -> tuple[str, tuple[int, int, int]]:
         if self.current is None:
@@ -441,6 +495,8 @@ def main(argv: list[str] | None = None) -> None:
         help="cámara 3D (por defecto, retransmisión: estable con modelos poco entrenados)",
     )
     parser.add_argument("--variant", choices=("day", "sunset", "night"), default="day")
+    parser.add_argument("--rays", action="store_true", help="dibuja los sensores en el mundo (G)")
+    parser.add_argument("--brain", action="store_true", help="abre el panel cerebro (B)")
     parser.add_argument(
         "--frames", type=int, help="sale tras N fotogramas, con un paso de física por fotograma"
     )
@@ -469,6 +525,8 @@ def main(argv: list[str] | None = None) -> None:
         args.camera,
         args.variant,
         track,
+        args.rays,
+        args.brain,
     )
     try:
         app.preload_ghosts()

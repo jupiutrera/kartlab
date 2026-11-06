@@ -56,6 +56,10 @@ class Ink:
     PINK = 60
 
 
+# Ray sensors by distance, near to far: red, orange, yellow, green, aqua, light blue. Both the
+# rays drawn in the world and the radar of the brain view use it.
+RAY_RAMP: tuple[int, ...] = (Ink.KERB_RED, Ink.ORANGE, Ink.YELLOW, Ink.LEAF_LIGHT, 42, 48)
+
 # Kart body ramps (dark, main, light): one per agent version in a race (eight at most).
 KART_RAMPS: tuple[tuple[int, int, int], ...] = (
     (21, 16, 23),  # orange

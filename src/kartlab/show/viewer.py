@@ -39,9 +39,10 @@ from kartlab.render.view import (
     scale_for,
     unit_for,
 )
+from kartlab.show.brain import BrainPanel
 from kartlab.show.charts import MetricsReader, RewardChart
 from kartlab.show.cli import existing_run_or_exit, resolve_track_or_exit
-from kartlab.show.drivers import format_steps
+from kartlab.show.drivers import PolicyDriver, format_steps
 from kartlab.show.overlays import Overlays, ease_in_out
 from kartlab.show.scenes import SCENES, AttractScene, Scene, WatchScene
 from kartlab.show.title import MenuEntry, TitleScreen
@@ -127,7 +128,8 @@ HELP_SECTIONS = (
         (
             ("C", "cámara: persecución, retransmisión, cenital"),
             ("V", "día, atardecer, noche"),
-            ("G", "mostrar los sensores (rayos)"),
+            ("G", "mostrar los sensores (rayos) en el mundo"),
+            ("B", "panel cerebro: lo que ve y decide la IA"),
             ("L", "modo ligero (30 fps)"),
         ),
     ),
@@ -173,6 +175,7 @@ class ViewerApp:
         version: int | None = None,
         rays: bool = False,
         diagnostics: bool = False,
+        brain: bool = False,
     ) -> None:
         if not run.list_checkpoints():
             raise SystemExit(f"{run.root} no tiene checkpoints")
@@ -190,6 +193,10 @@ class ViewerApp:
         self.variant = variant
         self.rays = rays
         self.diagnostics = diagnostics
+        self.brain = brain  # the brain panel (B)
+        self.brain_panel: BrainPanel | None = None
+        self._brain_target: PolicyDriver | None = None  # the driver whose V(s) is being tracked
+        self._brain_ms = 0.0
         self.paused = False
         self.speed_index = 0
         self.help_open = False
@@ -280,6 +287,7 @@ class ViewerApp:
         )
         self.title.layout(size, scale_for(size), u)
         self._help_surface = None
+        self.brain_panel = None  # rebuilt for the new size on the next frame
 
     def toggle_fullscreen(self) -> None:
         self.fullscreen = not self.fullscreen
@@ -441,6 +449,8 @@ class ViewerApp:
         elif key == pygame.K_g:
             self.rays = not self.rays
             self.notify("Sensores " + ("activados" if self.rays else "ocultos"))
+        elif key == pygame.K_b:
+            self.toggle_brain()
         elif key == pygame.K_l:
             self.allow_auto_light = False
             self.game.auto_light = False
@@ -459,6 +469,22 @@ class ViewerApp:
     @property
     def speed(self) -> float:
         return SPEEDS[self.speed_index]
+
+    def toggle_brain(self) -> None:
+        self.brain = not self.brain
+        if self.brain and self.brain_panel is not None:
+            self.brain_panel.open(self.game.now())
+        self.notify("Cerebro " + ("activado" if self.brain else "oculto"))
+
+    def _sync_brain(self) -> None:
+        """V(s) is only computed for the kart the panel shows, and only while it is open."""
+        wanted = self.scene.brain_driver() if self.brain and self.state == "scene" else None
+        if wanted is not self._brain_target:
+            if self._brain_target is not None:
+                self._brain_target.set_tracking(False)
+            if wanted is not None:
+                wanted.set_tracking(True)
+            self._brain_target = wanted
 
     def handle_event(self, event: pygame.event.Event) -> None:
         if event.type == pygame.QUIT:
@@ -500,6 +526,7 @@ class ViewerApp:
             fade = self._fade_amount()
             self._housekeeping(ui_dt)
             self.scene.update()
+            self._sync_brain()
             stopped = self.paused and self.state == "scene"
             factor = 1.0 if self.state == "title" else self.speed
             if stopped:
@@ -578,6 +605,7 @@ class ViewerApp:
         game.draw(screen, pose, visuals, info, ui_dt, fps, hud=in_scene and got is not None)
         if in_scene:
             scene.draw_overlays()
+            self._draw_brain()
             loading = scene.loading_text()
             if loading:
                 self._draw_loading(loading)
@@ -588,6 +616,30 @@ class ViewerApp:
         if self.help_open:
             self._draw_help()
         self.ov.dim(fade)
+
+    def _draw_brain(self) -> None:
+        driver = self.scene.brain_driver()
+        if not self.brain or driver is None:
+            self.game.timings.pop("cerebro", None)
+            return
+        t0 = time.perf_counter()
+        game, panel = self.game, self.brain_panel
+        if panel is None:
+            config = self.env_config
+            panel = self.brain_panel = BrainPanel(
+                game.unit, config.ray_count, config.ray_fov_deg, config.ray_range
+            )
+            panel.open(game.now())
+        top = game.world_rect.y + round(game.unit * 5.8)
+        if self.scene.brain_side == "left":
+            bottom = game.world_rect.bottom - game._minimap[0].get_height() - game.unit
+        else:
+            top += round(game.unit * 3.2)  # under the model label and its extra lines
+            bottom = game.world_rect.bottom - game.unit * 4
+        pos = panel.position(game.world_rect, self.scene.brain_side, top, bottom, game.now())
+        panel.draw(self.screen, pos, driver)
+        self._brain_ms = self._brain_ms * 0.9 + (time.perf_counter() - t0) * 1000 * 0.1
+        game.timings["cerebro"] = self._brain_ms
 
     def _draw_title(self) -> None:
         lib = self.library
@@ -694,6 +746,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--scale", type=int, help="escala entera sobre 320x180")
     parser.add_argument("--fullscreen", action="store_true", help="pantalla completa")
     parser.add_argument("--rays", action="store_true", help="muestra los sensores")
+    parser.add_argument("--brain", action="store_true", help="abre el panel cerebro")
     parser.add_argument("--diagnostics", action="store_true", help="tiempos de cada parte")
     parser.add_argument(
         "--frames", type=int, help="sale tras N fotogramas, con un paso de física por fotograma"
@@ -727,6 +780,7 @@ def main(argv: list[str] | None = None) -> None:
         version=args.version,
         rays=args.rays,
         diagnostics=args.diagnostics,
+        brain=args.brain,
     )
     try:
         app.run_loop(args.frames)

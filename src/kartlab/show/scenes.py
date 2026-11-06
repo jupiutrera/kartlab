@@ -54,9 +54,14 @@ class Scene:
     """Base class: the hooks the app calls every frame."""
 
     name = ""
+    brain_side = "left"  # the edge of the window the brain panel sits against
 
     def __init__(self, app: ViewerApp) -> None:
         self.app = app
+
+    def brain_driver(self) -> PolicyDriver | None:
+        """The driver whose brain the panel shows (the kart the camera follows)."""
+        return None
 
     def enter(self) -> None:
         """The scene becomes the active one (the 3D view and the library are ready)."""
@@ -246,6 +251,9 @@ class WatchScene(Scene):
             return f"Cargando {version_name(want)}"
         return None
 
+    def brain_driver(self) -> PolicyDriver | None:
+        return self.driver
+
     def physics_step(self) -> None:
         if self.driver is not None:
             self.driver.step()
@@ -357,6 +365,7 @@ class RaceScene(Scene):
     one of them (the best at first; left/right change it). A new race starts by itself."""
 
     name = "race"
+    brain_side = "right"  # the standings take the left edge
 
     def __init__(self, app: ViewerApp) -> None:
         super().__init__(app)
@@ -427,6 +436,9 @@ class RaceScene(Scene):
     @property
     def best(self) -> Entry:
         return self.entries[0]
+
+    def brain_driver(self) -> PolicyDriver | None:
+        return self.entries[self.focus].driver if self.entries else None
 
     def physics_step(self) -> None:
         if not self.entries:
@@ -542,6 +554,9 @@ class ProgressionScene(Scene):
     @property
     def steps(self) -> int:
         return self.checkpoints[self.index].steps
+
+    def brain_driver(self) -> PolicyDriver | None:
+        return self.driver
 
     def rebuild(self) -> None:
         self.driver = None

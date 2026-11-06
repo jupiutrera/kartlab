@@ -17,7 +17,7 @@ import pygame
 from kartlab.common.paths import FONTS_DIR
 from kartlab.render.camera import CameraPose, Lens
 from kartlab.render.floor import FloorRenderer, Projection
-from kartlab.render.palette import FOG_COLOR, KART_RAMPS, Ink, game_palette
+from kartlab.render.palette import FOG_COLOR, KART_RAMPS, RAY_RAMP, Ink, game_palette
 from kartlab.render.sky import Sky
 from kartlab.render.sprites import PROP_HEIGHTS, VOXEL, SpriteBank, to_surface
 from kartlab.render.texture import build_floor_texture
@@ -168,6 +168,7 @@ class WorldRenderer:
         self.show_rays: list[tuple[float, float, float]] = []  # (x, y, heading) for overlay
         self.ray_lengths: np.ndarray | None = None
         self.ray_angles: np.ndarray | None = None
+        self.ray_range = 60.0  # distance (m) that maps to the far end of the ray colour ramp
         self.light_mode = light_mode
         self.variant = variant
         self.lens = lens
@@ -383,9 +384,11 @@ class WorldRenderer:
         self.world.fill(rgb, (int(sx - size / 2 + 0.5), int(sy - size + 0.5), size, size))
 
     def _draw_rays(self, pose: CameraPose) -> None:
-        colour = tuple(int(c) for c in self.palette.rgb[Ink.YELLOW])
+        ramp = [tuple(int(c) for c in self.palette.rgb[ink]) for ink in RAY_RAMP]
         for x, y, heading in self.show_rays:
             for angle, length in zip(self.ray_angles, self.ray_lengths, strict=True):
+                near = min(max(float(length) / self.ray_range, 0.0), 1.0)
+                colour = ramp[round(near * (len(ramp) - 1))]
                 ex = x + math.cos(heading + angle) * length
                 ey = y + math.sin(heading + angle) * length
                 points = []

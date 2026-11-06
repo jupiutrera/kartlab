@@ -88,6 +88,7 @@ Sin ventana (CI, capturas): `SDL_VIDEODRIVER=dummy` y `scripts/drive.py --frames
 - Nada bloquea el fotograma: `VersionLibrary` carga checkpoints en un hilo y los cachea (en modo síncrono, el de `--frames` y los tests, carga al pedirlos); el circuito nuevo se construye tras mostrar «Cargando…» (`ViewerApp.defer`). Los cambios de escena pasan por `ViewerApp.fade`.
 - La física avanza con un acumulador a pasos de 1/60 s y el factor de pausa y cámara lenta (`SPEEDS`); sin ventana, un fotograma es un paso. Los paneles (`Overlays`) los comparten el visor y los vídeos.
 - Teclas: coherentes con `drive.py` (C, V, G, P, L, F3, F11, H, 1-3, E, N, R, Esc). Si añades una, anótala en `HELP_SECTIONS` y en la tabla del README.
+- Vista cerebro (tecla B, `show/brain.py`; también en `live.py`): `BrainPanel` solo dibuja lo que guarda `PolicyDriver` (`last_obs`, `action`, `values`). V(s) sale de `policy.predict_values` (API pública de SB3) y solo se calcula mientras el panel está abierto (`set_tracking`); se reescala con `ret_rms` a unidades de recompensa. El panel pinta una capa base una vez y cuesta unas décimas de milisegundo; sin él, cero.
 
 ## Windows
 

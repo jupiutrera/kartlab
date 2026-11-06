@@ -44,12 +44,19 @@ def load_best_version(run: RunPaths) -> Version:
     """``best_model.zip`` (the best evaluated policy) as a driveable version."""
     from stable_baselines3 import PPO
 
+    from kartlab.show.drivers import model_value
     from kartlab.train.evaluate import model_predictor
 
     if not run.best_model.exists():
         raise SystemExit(f"{run.root} no tiene best_model.zip")
     model = PPO.load(run.best_model, device="cpu")
-    return Version(int(model.num_timesteps), model_predictor(model, run.best_vecnormalize))
+    value, in_reward_units = model_value(model, run.best_vecnormalize)
+    return Version(
+        int(model.num_timesteps),
+        model_predictor(model, run.best_vecnormalize),
+        value,
+        in_reward_units,
+    )
 
 
 def warm_up_libraries() -> None:

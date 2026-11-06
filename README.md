@@ -208,7 +208,8 @@ El título muestra el mejor modelo conduciendo, con la luz cambiando despacio de
 | R | Reiniciar (la vuelta o la carrera) |
 | C | Cámara: persecución, retransmisión o cenital |
 | V | Día, atardecer o noche |
-| G | Mostrar los sensores (rayos) |
+| G | Mostrar los sensores (rayos) en el mundo |
+| B | Panel cerebro: lo que ve y decide la IA |
 | L | Modo ligero (30 fps) |
 | P o Espacio | Pausa |
 | S | Cámara lenta: 0,5× y 0,25× |
@@ -221,6 +222,19 @@ Las teclas son las mismas que en `drive.py` donde significan lo mismo; aquí no 
 - **Sin tirones.** Los checkpoints se cargan en un hilo aparte y se guardan en caché (el primero tarda unos segundos porque hay que importar PyTorch, con el título ya en pantalla). Mientras tanto, la ventana sigue dibujando y avisa con «Cargando…». Cambiar de circuito tarda un segundo y medio la primera vez y es instantáneo al volver a uno ya visto.
 - **Checkpoints que faltan.** Se muestran los que haya: los huecos no estorban, un fichero que no se puede leer se salta con un aviso, y si no hay `best_model.zip` el título usa la última versión. Si el entrenamiento sigue en marcha, la curva se actualiza y, en «Ver conducir», las versiones nuevas entran solas en la barra.
 - **Sin ventana.** `SDL_VIDEODRIVER=dummy uv run python scripts/viewer.py --mode race --frames 600 --screenshot carrera.png` avanza un paso de física por fotograma y guarda el último.
+
+## Vista cerebro
+
+La tecla **B** abre un panel con lo que la IA percibe y decide, en el visor de exhibición (en «Ver conducir», en la carrera —sobre el kart que sigue la cámara— y en la progresión) y en el visor en directo (`live.py`, también en la vista cenital). Se cierra con la misma tecla. También se abre al arrancar con `--brain`, y **G** (o `--rays`) dibuja en el mundo los mismos rayos, coloreados igual.
+
+![Vista cerebro en el Cañón: el kart roza el borde derecho, los rayos de ese lado se ponen rojos, el volante gira a fondo a la izquierda y V se hunde un instante](docs/img/cerebro.png)
+
+- **Sensores.** Los 11 rayos tal como los recibe la red (la observación, no un lanzamiento nuevo), en un radar con el kart abajo y su izquierda a la izquierda. Cada rayo se colorea por la distancia: rojo cerca, naranja, amarillo, verde, turquesa y azul claro lejos (alcance de 60 m). El radio sigue la raíz cuadrada de la distancia, para que los rayos laterales, siempre cortos en una pista de 12 m, no queden aplastados; los anillos marcan 10, 30 y 60 m.
+- **Volante, acelerador y freno.** La acción que sostiene el kart entre decisiones (la IA decide unas 15 veces por segundo). El volante es una barra centrada: hacia la izquierda gira a la izquierda. El acelerador y el freno salen del signo de una sola orden de aceleración. Los visores usan la política determinista, así que se ve la media de la distribución, no una acción muestreada.
+- **Valor estimado (V).** Lo que la red cree que va a ganar de aquí en adelante, en los últimos 10 s. Cae cuando el kart se pega a un borde, como en la captura, y se recupera en cuanto vuelve a tener pista libre delante. Sale de `policy.predict_values` de Stable-Baselines3, solo mientras el panel está abierto, y se reescala con las estadísticas de VecNormalize guardadas: son **unidades de recompensa descontada** (a 0,1 por metro de progreso), no las normalizadas con las que se entrena la red. Si un checkpoint no trae esas estadísticas, el panel lo avisa («unidades normalizadas»).
+- **Lo que recibe.** Velocidad (0 a 1 sobre la máxima), error de rumbo (el ángulo entre el kart y la pista), derrape (velocidad lateral) y posición real de las ruedas, que sigue a la orden de volante con retraso. Las flechas indican el lado, y la barra se llena hacia donde apunta el valor.
+
+El panel se pinta con una capa base preparada de antemano y unas pocas operaciones de dibujo por fotograma: medido en un portátil, cuesta entre 0,5 y 0,6 ms por fotograma a 1080p (F3 lo muestra como «cerebro») y, apagado, nada. Calcular V(s) cuesta entre 70 y 120 µs por decisión, unas 15 veces por segundo.
 
 ## Vídeos
 
