@@ -161,6 +161,8 @@ def resolve_save_path(text: str, tracks_dir: Path = TRACKS_DIR, root: Path = REP
     text = text.strip()
     if not ("/" in text or "\\" in text or text.lower().endswith(".json")):
         return tracks_dir / f"{slugify(text)}.json"
+    if text.endswith(("/", "\\")) or Path(text).name.lower() == ".json":
+        raise ValueError(f"Escribe un nombre de fichero, no solo una carpeta o «.json»: «{text}»")
     path = Path(text)
     path = path if path.suffix else path.with_suffix(".json")
     path = path if path.is_absolute() else root / path
@@ -692,6 +694,9 @@ class EditorApp:
         self.quick_cost = self._last_quick_end - start
         self._stale = False
         self._full_pending = not self.analysis.complete
+        # A quick analysis replaces whatever the worker validated, even for the very same
+        # design (undo, a no-op change): the next request must not be skipped as a repeat.
+        self._submitted = None
         self._redraw = True
 
     def _run_full(self) -> None:
@@ -743,6 +748,7 @@ class EditorApp:
             return
         self.analysis, self.analysis_spec, self.full_cost = analysis, spec, cost
         self._full_pending = False
+        self._submitted = None
         self._redraw = True
 
     def settle(self) -> Analysis:

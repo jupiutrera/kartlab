@@ -985,3 +985,72 @@ def test_settle_is_synchronous_even_with_the_worker(make_app):
     app.changed()
     assert app.settle().issues and app.analysis.complete
     assert app.verdict == "invalid"
+
+
+def assert_settled_like_the_validator(app):
+    assert app.verdict != "pending"
+    assert app.analysis.complete and app.analysis_spec == app.spec
+    assert [i.message for i in app.analysis.issues] == list(validate_spec(app.spec).problems)
+
+
+def test_undoing_back_to_a_validated_design_resolves_the_pending_verdict(make_app):
+    app = make_app(background=True)
+    app.model.move_corner(3, 335.0, 192.0)
+    app.changed()
+    wait_for(app, lambda: app.analysis.complete)  # the worker validated this design
+    validated = app.spec
+    app.model.move_corner(3, 340.0, 195.0)
+    app.changed()
+    app.update(app._last_change)  # quick analysis of the new design: pending again
+    app.undo()  # ...and back to the validated one before the debounce passes
+    assert app.spec == validated
+    app.update(app._last_change)
+    assert app.verdict == "pending"
+    wait_for(app, lambda: app.analysis.complete)
+    assert_settled_like_the_validator(app)
+    assert app.verdict == "valid"
+
+
+def test_a_change_that_changes_nothing_does_not_leave_the_verdict_pending(make_app):
+    app = make_app(background=True)
+    app.model.set_width(ed.MAX_WIDTH)
+    app.changed()
+    wait_for(app, lambda: app.analysis.complete)
+    before = app.spec
+    key(app, pygame.K_PAGEUP)  # already at the maximum: nothing changes, changed() still runs
+    assert app.spec == before
+    app.update(app._last_change)
+    wait_for(app, lambda: app.analysis.complete)
+    assert_settled_like_the_validator(app)
+
+
+def test_a_pending_verdict_always_resolves_whatever_the_order_of_edits(make_app):
+    import random
+
+    rng = random.Random(5)
+    app = make_app(background=True)
+    app.settle()
+    for _ in range(25):
+        action = rng.random()
+        if action < 0.4:
+            app.model.move_corner(rng.randrange(9), rng.uniform(0, 300), rng.uniform(0, 250))
+            app.changed()
+        elif action < 0.6:
+            app.undo()
+        elif action < 0.7:
+            app.redo()
+        elif action < 0.8:
+            key(app, pygame.K_PAGEUP)
+        else:
+            app.changed()
+        for _ in range(rng.randrange(3)):
+            app.update(app._last_change + rng.choice([0.0, 0.05, 0.2]))
+            time.sleep(rng.choice([0.0, 0.01, 0.1]))
+    wait_for(app, lambda: app.analysis.complete)
+    assert_settled_like_the_validator(app)
+
+
+@pytest.mark.parametrize("text", ["tracks/", "tracks\\", ".json", "tracks/.json", "x/"])
+def test_a_folder_or_a_bare_extension_is_not_a_file_name(text):
+    with pytest.raises(ValueError, match="nombre de fichero"):
+        resolve_save_path(text, Path("T"), Path("R").resolve())
