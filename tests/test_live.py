@@ -6,14 +6,9 @@ import pygame
 import pytest
 
 from kartlab.env.kart_env import EnvConfig
-from kartlab.show.live import (
-    LiveApp,
-    MetricsReader,
-    PolicyDriver,
-    RewardChart,
-    Version,
-    format_steps,
-)
+from kartlab.show.charts import MetricsReader, RewardChart
+from kartlab.show.drivers import PolicyDriver, Version, format_steps
+from kartlab.show.live import LiveApp
 from kartlab.sim.showcase import showcase_track
 from kartlab.train.config import PPOParams, TrainConfig
 
@@ -127,3 +122,32 @@ def test_ghosts_are_earlier_versions_on_a_log_scale(tiny_run):
         assert steps and all(s < latest for s in steps)
     finally:
         pygame.quit()
+
+
+def test_a_driver_can_be_placed_on_a_grid_slot():
+    track = showcase_track("harbor")
+    driver = PolicyDriver(Version(0, still), track, EnvConfig(), (255, 0, 0))
+    driver.place(-11.0, 2.4)
+    position = driver.racer.position
+    assert position.s == pytest.approx(track.length - 11.0, abs=0.5)
+    assert position.lateral == pytest.approx(2.4, abs=0.1)
+    assert driver.restarts == 0
+
+
+def test_live_viewer_runs_on_a_track_file(tiny_run, tmp_path):
+    from kartlab.show.live import main
+
+    out = tmp_path / "file.png"
+    argv = ["--run", str(tiny_run.root), "--scale", "2", "--frames", "10", "--screenshot", str(out)]
+    main([*argv, "--track-file", "tracks/ejemplo.json"])
+    assert out.stat().st_size > 0
+
+
+def test_live_viewer_rejects_an_invalid_track_file(tiny_run, tmp_path):
+    from kartlab.show.live import main
+
+    bad = tmp_path / "mal.json"
+    bad.write_text('{"format": 1, "name": "x", "width": 12, "corners": []}', encoding="utf-8")
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--run", str(tiny_run.root), "--track-file", str(bad), "--frames", "1"])
+    assert "Circuito no válido" in str(exit_info.value)

@@ -83,3 +83,68 @@ def test_sprite_budget_reuses_a_neighbour_instead_of_drawing(view):
     bank.begin_frame()
     bank.kart(2, 0.0, math.radians(22), 1.12)
     assert len(bank._karts) == cached + 1
+
+
+def test_fixed_time_makes_the_hud_clock_frame_exact(track):
+    view = GameView(track, (640, 360))
+    view.fixed_time = 5.0
+    assert view.now() == 5.0
+    view.notify("Aviso")
+    assert view._notice == ("Aviso", 5.0)
+    view.fixed_time = None
+    assert view.now() < 5.0  # back to the wall clock
+
+
+def test_eight_kart_colours_are_distinct():
+    from kartlab.render.palette import KART_RAMPS
+
+    assert len(KART_RAMPS) == 8
+    assert len({ramp[1] for ramp in KART_RAMPS}) == 8
+
+
+def _render_with_effects(track, seed: int) -> bytes:
+    """A kart skidding on the grass with the throttle down: particles and marks every frame."""
+    view = GameView(track, (640, 360), "chase", seed=seed)
+    screen = pygame.Surface((640, 360))
+    x, y, heading = track.pose_at(30.0)
+    for frame in range(45):
+        view.fixed_time = 1.0 + frame * DT
+        kart = KartState(x + frame * 0.1, y, heading, vx=6.0 * math.cos(heading), vy=6.0)
+        visual = KartVisual(kart, 0, on_grass=True, throttle=1.0)
+        pose = view.update([visual], DT)
+        view.draw(screen, pose, [visual], HudInfo(), DT)
+    return pygame.image.tobytes(screen, "RGB")
+
+
+def test_same_seed_gives_identical_frames_with_effects(track):
+    first = _render_with_effects(track, seed=5)
+    assert _render_with_effects(track, seed=5) == first
+
+
+def test_effects_depend_on_the_seed(track):
+    assert _render_with_effects(track, seed=5) != _render_with_effects(track, seed=6)
+
+
+def test_hud_can_be_left_out(track, view):
+    kart = KartState(*track.pose_at(30.0))
+    visual = KartVisual(kart, 0)
+    pose = view.update([visual], DT)
+    with_hud, without = pygame.Surface((1366, 768)), pygame.Surface((1366, 768))
+    view.draw(with_hud, pose, [visual], HudInfo(laps=1, lap_time=12.3), DT)
+    view.draw(without, pose, [visual], HudInfo(laps=1, lap_time=12.3), DT, hud=False)
+    corner = (60, 40, 150, 60)  # where the lap panel sits
+    assert pygame.image.tobytes(with_hud.subsurface(corner), "RGB") != pygame.image.tobytes(
+        without.subsurface(corner), "RGB"
+    )
+    assert without.get_at((683, 300))[:3] != (0, 0, 0)  # the world is still drawn
+
+
+def test_forgetting_fps_samples_keeps_the_light_mode_off(track):
+    view = GameView(track, (640, 360))
+    screen = pygame.Surface((640, 360))
+    visual = KartVisual(KartState(*track.pose_at(10.0)))
+    pose = view.update([visual], DT)
+    for _ in range(130):
+        view.draw(screen, pose, [visual], HudInfo(), DT, fps=22.0)
+        view.forget_fps()  # e.g. while a checkpoint loads in the background
+    assert not view.world.light_mode

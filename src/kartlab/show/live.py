@@ -11,20 +11,16 @@ the kart is restarted after getting stuck).
 from __future__ import annotations
 
 import argparse
-import csv
-import io
 import math
 import queue
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
 import pygame
 
-from kartlab.env.kart_env import EnvConfig, KartEnv
 from kartlab.render.display import open_window
 from kartlab.render.scene import KartVisual
 from kartlab.render.topdown import (
@@ -40,16 +36,17 @@ from kartlab.render.topdown import (
     load_fonts,
 )
 from kartlab.render.view import GameView, HudInfo
+from kartlab.show.charts import MetricsReader, RewardChart
+from kartlab.show.cli import existing_run_or_exit, resolve_track_or_exit
+from kartlab.show.drivers import PolicyDriver, Version, format_steps, load_version
 from kartlab.sim.kart import DT
 from kartlab.sim.track import Track
 from kartlab.sim.tracksets import resolve_track
 from kartlab.train.config import TrainConfig
-from kartlab.train.evaluate import model_predictor
 from kartlab.train.run import Checkpoint, RunPaths, latest_run
 
 TITLE = "KART LAB · entrenamiento en directo"
 GHOST_COLORS = ((110, 170, 255), (190, 140, 255), (120, 220, 190))
-RESTART_SECONDS = 3.0  # stuck or off the track this long: back to the start line
 POLL_SECONDS = 1.0
 METRICS_POLL_SECONDS = 2.0
 NOTICE_SECONDS = 3.0
@@ -57,34 +54,9 @@ PANEL_FRACTION = 0.32  # share of the window width used by the side panel
 LIGHT_MODE_FPS = 50.0  # below this (averaged over 2 s) the viewer drops to 30 fps
 
 
-def format_steps(steps: int) -> str:
-    if steps >= 1_000_000:
-        return f"{steps / 1_000_000:.1f}M".replace(".", ",")
-    if steps >= 1000:
-        return f"{steps // 1000}k"
-    return str(steps)
-
-
 def ease_out(t: float) -> float:
     t = min(max(t, 0.0), 1.0)
     return 1.0 - (1.0 - t) ** 3
-
-
-@dataclass
-class Version:
-    steps: int
-    predict: object  # batch obs -> batch actions
-
-    @property
-    def label(self) -> str:
-        return f"{format_steps(self.steps)} pasos"
-
-
-def load_version(checkpoint: Checkpoint) -> Version:
-    from stable_baselines3 import PPO
-
-    model = PPO.load(checkpoint.model, device="cpu")
-    return Version(checkpoint.steps, model_predictor(model, checkpoint.vecnormalize))
 
 
 class ModelLoader:
@@ -103,8 +75,8 @@ class ModelLoader:
             return
         try:
             version = load_version(latest)
-        except (OSError, ValueError, EOFError, KeyError):
-            return  # replaced while reading: try again next time
+        except Exception:  # replaced or half written while reading: try again next time
+            return
         self.loaded_steps = latest.steps
         self.versions.put(version)
 
@@ -121,168 +93,6 @@ class ModelLoader:
         self._stop.set()
 
 
-class PolicyDriver:
-    """One kart driven by a policy, advanced one physics step per call."""
-
-    def __init__(self, version: Version, track: Track, env_config: EnvConfig, color) -> None:
-        self.version = version
-        self.color = color
-        config = replace(
-            env_config,
-            track=None,
-            random_start=False,
-            terminate_off_track=False,
-            stuck_seconds=math.inf,
-            max_seconds=math.inf,
-            max_laps=None,
-        )
-        self.env = KartEnv(config)
-        self.env.reset(seed=0, options={"track": track})
-        self.repeat = config.action_repeat
-        self.best_lap: float | None = None
-        self.restarts = 0
-        self.ramp = 0  # colour in the 3D view (0 is the newest version)
-        self.trail: deque[tuple[float, float]] = deque(maxlen=14)
-        self._steps = 0
-        self._phase = 0
-        self._action = (0.0, 0.0)
-        self._best_distance = 0.0
-        self._last_progress_time = 0.0
-        self._off_since: float | None = None
-
-    @property
-    def racer(self):
-        return self.env.racer
-
-    @property
-    def throttle(self) -> float:
-        return self._action[1]
-
-    def restart(self) -> None:
-        self.racer.reset()
-        self.env.hold_action(np.zeros(2))
-        self._phase = 0
-        self._best_distance = 0.0
-        self._last_progress_time = 0.0
-        self._off_since = None
-        self.restarts += 1
-        self.trail.clear()
-
-    def step(self) -> str | None:
-        """Advance one physics step; returns "lap" or "restart" when one happens."""
-        racer = self.racer
-        if self._phase == 0:
-            obs = self.env.observe()
-            action = self.version.predict(obs[None])[0]
-            self._action = self.env.hold_action(action)
-        self._phase = (self._phase + 1) % self.repeat
-        laps = racer.laps
-        racer.step(*self._action)
-        self._steps += 1
-        if self._steps % 6 == 0:
-            self.trail.appendleft((racer.kart.x, racer.kart.y))
-
-        if racer.progress.distance > self._best_distance + 1.0:
-            self._best_distance = racer.progress.distance
-            self._last_progress_time = racer.time
-        off = abs(racer.position.lateral) > self.env.track.half_width + 0.5
-        if off and self._off_since is None:
-            self._off_since = racer.time
-        elif not off:
-            self._off_since = None
-        if racer.laps > laps:
-            lap = racer.lap_times[-1]
-            self.best_lap = lap if self.best_lap is None else min(self.best_lap, lap)
-            return "lap"
-        stuck = racer.time - self._last_progress_time > RESTART_SECONDS
-        lost = self._off_since is not None and racer.time - self._off_since > RESTART_SECONDS
-        if stuck or lost:
-            self.restart()
-            return "restart"
-        return None
-
-
-class MetricsReader:
-    """Reads metrics.csv when it changes; tolerates a half-written last line."""
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.rows: list[dict[str, float]] = []
-        self.version = 0  # bumps whenever rows change
-        self._mtime = None
-
-    def refresh(self) -> None:
-        try:
-            mtime = self.path.stat().st_mtime_ns
-            if mtime == self._mtime:
-                return
-            text = self.path.read_text(encoding="utf-8")
-        except (FileNotFoundError, PermissionError):
-            return
-        self._mtime = mtime
-        lines = text.splitlines(keepends=True)
-        if lines and not lines[-1].endswith("\n"):
-            lines = lines[:-1]  # still being written
-        rows = []
-        for row in csv.DictReader(io.StringIO("".join(lines))):
-            try:
-                rows.append({k: float(v) for k, v in row.items()})
-            except (TypeError, ValueError):
-                continue
-        if len(rows) != len(self.rows):
-            self.rows = rows
-            self.version += 1
-
-
-class RewardChart:
-    """Mean episode reward against training steps, redrawn only when data changes."""
-
-    def __init__(self, size: tuple[int, int], font: pygame.font.Font) -> None:
-        self.size = size
-        self.font = font
-        self.surface = pygame.Surface(size, pygame.SRCALPHA)
-        self._key = None
-
-    def draw(self, rows: list[dict[str, float]], data_version: int, marker: int | None):
-        key = (data_version, marker, self.size)
-        if key == self._key:
-            return self.surface
-        self._key = key
-        surf = self.surface
-        surf.fill((0, 0, 0, 0))
-        width, height = self.size
-        pad = 6
-        title = self.font.render("Recompensa media por episodio", True, TEXT_DIM)
-        surf.blit(title, (0, 0))
-        top = title.get_height() + pad
-        box = pygame.Rect(0, top, width, height - top)
-        pygame.draw.rect(surf, (255, 255, 255, 30), box, 1)
-        points = [(r["steps"], r["reward_mean"]) for r in rows if not math.isnan(r["reward_mean"])]
-        if len(points) < 2:
-            msg = self.font.render("Esperando datos…", True, TEXT_DIM)
-            surf.blit(msg, (box.x + pad, box.y + pad))
-            return surf
-        xs, ys = np.array(points).T
-        x0, x1 = 0.0, max(xs.max(), 1.0)
-        y0, y1 = min(ys.min(), 0.0), max(ys.max(), 1.0)
-
-        def to_px(x, y):
-            px = box.x + pad + (x - x0) / (x1 - x0) * (box.width - 2 * pad)
-            py = box.bottom - pad - (y - y0) / (y1 - y0) * (box.height - 2 * pad)
-            return px, py
-
-        if y0 < 0:
-            pygame.draw.line(surf, (255, 255, 255, 40), to_px(x0, 0), to_px(x1, 0))
-        pygame.draw.aalines(surf, ACCENT, False, [to_px(x, y) for x, y in points])
-        if marker is not None:
-            mx = to_px(min(marker, x1), y0)[0]
-            pygame.draw.line(surf, KART_COLOR, (mx, box.y + pad), (mx, box.bottom - pad), 2)
-        for value, y in ((y1, box.y + pad), (y0, box.bottom - pad - self.font.get_height())):
-            label = self.font.render(f"{value:.0f}", True, TEXT_DIM)
-            surf.blit(label, (box.right - label.get_width() - pad, y))
-        return surf
-
-
 class LiveApp:
     def __init__(
         self,
@@ -295,6 +105,7 @@ class LiveApp:
         view: str = "3d",
         camera: str = "broadcast",
         variant: str = "day",
+        track: Track | None = None,
     ) -> None:
         self.run_paths = run
         self.view_mode = view
@@ -305,7 +116,7 @@ class LiveApp:
         self.config = TrainConfig.from_yaml(run.config)
         self.env_config = self.config.env_config()
         choice = track_choice or self.config.env.get("track") or "eval:1"
-        self.track = resolve_track(str(choice))
+        self.track = track if track is not None else resolve_track(str(choice))
         self.max_ghosts = ghosts
         self.realtime = realtime
         self.screen = open_window(TITLE, scale, fullscreen)
@@ -341,7 +152,12 @@ class LiveApp:
         self.panel_bg.fill(PANEL)
         if self.view_mode == "3d" and self.game is None:
             self.game = GameView(
-                self.track, (width, height), self.camera, self.variant, ramps=(0, 1, 2, 3)
+                self.track,
+                (width, height),
+                self.camera,
+                self.variant,
+                seed=self.track.decoration_seed,
+                ramps=(0, 1, 2, 3),
             )
             self.chart3d = RewardChart((int(width * 0.26), int(height * 0.2)), regular)
 
@@ -611,6 +427,9 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Muestra un entrenamiento en directo.")
     parser.add_argument("--run", type=Path, help="carpeta del run (por defecto, el último)")
     parser.add_argument("--track", help="circuito (por defecto, el del entrenamiento o eval:1)")
+    parser.add_argument(
+        "--track-file", type=Path, help="circuito en fichero JSON (sustituye a --track)"
+    )
     parser.add_argument("--ghosts", type=int, default=2, help="versiones anteriores (0-3)")
     parser.add_argument("--scale", type=int, help="escala entera sobre 320x180")
     parser.add_argument("--fullscreen", action="store_true")
@@ -628,11 +447,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--screenshot", type=Path, help="guarda el último fotograma en este PNG")
     args = parser.parse_args(argv)
 
-    run = RunPaths(args.run) if args.run else latest_run()
+    run = existing_run_or_exit(args.run) if args.run else latest_run()
     if run is None:
         raise SystemExit("No hay ningún run en runs/. Lanza antes scripts/train.py.")
     if not run.config.exists():
         raise SystemExit(f"{run.root} no tiene config.yaml")
+    track = None
+    if args.track_file:
+        track = resolve_track_or_exit(str(args.track_file))
+    elif args.track:
+        track = resolve_track_or_exit(args.track)
     realtime = args.frames is None
     app = LiveApp(
         run,
@@ -644,6 +468,7 @@ def main(argv: list[str] | None = None) -> None:
         args.view,
         args.camera,
         args.variant,
+        track,
     )
     try:
         app.preload_ghosts()

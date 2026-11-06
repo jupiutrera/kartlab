@@ -27,6 +27,7 @@ KERB_CURVATURE = 1 / 45  # corners tighter than this radius get kerbs
 EDGE_LINE = (0.15, 0.45)  # white line between these distances inside the edge (m)
 START_LINE = 1.0  # the chequered line spans this far each side of s = 0 (m)
 MIN_MIP_SIZE = 8
+STRIP_ROWS = 128  # texel rows painted (and averaged for the mipmaps) at a time
 
 
 def hash_noise(u: np.ndarray, v: np.ndarray, seed: int) -> np.ndarray:
@@ -72,11 +73,18 @@ class FloorTexture:
         while min(self.levels[-1].shape) >= 2 * MIN_MIP_SIZE:
             prev = self.levels[-1]
             h, w = prev.shape[0] // 2 * 2, prev.shape[1] // 2 * 2
-            colors = rgb[prev[:h, :w]].astype(np.uint16)
-            avg = (
-                colors[0::2, 0::2] + colors[1::2, 0::2] + colors[0::2, 1::2] + colors[1::2, 1::2]
-            ) >> 2
-            self.levels.append(self.palette.quantize(avg.astype(np.uint8)))
+            level = np.empty((h // 2, w // 2), dtype=np.uint8)
+            for r0 in range(0, h, STRIP_ROWS):  # in strips: RGB of the whole level is large
+                r1 = min(r0 + STRIP_ROWS, h)
+                colors = rgb[prev[r0:r1, :w]].astype(np.uint16)
+                avg = (
+                    colors[0::2, 0::2]
+                    + colors[1::2, 0::2]
+                    + colors[0::2, 1::2]
+                    + colors[1::2, 1::2]
+                ) >> 2
+                level[r0 // 2 : r1 // 2] = self.palette.quantize(avg.astype(np.uint8))
+            self.levels.append(level)
 
     def stamp(self, x: float, y: float, radius: float, index: int, density: float = 1.0) -> None:
         """Paint a dithered disc on level 0 (skid marks, baked shadows)."""
@@ -192,30 +200,56 @@ def build_floor_texture(track: Track, seed: int = 0, tpm: int = TEXELS_PER_METRE
     rows = math.ceil((ymax - ymin + 2 * MARGIN) * tpm)
     hw = track.half_width
 
+    # Exact track coordinates only in a band around the asphalt.
+    coarse_shape = (math.ceil(rows / tpm), math.ceil(cols / tpm))
+    dist, seg = _coarse_field(track, origin, coarse_shape, hw + BAND + 1.5)
+    near_cells = dist < hw + BAND + 1.0
+
+    # Painted in strips of rows: each texel depends only on itself, so the result equals one
+    # pass over the whole image, with a small fraction of the temporary memory.
+    tex = np.empty((rows, cols), dtype=np.uint8)
+    for v0 in range(0, rows, STRIP_ROWS):
+        _paint_strip(track, tex[v0 : v0 + STRIP_ROWS], v0, origin, seed, tpm, near_cells, seg)
+    texture = FloorTexture([tex], origin, float(tpm))
+    texture.build_mips()
+    return texture
+
+
+def _paint_strip(
+    track: Track,
+    tex: np.ndarray,
+    v0: int,
+    origin: tuple[float, float],
+    seed: int,
+    tpm: int,
+    near_cells: np.ndarray,
+    seg: np.ndarray,
+) -> None:
+    """Paint texel rows ``v0`` onwards into ``tex``, a view of the rows of the texture."""
+    hw = track.half_width
+    v_idx, u_idx = np.mgrid[v0 : v0 + len(tex), 0 : tex.shape[1]]
+
     # Grass everywhere: mowing stripes in world space plus a sprinkle of lighter blades.
-    v_idx, u_idx = np.mgrid[0:rows, 0:cols]
     wx = origin[0] + (u_idx + 0.5) / tpm
     wy = origin[1] - (v_idx + 0.5) / tpm
     stripe = np.floor((wx * math.cos(STRIPE_ANGLE) + wy * math.sin(STRIPE_ANGLE)) / STRIPE_METRES)
     light = (stripe.astype(np.int64) & 1).astype(bool)
     noise = hash_noise(u_idx, v_idx, seed)
-    tex = np.where(light, Ink.GRASS_LIGHT, Ink.GRASS).astype(np.uint8)
+    tex[...] = np.where(light, Ink.GRASS_LIGHT, Ink.GRASS).astype(np.uint8)
     tex[light & (noise < 0.05)] = Ink.LEAF_LIGHT
     tex[~light & (noise < 0.05)] = Ink.GRASS_DARK
 
-    # Exact track coordinates only in a band around the asphalt.
-    coarse_shape = (math.ceil(rows / tpm), math.ceil(cols / tpm))
-    dist, seg = _coarse_field(track, origin, coarse_shape, hw + BAND + 1.5)
-    near_cells = dist < hw + BAND + 1.0
     near = near_cells[v_idx // tpm, u_idx // tpm]
     vs, us = np.nonzero(near)
+    if len(vs) == 0:
+        return
     x, y = wx[vs, us], wy[vs, us]
-    s, lat, nearest = _project(track, x, y, seg[vs // tpm, us // tpm])
+    s, lat, nearest = _project(track, x, y, seg[(vs + v0) // tpm, us // tpm])
     if track.crossings:
         s, lat, nearest = _refine_crossings(track, x, y, s, lat, nearest)
     alat = np.abs(lat)
     n_band = noise[vs, us]
-    dither = BAYER4[vs % 4, us % 4]
+    dither = BAYER4[(vs + v0) % 4, us % 4]
     out = tex[vs, us]
 
     # Grass shadow along the outside of the edge: darker, fading out with dithering.
@@ -254,6 +288,3 @@ def build_floor_texture(track: Track, seed: int = 0, tpm: int = TEXELS_PER_METRE
     out[start & ~checker] = Ink.WHITE
 
     tex[vs, us] = out
-    texture = FloorTexture([tex], origin, float(tpm))
-    texture.build_mips()
-    return texture
