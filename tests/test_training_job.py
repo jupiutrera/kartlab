@@ -1,12 +1,17 @@
 """The training launcher of the main menu, without any real process."""
 
+import json
+import os
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 import pytest
 
 from kartlab.common.paths import REPO_ROOT
 from kartlab.show.training_job import (
+    JOB_FILE_NAME,
     STOP_WAIT_SECONDS,
     TrainingError,
     TrainingJob,
@@ -17,10 +22,13 @@ from kartlab.show.training_job import (
     last_metrics_steps,
     list_configs,
     live_run,
+    process_started_at,
 )
 
 
 class FakeProcess:
+    pid = 0
+
     def __init__(self) -> None:
         self.code: int | None = None
         self.terminated = False
@@ -187,3 +195,99 @@ def test_live_run_needs_a_metrics_file_touched_in_the_last_minute(tmp_path):
     now = metrics.stat().st_mtime
     assert live_run(tmp_path / "runs", now + 30).root == run
     assert live_run(tmp_path / "runs", now + 120) is None
+
+
+# -- adopting a trainer launched by an earlier session of the menu -----------------------------
+
+
+def write_job_file(path, **overrides):
+    data = {
+        "format": 1,
+        "pid": os.getpid(),
+        "started_at": process_started_at(os.getpid()) or time.time(),
+        "name": "previo",
+        "total_steps": 400000,
+        "config": "configs/previo.yaml",
+        "log": str(path.parent / "train-previo.log"),
+        "stop": str(path.parent / "train-previo.stop"),
+        "runs_dir": str(path.parent / "runs"),
+        "run": None,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({**data, **overrides}), encoding="utf-8")
+    return path
+
+
+def test_launching_writes_the_job_file_and_the_run_is_added_when_known(config, tmp_path):
+    job, _, process = make_job(config, tmp_path)
+    process.pid = 4321
+    job.start()
+    data = json.loads(job.job_file.read_text(encoding="utf-8"))
+    assert job.job_file == tmp_path / "logs" / JOB_FILE_NAME
+    assert data["pid"] == 4321 and data["name"] == "mini" and data["total_steps"] == 400000
+    assert data["stop"] == str(job.stop_path) and data["config"] == str(config)
+    assert data["run"] is None
+    run_dir = tmp_path / "runs" / "2026-11-06_1200_mini"
+    run_dir.mkdir(parents=True)
+    job.log_path.write_text(f"Run: {run_dir}\n", encoding="utf-8")
+    job.run_paths()
+    assert json.loads(job.job_file.read_text(encoding="utf-8"))["run"] == str(run_dir)
+    assert not list((tmp_path / "logs").glob("*.tmp"))  # written atomically, nothing left over
+
+
+def test_a_new_session_adopts_a_trainer_that_is_still_alive_and_can_stop_it(tmp_path):
+    run_dir = tmp_path / "runs" / "2026-11-06_1200_previo"
+    run_dir.mkdir(parents=True)
+    (run_dir / "metrics.csv").write_text("steps,time_s\n128000,9\n", encoding="utf-8")
+    path = write_job_file(tmp_path / "logs" / JOB_FILE_NAME, run=str(run_dir))
+    job = TrainingJob.adopt(tmp_path / "logs", tmp_path / "runs")
+    assert job is not None and job.running and not job.stopping
+    assert job.config.name == "previo" and job.run_paths().root == run_dir
+    assert job.steps() == 128000
+    assert job.status_line().startswith("Entrenando previo · 128k/400k")
+    job.request_stop()  # writes the stop file the trainer is watching
+    assert job.stop_path.exists() and job.stopping and "Parando" in job.status_line()
+    assert path.exists()
+
+
+def test_an_adopted_job_that_was_already_stopping_says_so(tmp_path):
+    path = write_job_file(tmp_path / "logs" / JOB_FILE_NAME)
+    Path(json.loads(path.read_text(encoding="utf-8"))["stop"]).write_text("stop", encoding="utf-8")
+    job = TrainingJob.adopt(tmp_path / "logs")
+    assert job.stopping
+
+
+def test_a_job_file_of_a_dead_process_is_ignored_and_removed(tmp_path):
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    path = write_job_file(tmp_path / "logs" / JOB_FILE_NAME, pid=child.pid)
+    assert TrainingJob.adopt(tmp_path / "logs") is None
+    assert not path.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the start time check is Windows only")
+def test_a_reused_pid_is_not_adopted(tmp_path):
+    path = write_job_file(tmp_path / "logs" / JOB_FILE_NAME, started_at=time.time() - 86_400)
+    assert TrainingJob.adopt(tmp_path / "logs") is None  # alive, but not the trainer
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("text", ["", "{", "[1]", '{"pid": "x"}', "null"])
+def test_a_corrupt_job_file_is_ignored(tmp_path, text):
+    path = tmp_path / "logs" / JOB_FILE_NAME
+    path.parent.mkdir()
+    path.write_text(text, encoding="utf-8")
+    assert TrainingJob.adopt(tmp_path / "logs") is None
+    assert not path.exists()
+    assert TrainingJob.adopt(tmp_path / "logs") is None  # and without a file: nothing
+
+
+def test_the_job_and_stop_files_go_away_when_the_trainer_ends(config, tmp_path):
+    job, _, process = make_job(config, tmp_path)
+    job.start()
+    job.request_stop()
+    assert job.job_file.exists() and job.stop_path.exists()
+    process.code = 0
+    job.update()
+    assert not job.job_file.exists() and not job.stop_path.exists()
+    assert TrainingJob.adopt(tmp_path / "logs") is None
