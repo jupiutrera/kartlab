@@ -229,7 +229,7 @@ def test_karts_on_the_deck_vanish_when_the_camera_is_in_the_tunnel(bridge, level
     assert not np.array_equal(render(world, pose), render(world, pose, [below]))
 
 
-def test_the_hop_still_lifts_the_sprite_on_the_deck(bridge, levels, world):
+def test_a_lifted_kart_rises_over_the_deck(bridge, levels, world):
     s = levels.s_over
     pose = pose_at(bridge, s - 6.0, back=4.0, z=levels.deck_height)
     down = render(world, pose, [KartVisual(kart_at(bridge, s), 1, ground=levels.deck_height)])
@@ -317,13 +317,13 @@ def test_the_topdown_map_draws_the_bridge_and_hides_karts_in_the_tunnel(bridge, 
     view = TopDownView(bridge, (640, 360))
     target = pygame.Surface((640, 360))
     here = bridge.pose_at(levels.s_over)
-    on_bridge = (KartState(*here), (255, 156, 44), 0.0, levels.deck_height)
+    on_bridge = (KartState(*here), (255, 156, 44), 0.0, None, levels.deck_height)
     view.draw(target, [on_bridge], here[:2], True)
     alone = pygame.surfarray.array3d(target).copy()
-    under = (KartState(*bridge.pose_at(levels.s_under)), (1, 2, 3), 0.0, 0.0)
+    under = (KartState(*bridge.pose_at(levels.s_under)), (1, 2, 3), 0.0, None, 0.0)
     view.draw(target, [on_bridge, under], here[:2], True)
     assert np.array_equal(alone, pygame.surfarray.array3d(target))  # the one under is hidden
-    far = (KartState(*bridge.pose_at(levels.s_under - 60.0)), (1, 2, 3), 0.0, 0.0)
+    far = (KartState(*bridge.pose_at(levels.s_under - 60.0)), (1, 2, 3), 0.0, None, 0.0)
     view.draw(target, [on_bridge, far], bridge.pose_at(levels.s_under - 60.0)[:2], True)
     assert not np.array_equal(alone, pygame.surfarray.array3d(target))
 
@@ -430,3 +430,23 @@ def test_the_deck_stands_out_from_the_parapets_in_every_light(bridge, levels, wo
     assert np.abs(deck - cap).sum() > 150  # clearly different colours
     renderer.set_variant("day")
     world.set_variant("day")
+
+
+def test_sweep_sparks_come_out_at_the_height_of_the_deck(bridge, levels):
+    """The sparks and the flame depend on ``lift`` (the visual hop), not on the road height:
+    on the bridge they still come out, and they come out at the deck, not at the ground."""
+    from kartlab.sim.drift import DriftState
+
+    pygame.init()
+    fresh = WorldRenderer(bridge, CHASE, "day", seed=bridge.decoration_seed)
+    kart = kart_at(bridge, levels.s_over)
+    kart.vx, kart.vy = 20.0 * math.cos(kart.heading), 20.0 * math.sin(kart.heading)
+    drift = DriftState()
+    drift.active, drift.direction, drift.time = True, 1.0, 1.5
+    before = fresh.texture.base.copy()
+    for _ in range(40):
+        visual = KartVisual(kart, 0, drift=drift, ground=levels.deck_height)
+        fresh.update_effects([visual], 1 / 60)
+    assert len(fresh.particles.items) > 0
+    assert min(p[2] for p in fresh.particles.items) >= levels.deck_height - 0.01
+    assert np.array_equal(before, fresh.texture.base)  # and the floor under the deck is not marked
