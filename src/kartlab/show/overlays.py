@@ -42,7 +42,14 @@ def count_steps(steps: int) -> str:
 def visual_of(driver: PolicyDriver, ramp: int, label=None, ghost=False) -> KartVisual:
     racer = driver.racer
     return KartVisual(
-        racer.kart, ramp, label, ghost, racer.on_grass, driver.throttle, list(driver.trail)
+        racer.kart,
+        ramp,
+        label,
+        ghost,
+        racer.on_grass,
+        driver.throttle,
+        list(driver.trail),
+        ground=racer.level_z,
     )
 
 
