@@ -24,6 +24,7 @@ import math
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 from collections import deque
@@ -389,6 +390,65 @@ class Viewport:
         self.cx, self.cy = (xmin + xmax) / 2, (ymin + ymax) / 2
 
 
+# -- background validation -----------------------------------------------------------------
+
+
+class FullValidator:
+    """Runs the complete (slow) validation in one worker thread, off the UI thread.
+
+    The newest request wins: asking while it is busy replaces whatever was waiting, and the
+    caller drops a result whose spec is no longer the current one. ``TrackSpec`` is
+    immutable, so sharing it between threads is safe, and results are only ever read on the
+    UI thread (``take``). The thread is a daemon and starts on the first request.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._request: TrackSpec | None = None
+        self._result: tuple[TrackSpec, Analysis | None, float] | None = None
+        self._thread: threading.Thread | None = None
+        self._stop = False
+
+    def submit(self, spec: TrackSpec) -> None:
+        with self._lock:
+            self._request = spec
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._work, name="editor-validator", daemon=True)
+            self._thread.start()
+        self._wake.set()
+
+    def take(self) -> tuple[TrackSpec, Analysis | None, float] | None:
+        """The finished validation (spec, analysis or None if it failed, seconds), once."""
+        with self._lock:
+            result, self._result = self._result, None
+        return result
+
+    def close(self) -> None:
+        self._stop = True
+        self._wake.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    def _work(self) -> None:
+        while True:
+            self._wake.wait()
+            self._wake.clear()
+            if self._stop:
+                return
+            with self._lock:
+                spec, self._request = self._request, None
+            if spec is None:
+                continue
+            start = time.perf_counter()
+            try:
+                analysis = analyze(spec, full=True)
+            except Exception:  # never kill the worker: the UI thread falls back to its own run
+                analysis = None
+            with self._lock:
+                self._result = (spec, analysis, time.perf_counter() - start)
+
+
 # -- text prompt -------------------------------------------------------------------------------
 
 
@@ -470,6 +530,7 @@ class EditorApp:
         spawn: Callable[[Sequence[str]], subprocess.Popen] | None = None,
         tracks_dir: Path = TRACKS_DIR,
         root: Path = REPO_ROOT,
+        background: bool = True,
     ) -> None:
         enable_dpi_awareness()
         pygame.display.init()
@@ -499,6 +560,8 @@ class EditorApp:
         self._last_caption = ""
         self._cursor: int | None = None
 
+        self.validator = FullValidator() if background else None
+        self._submitted: TrackSpec | None = None  # the spec the worker was last asked about
         self.analysis: Analysis = analyze(spec, full=False)
         self.analysis_spec = spec
         self._stale = False  # the design changed since ``analysis``
@@ -645,7 +708,8 @@ class EditorApp:
 
         A quick analysis (a few ms) follows every change, throttled while dragging if it
         ever costs more than ``QUICK_BUDGET``. The complete validation (100-250 ms) waits
-        until ``FULL_DEBOUNCE`` seconds pass without edits and never runs mid-drag.
+        until ``FULL_DEBOUNCE`` seconds pass without edits, never starts mid-drag and runs
+        in the ``FullValidator`` thread (``settle`` runs it synchronously instead).
         """
         now = time.perf_counter() if now is None else now
         dragging = self.model.dragging
@@ -653,13 +717,33 @@ class EditorApp:
             wait = self.quick_cost * 3 if dragging and self.quick_cost > QUICK_BUDGET else 0.0
             if now - self._last_quick_end >= wait:
                 self._run_quick()
+        self._apply_background_result()
         idle = now - self._last_change >= FULL_DEBOUNCE
         if self._full_pending and not self._stale and not dragging and idle:
-            self._run_full()
+            if self.validator is None:
+                self._run_full()
+            elif self._submitted != self.spec:
+                self._submitted = self.spec
+                self.validator.submit(self.spec)
         self._poll_process()
         if self.toasts and time.perf_counter() >= self.toasts[0].until:
             self.toasts.clear()
             self._redraw = True
+
+    def _apply_background_result(self) -> None:
+        """Take the worker's finished validation if it still answers the current design."""
+        if self.validator is None or (result := self.validator.take()) is None:
+            return
+        spec, analysis, cost = result
+        if spec != self.spec or self._stale or not self._full_pending:
+            self._submitted = None  # an old answer: ask again if it is still needed
+            return
+        if analysis is None:
+            self._run_full()  # the worker failed: run it here, where the error is visible
+            return
+        self.analysis, self.analysis_spec, self.full_cost = analysis, spec, cost
+        self._full_pending = False
+        self._redraw = True
 
     def settle(self) -> Analysis:
         """Bring the analysis fully up to date now (save, test drive, tests, screenshots)."""
@@ -1115,6 +1199,8 @@ class EditorApp:
             self.temp_dir = None
 
     def close(self) -> None:
+        if self.validator is not None:
+            self.validator.close()
         if self.process is not None and self.process.poll() is None:
             return  # leave the game open; the temporary copy goes with the OS temp folder
         self._drop_temp()

@@ -1,6 +1,7 @@
 """The track editor, driven headless with synthetic mouse and keyboard input."""
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -53,6 +54,7 @@ def make_app(tmp_path, launched):
         else:
             spec, path = source, None
         kwargs.setdefault("path", path)
+        kwargs.setdefault("background", False)  # tests of the thread ask for it
         app = EditorApp(
             spec,
             size=(1280, 800),
@@ -65,6 +67,8 @@ def make_app(tmp_path, launched):
         return app
 
     yield make
+    for app in apps:
+        app.close()
     pygame.quit()
 
 
@@ -883,3 +887,101 @@ def test_an_empty_prompt_and_unprintable_input_do_not_select_or_clear(make_app):
     prompt = ed.TextPrompt("x", "abc", lambda text: None)
     prompt.insert("")  # nothing printable: the selection stays
     assert prompt.text == "abc" and prompt.selected
+
+
+# -- the validation thread -------------------------------------------------------------------
+
+
+def wait_for(app, condition, timeout=15.0):
+    """Run the UI update loop (as ``run`` does) until ``condition()``; fail after ``timeout`` s."""
+    end = time.perf_counter() + timeout
+    while time.perf_counter() < end:
+        app.update(time.perf_counter() + 1.0)  # "now" is far past the debounce
+        if condition():
+            return
+        time.sleep(0.005)
+    raise AssertionError("the background validation never finished")
+
+
+def test_the_complete_validation_runs_in_the_background(make_app):
+    app = make_app(background=True)
+    app.model.move_corner(3, 335.0, 192.0)
+    app.changed()
+    app.update(app._last_change)  # the quick analysis: instant
+    assert app.verdict == "pending"
+    app.update(app._last_change + ed.FULL_DEBOUNCE + 0.01)
+    assert app._submitted == app.spec
+    assert not app.analysis.complete  # handed to the worker, the UI thread did not wait for it
+    wait_for(app, lambda: app.analysis.complete)
+    assert app.verdict == "valid" and app.analysis_spec == app.spec
+    assert app.full_cost > 0 and app.analysis.report.gap is not None
+
+
+def test_the_background_verdict_is_the_validators(make_app):
+    app = make_app(background=True)
+    app.model.move_corner(0, 160.0, 235.0)  # too little grass: only the complete check sees it
+    app.changed()
+    app.update(app._last_change)
+    assert app.verdict == "pending"
+    wait_for(app, lambda: app.analysis.complete)
+    assert app.verdict == "invalid"
+    assert [i.message for i in app.analysis.issues] == list(validate_spec(app.spec).problems)
+    assert any(i.points for i in app.analysis.issues)
+
+
+def test_an_answer_about_an_old_design_is_dropped_and_the_new_one_is_asked_for(make_app):
+    app = make_app(background=True)
+    app.model.move_corner(3, 335.0, 192.0)
+    app.changed()
+    app.update(app._last_change)
+    app.update(app._last_change + ed.FULL_DEBOUNCE + 0.01)
+    old = app.spec
+    wait_for_result = time.perf_counter() + 15
+    while app.validator._result is None and time.perf_counter() < wait_for_result:
+        time.sleep(0.005)
+    app.model.move_corner(3, 340.0, 195.0)  # edited before the answer was read
+    app.changed()
+    app.update(app._last_change)
+    assert app.analysis_spec != old and app.analysis_spec == app.spec
+    assert not app.analysis.complete  # the answer for ``old`` was not applied
+    wait_for(app, lambda: app.analysis.complete)
+    assert app.analysis_spec == app.spec != old and app.verdict == "valid"
+
+
+def test_if_the_worker_fails_the_ui_thread_runs_the_validation_itself(make_app, monkeypatch):
+    real = ed.analyze
+    calls = []
+
+    def flaky(spec, full=True):
+        if full and threading.current_thread().name == "editor-validator":
+            calls.append(1)
+            raise RuntimeError("worker failure")
+        return real(spec, full=full)
+
+    monkeypatch.setattr(ed, "analyze", flaky)
+    app = make_app(background=True)
+    app.model.move_corner(3, 335.0, 192.0)
+    app.changed()
+    app.update(app._last_change)
+    wait_for(app, lambda: app.analysis.complete)
+    assert calls and app.verdict == "valid"
+
+
+def test_closing_stops_the_worker(make_app):
+    app = make_app(background=True)
+    app.model.move_corner(3, 335.0, 192.0)
+    app.changed()
+    app.update(app._last_change)
+    app.update(app._last_change + ed.FULL_DEBOUNCE + 0.01)
+    thread = app.validator._thread
+    assert thread is not None and thread.daemon
+    app.close()
+    assert not thread.is_alive()
+
+
+def test_settle_is_synchronous_even_with_the_worker(make_app):
+    app = make_app(background=True)
+    app.model.move_corner(0, 330.0, 250.0)
+    app.changed()
+    assert app.settle().issues and app.analysis.complete
+    assert app.verdict == "invalid"
