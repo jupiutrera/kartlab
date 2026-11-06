@@ -85,7 +85,10 @@ class Entrant:
         return min(times) if times else None
 
     def lap_time_at(self, time: float) -> float:
-        """Time spent on the current lap at race ``time``."""
+        """Time spent on the current lap at race ``time``; once the race is finished, the clock
+        stays on the last lap."""
+        if self.finish_time is not None:
+            return self.lap_times[-1]
         return max(time - (self.marks[-1] if self.marks else 0.0), 0.0)
 
 

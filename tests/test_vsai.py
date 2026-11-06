@@ -52,7 +52,11 @@ def test_entrant_counts_laps_and_finishes_once():
     assert e.update(2001.0, 83.0) == 1 and e.finished and e.finish_time == 83.0
     assert e.update(3500.0, 120.0) == 0 and e.laps_done == 2  # never more than the race
     assert e.lap_times == [41.0, 42.0] and e.best_lap == 41.0
-    assert e.lap_time_at(100.0) == pytest.approx(17.0)
+    assert e.lap_time_at(100.0) == pytest.approx(42.0)  # finished: the clock stays on the last lap
+    assert e.lap_time_at(500.0) == pytest.approx(42.0)
+    running = entrant(laps=2)
+    running.update(1001.0, 41.0)
+    assert running.lap_time_at(58.0) == pytest.approx(17.0)
 
 
 def test_classification_puts_finishers_first_then_distance():
@@ -517,6 +521,16 @@ def test_default_opponent_is_the_best_evaluated_generalist(tmp_path, tiny_run):
     # A run that scored well but has no best_model.zip cannot be raced against.
     make_run(tmp_path, tiny_run, "2026-01-06_0000_nobest", success=1.0, best=False)
     assert best_generalist_run(tmp_path).root == tie
+
+
+def test_non_finite_success_rates_are_ignored(tmp_path, tiny_run):
+    from kartlab.show.versions import best_generalist_run, eval_success_rate
+
+    sane = make_run(tmp_path, tiny_run, "2026-01-01_0000_sane", success=0.5)
+    for name, value in (("nan", ".nan"), ("inf", ".inf"), ("minf", "-.inf")):
+        make_run(tmp_path, tiny_run, f"2026-01-02_0000_{name}", success=value)
+    assert eval_success_rate(RunPaths(tmp_path / "2026-01-02_0000_inf")) is None
+    assert best_generalist_run(tmp_path).root == sane  # not the run that says "infinity"
 
 
 def test_default_opponent_falls_back_to_the_latest_run_when_nothing_was_evaluated(

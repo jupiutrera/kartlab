@@ -58,7 +58,8 @@ def eval_success_rate(run: RunPaths) -> float | None:
     tracks), or ``None`` if the run was not evaluated or the file is unreadable."""
     try:
         value = read_yaml(run.root / "eval_best_model.yaml")["success_rate"]
-        return None if isinstance(value, bool) else float(value)
+        rate = None if isinstance(value, bool) else float(value)
+        return rate if rate is not None and math.isfinite(rate) else None
     except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
         return None
 
