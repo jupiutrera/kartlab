@@ -85,6 +85,8 @@ class HudInfo:
     extra: list[str] = field(default_factory=list)
     drift: DriftState | None = None  # manual sweep: shows the charge bar
     trial: TrialHud | None = None  # time trial: gap, record and last lap
+    lap_panel: bool = True  # False: a race HUD (show/racehud.py) shows the laps and times instead
+    label_panel: bool = True  # False: hide the model label and view settings (top right)
 
 
 def scale_for(window: tuple[int, int]) -> int:
@@ -269,20 +271,46 @@ class GameView:
         top = self.world_rect.y + pad
 
         # Lap and times (top left).
-        lap = self.text.get(f"VUELTA {info.laps + 1}", ACCENT)
-        clock = self.big.get(format_time(info.lap_time), WHITE)
-        best = self.small.get(f"Mejor  {format_time(info.best_lap)}", DIM)
-        w = max(lap.get_width(), clock.get_width(), best.get_width()) + 2 * pad
-        h = lap.get_height() + clock.get_height() + best.get_height() + pad
-        screen.blit(self._panel(w, h), (left, top))
-        y = top + pad // 2
-        for surface in (lap, clock, best):
-            screen.blit(surface, (left + pad, y))
-            y += surface.get_height()
+        trial_top, trial_width = top, 0
+        if info.lap_panel:
+            lap = self.text.get(f"VUELTA {info.laps + 1}", ACCENT)
+            clock = self.big.get(format_time(info.lap_time), WHITE)
+            best = self.small.get(f"Mejor  {format_time(info.best_lap)}", DIM)
+            w = max(lap.get_width(), clock.get_width(), best.get_width()) + 2 * pad
+            h = lap.get_height() + clock.get_height() + best.get_height() + pad
+            screen.blit(self._panel(w, h), (left, top))
+            y = top + pad // 2
+            for surface in (lap, clock, best):
+                screen.blit(surface, (left + pad, y))
+                y += surface.get_height()
+            trial_top, trial_width = top + h + pad // 2, w
         if info.trial is not None:
-            self._draw_trial(screen, info.trial, left, top + h + pad // 2, w)
+            self._draw_trial(screen, info.trial, left, trial_top, trial_width)
 
         # Model label and view settings (top right).
+        if info.label_panel:
+            self._draw_label_panel(screen, info, right, top, pad)
+
+        # Speed (bottom right), eased so it never flickers.
+        kmh = abs(self._speed.update(info.speed * 3.6, dt))
+        speed = self.big.get(f"{kmh:3.0f}", WHITE)
+        unit_text = self.small.get("km/h", DIM)
+        w = speed.get_width() + unit_text.get_width() + 3 * pad
+        h = speed.get_height() + pad // 2
+        bottom = self.world_rect.bottom - pad
+        screen.blit(self._panel(w, h), (right - w, bottom - h))
+        screen.blit(speed, (right - w + pad, bottom - h))
+        screen.blit(
+            unit_text, (right - unit_text.get_width() - pad, bottom - unit_text.get_height() - pad)
+        )
+
+        self._draw_minimap(screen, visuals, (left, bottom - self._minimap[0].get_height()))
+        if info.drift is not None:
+            self._draw_drift(screen, info.drift)
+        self._draw_notice(screen)
+
+    def _draw_label_panel(self, screen, info: HudInfo, right: int, top: int, pad: int) -> None:
+        u = self.unit
         colour = tuple(
             int(c) for c in game_palette().rgb[KART_RAMPS[info.ramp % len(KART_RAMPS)][1]]
         )
@@ -303,24 +331,6 @@ class GameView:
         for surface in (sub, *extra):
             screen.blit(surface, (x + pad, y))
             y += surface.get_height()
-
-        # Speed (bottom right), eased so it never flickers.
-        kmh = abs(self._speed.update(info.speed * 3.6, dt))
-        speed = self.big.get(f"{kmh:3.0f}", WHITE)
-        unit_text = self.small.get("km/h", DIM)
-        w = speed.get_width() + unit_text.get_width() + 3 * pad
-        h = speed.get_height() + pad // 2
-        bottom = self.world_rect.bottom - pad
-        screen.blit(self._panel(w, h), (right - w, bottom - h))
-        screen.blit(speed, (right - w + pad, bottom - h))
-        screen.blit(
-            unit_text, (right - unit_text.get_width() - pad, bottom - unit_text.get_height() - pad)
-        )
-
-        self._draw_minimap(screen, visuals, (left, bottom - self._minimap[0].get_height()))
-        if info.drift is not None:
-            self._draw_drift(screen, info.drift)
-        self._draw_notice(screen)
 
     def _draw_trial(self, screen, trial: TrialHud, left: int, top: int, width: int) -> None:
         """Gap to the record (green ahead, red behind), then the record and the last lap."""

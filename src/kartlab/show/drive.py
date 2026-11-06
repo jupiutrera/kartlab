@@ -27,8 +27,16 @@ from kartlab.render.topdown import (
     format_time,
     load_fonts,
 )
-from kartlab.render.view import GameView, HudInfo, TrialHud, format_delta
+from kartlab.render.view import DIM, WHITE, GameView, HudInfo, TrialHud, format_delta
 from kartlab.show.cli import kart_color_rgb, parse_kart_color
+from kartlab.show.overlays import Overlays
+from kartlab.show.racehud import AMBER, GOLD, RaceHud
+from kartlab.show.trialrace import (
+    BANNER_SECONDS,
+    COUNTDOWN_FRAMES,
+    FINISH,
+    TrialSession,
+)
 from kartlab.sim.autopilot import Autopilot
 from kartlab.sim.drift import DriftState
 from kartlab.sim.kart import DT, KartState
@@ -61,7 +69,7 @@ HELP = (
     "C: cámara · V: día/atardecer/noche · G: sensores · T: vista cenital · Tab: piloto",
     "Mayús: brinco; aterriza con el volante girado y Mayús pulsado para barrer",
     "Suelta Mayús para el impulso: cuanto más largo el barrido, más impulso",
-    "K: contrarreloj (récord y fantasma) · F: fantasma",
+    "K: contrarreloj: 3 vueltas con cuenta atrás, récord y fantasma · F: fantasma",
     "P: pausa · F3: diagnóstico · L: modo ligero · F11: pantalla completa · H: ayuda",
     "Esc: salir (si vienes del menú principal, vuelve a él)",
 )
@@ -96,6 +104,7 @@ class DriveApp:
         time_trial: bool = False,
         records_dir: Path | None = None,
         kart_ramp: int = 0,
+        race_format: bool = True,
     ) -> None:
         self.screen = open_window(TITLE, scale, fullscreen)
         self.scale = scale
@@ -119,6 +128,10 @@ class DriveApp:
         self.drift = DriftState()
         self.store = RecordStore(records_dir)
         self.time_trial = time_trial
+        self.race_format = race_format  # the time trial is a countdown and a fixed number of laps
+        self.session: TrialSession | None = None
+        self.overlays: Overlays | None = None
+        self.race_hud: RaceHud | None = None
         self.show_ghost = True
         self.trial: TimeTrial | None = None
         self.ghost_visual: KartVisual | None = None  # the ghost drawn in the last frame
@@ -139,6 +152,7 @@ class DriveApp:
         self.trial = TimeTrial(track, self.store) if self.time_trial else None
         self.view = None
         self.game = None
+        self.overlays = self.race_hud = None
         self._build_view()
         self.reset()
         if self.trial is not None:
@@ -167,6 +181,7 @@ class DriveApp:
         if self.trial is not None:
             self.trial.begin(self.racer, manual=not self.autopilot_on)
         self.drift.reset()
+        self.session = TrialSession() if self.trial is not None and self.race_format else None
         self.camera = (self.racer.kart.x, self.racer.kart.y)
         self.trail: deque[tuple[float, float]] = deque(maxlen=int(TRAIL_SECONDS / DT / TRAIL_EVERY))
         self._steps = 0
@@ -185,6 +200,7 @@ class DriveApp:
         self.time_trial = on
         self.trial = TimeTrial(self.track, self.store) if on else None
         self.ghost_visual = self.hud_trial = None
+        self.session = None
         if on:
             self.reset()
             self._announce_trial()
@@ -216,6 +232,8 @@ class DriveApp:
         else:
             text = f"Vuelta {lap}{gap}"
         self.notify(text)
+        if self.session is not None:
+            self.session.on_lap(event.lap_time, event.record, event.valid)
 
     def toggle_fullscreen(self) -> None:
         self.fullscreen = not self.fullscreen
@@ -226,11 +244,17 @@ class DriveApp:
             self.view.resize(size)
         if self.game is not None:
             self.game.resize(size)
+        if self.overlays is not None:
+            self.overlays.set_screen(self.screen, self.game)
 
     def handle_key(self, key: int) -> None:
         if key == pygame.K_ESCAPE:
             self.running = False
-        elif key == pygame.K_r:
+        elif key == pygame.K_r or (
+            key in (pygame.K_RETURN, pygame.K_KP_ENTER)
+            and self.session is not None
+            and self.session.finished
+        ):
             self.reset()
         elif key in SHOWCASE_KEYS:
             self.load_track(showcase_track(SHOWCASE_KEYS[key]))
@@ -277,7 +301,19 @@ class DriveApp:
     # -- main loop -------------------------------------------------------------------
 
     def physics_step(self) -> None:
-        if self.autopilot_on:
+        frozen = False  # the time trial session: the countdown, then the kart coasts at the end
+        if self.session is not None:
+            state = self.session.advance()
+            if state == "countdown":
+                self.controls = (0.0, 0.0)
+                # A Shift pressed (or held) now is not buffered: no hop at the "¡YA!".
+                self.drift.hold = drift_pressed(pygame.key.get_pressed())
+                self.drift.reset()
+                return
+            frozen = state == "finished"
+        if frozen:
+            steer, throttle, drift = 0.0, 0.0, None
+        elif self.autopilot_on:
             steer, throttle = self.autopilot.act(self.racer)
             drift = None  # the sweep is for manual driving only
         else:
@@ -287,7 +323,7 @@ class DriveApp:
             drift = self.drift
         self.controls = (steer, throttle)
         self.racer.step(steer, throttle, drift=drift)
-        if self.trial is not None:
+        if self.trial is not None and not frozen:
             event = self.trial.update(self.racer, manual=not self.autopilot_on)
             if event is not None:
                 self._on_lap(event)
@@ -382,10 +418,46 @@ class DriveApp:
             drift=None if self.autopilot_on else self.drift,
             trial=self.hud_trial,
         )
+        if self.session is not None:  # the race HUD shows the laps; the mode panel only at first
+            info.lap_panel = False
+            info.label_panel = self.session.counting or self.show_help or self.paused
         fps = self.clock.get_fps() if self.realtime else None
         self.game.draw(self.screen, pose, visuals, info, dt, fps)
         if self.show_help:
             self.hud.draw_block(self.screen, [(t, TEXT_DIM) for t in HELP], "bottom-left")
+        self._draw_session()
+
+    def _draw_session(self) -> None:
+        """The race format of the time trial: lap counter, countdown, banners and results."""
+        session = self.session
+        if session is None:
+            return
+        if self.race_hud is None:
+            self.overlays = Overlays(self.screen, self.game)
+            self.race_hud = RaceHud(self.overlays)
+        hud, racer = self.race_hud, self.racer
+        total = session.total if session.finished else racer.time
+        hud.lap_counter(
+            session.lap_number,
+            session.laps,
+            format_time(total),
+            format_time(0.0 if session.finished else racer.lap_time),
+            None if racer.best_lap is None else format_time(racer.best_lap),
+        )
+        hud.countdown(session.frame, COUNTDOWN_FRAMES, 60)
+        age = session.banner_age()
+        if age is not None:
+            text = session.banner[0]
+            hud.banner(text, age, BANNER_SECONDS, GOLD if text == FINISH else AMBER)
+        if session.finished:
+            record = self.trial.record.lap_time if self.trial and self.trial.record else None
+            colours = {"best": GOLD[0], "record": GOLD[0], "dim": DIM}
+            lines = [
+                (text, colours.get(kind, WHITE)) for text, kind in session.result_lines(record)
+            ]
+            hud.results(
+                "Contrarreloj", None, lines, "Intro: repetir  ·  Esc: salir", session.results_age()
+            )
 
     def ghost_state(self) -> KartState | None:
         """The record's kart at the current lap time (``None``: off, no record or finished)."""
@@ -448,6 +520,14 @@ class DriveApp:
             status.append((f"Barrido {self.drift.charge * 100:3.0f} %", ACCENT))
         elif not self.autopilot_on and self.drift.pushing:
             status.append((f"Impulso {self.drift.push_level * 100:3.0f} %", ACCENT))
+        if self.session is not None:
+            session = self.session
+            if session.counting:
+                status.append((f"Salida en {(COUNTDOWN_FRAMES - session.frame) // 60 + 1}", ACCENT))
+            else:
+                status.append((f"Vuelta {session.lap_number}/{session.laps}", ACCENT))
+            if session.finished:
+                status.append(("Meta: Intro repite · Esc sale", ACCENT))
         if self.paused:
             status.append(("PAUSA", WARNING))
         if self._message and time.perf_counter() - self._message[1] < MESSAGE_SECONDS:
