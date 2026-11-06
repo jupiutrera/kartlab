@@ -15,10 +15,10 @@ import numpy as np
 import pygame
 
 from kartlab.render.display import open_window, set_window_mode
+from kartlab.render.palette import KART_RAMPS
 from kartlab.render.scene import KartVisual
 from kartlab.render.topdown import (
     ACCENT,
-    KART_COLOR,
     TEXT,
     TEXT_DIM,
     WARNING,
@@ -28,6 +28,7 @@ from kartlab.render.topdown import (
     load_fonts,
 )
 from kartlab.render.view import GameView, HudInfo, TrialHud, format_delta
+from kartlab.show.cli import kart_color_rgb, parse_kart_color
 from kartlab.sim.autopilot import Autopilot
 from kartlab.sim.drift import DriftState
 from kartlab.sim.kart import DT, KartState
@@ -49,7 +50,7 @@ TRAIL_SECONDS = 4.0
 TRAIL_EVERY = 3  # physics steps between trail points
 CAMERA_RESPONSE = 4.0  # top-down follow camera smoothing (1/s)
 CAMERA_LEAD = 0.6  # the top-down follow camera aims this many seconds ahead (s)
-GHOST_RAMP = 1  # the record's ghost is blue; the player is orange
+GHOST_RAMP = 1  # the record's ghost is blue (orange if the player picked blue)
 LABEL_MIN_GAP = 5.0  # no "Récord" tag on a ghost closer than this to the player (m)
 GHOST_COLOR = (112, 164, 255)  # the ghost in the top-down view
 MESSAGE_SECONDS = 4.0  # how long a time-trial message stays in the top-down HUD
@@ -93,10 +94,12 @@ class DriveApp:
         seed: int = 0,
         time_trial: bool = False,
         records_dir: Path | None = None,
+        kart_ramp: int = 0,
     ) -> None:
         self.screen = open_window(TITLE, scale, fullscreen)
         self.scale = scale
         self.fullscreen = fullscreen
+        self.kart_ramp = kart_ramp % len(KART_RAMPS)  # the player's colour
         self.autopilot_on = autopilot
         self.realtime = realtime
         self.rng = np.random.default_rng(seed)
@@ -110,6 +113,7 @@ class DriveApp:
         self.show_rays = False
         self.diagnostics = False
         self.running = False
+        self.quit_requested = False  # the window was closed (the main menu closes too)
         self.controls = (0.0, 0.0)
         self.drift = DriftState()
         self.store = RecordStore(records_dir)
@@ -291,6 +295,10 @@ class DriveApp:
             self.trail.append((self.racer.kart.x, self.racer.kart.y))
 
     @property
+    def ghost_ramp(self) -> int:
+        return GHOST_RAMP if self.kart_ramp != GHOST_RAMP else 0
+
+    @property
     def target_fps(self) -> int:
         if self.view_mode == "3d" and self.game is not None:
             return self.game.target_fps
@@ -310,6 +318,7 @@ class DriveApp:
                 dt = DT
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
+                    self.quit_requested = True
                     self.running = False
                 elif event.type == pygame.KEYDOWN:
                     self.handle_key(event.key)
@@ -337,7 +346,7 @@ class DriveApp:
         racer = self.racer
         visual = KartVisual(
             racer.kart,
-            0,
+            self.kart_ramp,
             on_grass=racer.on_grass,
             throttle=self.controls[1],
             drift=None if self.autopilot_on else self.drift,
@@ -350,7 +359,7 @@ class DriveApp:
             if ghost is not None:
                 near = math.hypot(ghost.x - racer.kart.x, ghost.y - racer.kart.y) < LABEL_MIN_GAP
                 label = None if near else "Récord"  # on top of you, the tag only gets in the way
-                self.ghost_visual = KartVisual(ghost, GHOST_RAMP, label, ghost=True)
+                self.ghost_visual = KartVisual(ghost, self.ghost_ramp, label, ghost=True)
                 visuals.append(self.ghost_visual)
             self.hud_trial = self.trial_hud()
         pose = self.game.update(visuals, 0.0 if self.paused else dt)
@@ -400,12 +409,13 @@ class DriveApp:
 
     def draw_topdown(self) -> None:
         racer = self.racer
-        karts = [(racer.kart, KART_COLOR, 0.0 if self.autopilot_on else self.drift.lift)]
+        lift = 0.0 if self.autopilot_on else self.drift.lift
+        karts = [(racer.kart, kart_color_rgb(self.kart_ramp), lift)]
         self.ghost_visual = self.hud_trial = None
         if self.trial is not None:
             ghost = self.ghost_state()
             if ghost is not None:
-                self.ghost_visual = KartVisual(ghost, GHOST_RAMP, ghost=True)
+                self.ghost_visual = KartVisual(ghost, self.ghost_ramp, ghost=True)
                 karts.append((ghost, GHOST_COLOR))
             self.hud_trial = self.trial_hud()
         self.view.draw(self.screen, karts, self.camera, self.follow, self.trail)
@@ -476,6 +486,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--variant", choices=("day", "sunset", "night"), default="day")
     parser.add_argument(
+        "--color",
+        default="0",
+        help="color de tu kart: Naranja, Azul, Morado, Turquesa, Rosa, Amarillo, Blanco, Rojo "
+        "(o un número de 0 a 7)",
+    )
+    parser.add_argument(
         "--time-trial",
         action="store_true",
         help="contrarreloj: guarda tu mejor vuelta y la muestra como fantasma (tecla K)",
@@ -491,6 +507,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--screenshot", type=Path, help="guarda el último fotograma en este PNG")
     args = parser.parse_args(argv)
 
+    try:
+        ramp = parse_kart_color(args.color)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     try:
         track = load_track_file(args.track_file) if args.track_file else resolve_track(args.track)
     except TrackFileError as error:
@@ -508,6 +528,7 @@ def main(argv: list[str] | None = None) -> None:
         realtime=args.frames is None,
         time_trial=args.time_trial,
         records_dir=args.records_dir,
+        kart_ramp=ramp,
     )
     app.show_rays = args.rays
     if args.diagnostics:

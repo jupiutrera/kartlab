@@ -140,6 +140,7 @@ class LiveApp:
         self._fps_samples: deque[float] = deque(maxlen=120)
         self._metrics_checked = -math.inf
         self.running = False
+        self.quit_requested = False  # the window was closed (the main menu closes too)
         self._layout()
 
     # -- layout and versions ----------------------------------------------------------
@@ -241,6 +242,7 @@ class LiveApp:
                 self._dt = dt
                 for event in pygame.event.get():
                     if event.type == pygame.QUIT:
+                        self.quit_requested = True
                         self.running = False
                     elif event.type == pygame.KEYDOWN:
                         self.handle_key(event.key)

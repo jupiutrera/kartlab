@@ -547,6 +547,7 @@ class EditorApp:
         self.spawn = spawn or self._spawn
         self.view = Viewport()
         self.running = False
+        self.quit_requested = False  # the window was closed (the main menu closes too)
         self.selected: int | None = None
         self.hover: tuple | None = None  # ("corner", i) or ("edge", i, (x, y))
         self.mouse: tuple[int, int] | None = None
@@ -1036,6 +1037,7 @@ class EditorApp:
         kind = event.type
         if kind == pygame.QUIT:
             self.request_quit()
+            self.quit_requested = not self.running  # unsaved changes: it asks first
         elif kind == pygame.KEYDOWN:
             if event.key == pygame.K_SPACE and self.prompt is None:
                 self.space_down = True
