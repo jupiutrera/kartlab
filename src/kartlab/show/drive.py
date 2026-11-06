@@ -108,6 +108,7 @@ class DriveApp:
         start: tuple[float, float] = (0.0, 0.0),
     ) -> None:
         self.start = start  # arc position and lateral offset where every reset puts the kart
+        self._start_track = track  # other tracks (keys 1-3, E, N) start on their line
         self._ghost_hint: int | None = None  # centerline index of the ghost (bridges)
         self.screen = open_window(TITLE, scale, fullscreen)
         self.scale = scale
@@ -149,6 +150,8 @@ class DriveApp:
     # -- tracks and views -------------------------------------------------------------
 
     def load_track(self, track: Track) -> None:
+        if track is not self._start_track:
+            self.start = (0.0, 0.0)
         self.track = track
         self.racer = Racer(track)
         self.autopilot = Autopilot(track)
