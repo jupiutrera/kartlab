@@ -195,6 +195,7 @@ class GameView:
         self.world.ray_angles = self.sensor.angles
         self.world.ray_range = self.sensor.max_range
         self.world.show_rays = [(kart.x, kart.y, kart.heading)]
+        self.world.ray_ground = visual.ground
 
     def draw(
         self,

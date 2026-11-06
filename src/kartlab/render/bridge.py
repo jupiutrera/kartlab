@@ -1,0 +1,525 @@
+"""The bridge and the tunnel of a track with levels, drawn as flat polygons.
+
+Everything is precomputed at load time as arrays of world points: a ring of eight points
+(plus the points of the deck markings) at every ``SECTION`` metres of the raised stretch,
+the portals of the tunnel and the inside of the tunnel. A frame projects all of them with
+one call, culls what faces away or is off screen with array operations, and draws the rest
+with ``pygame.draw.polygon``: no Python loop per pixel, nothing allocated per pixel.
+
+The bridge is drawn section by section, from far to near (not polygon by polygon), as
+drawables mixed with the sprites of ``WorldRenderer``, so a kart on the deck, one in the
+tunnel and one on the grass all end up in front of or behind the right sections. Inside a
+section the strips are drawn in a fixed order and only the ones that face the camera.
+
+Cross section of the raised road, left to right (lateral offset, height)::
+
+        cap       cap
+       ┌──┐       ┌──┐      parapets, ``PARAPET`` high on the deck, 1.3 m thick
+    ┌──┘  └───────┘  └──┐   deck: asphalt between the inner faces of the parapets
+    │                    │  smooth sides of the ramps and of the embankment, down to the ground
+    columns 0 1  2     3 4 5  6 7   (see ``COLUMNS``)
+
+The walls of the simulation (``sim/levels.py``) stand where the parapets and the tunnel walls
+are drawn: ``WALL_INSET`` inside the asphalt edge.
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Callable
+
+import numpy as np
+import pygame
+
+from kartlab.render.camera import CameraPose, Lens
+from kartlab.render.floor import Projection
+from kartlab.render.palette import FOG_LEVELS, Ink
+from kartlab.sim.levels import WALL_INSET
+from kartlab.sim.track import Track
+
+NEAR = 0.8  # nothing is drawn closer than this to the camera (m)
+SECTION = 4.0  # length of a section of the raised road (m)
+PARAPET = 0.9  # height of the parapets over the deck (m)
+PARAPET_FULL = 0.8  # the parapet is full height from this deck height up (m)
+MARK_OUT = 0.45  # edge lines: this far inside the inner face of the parapet (m)
+MARK_WIDTH = 0.25
+DASH = (1.0, 3.0)  # centre dash of every other section, from-to along it (m)
+DASH_HALF_WIDTH = 0.12
+LINTEL = 0.5  # height of the lintel over a tunnel mouth (m)
+JAMB = 0.35  # how far the lintel and the jambs stand out beside the opening (m)
+LAMP_EVERY = 3  # a lamp strip on the roof of the tunnel every this many segments
+
+# Ink of each part. Faces take the lit or the shaded one according to the sun.
+DECK = (Ink.ASPHALT, Ink.ASPHALT)  # the two alternate every section
+DECK_LINE = Ink.MIST
+FACE_LIT, FACE_SHADE = Ink.STONE, 5
+UP_LIT, UP_SHADE = Ink.STONE_LIGHT, Ink.STONE
+CAP = Ink.MIST
+INNER_LIT, INNER_SHADE = Ink.STONE, 5
+LINTEL_INK = Ink.STONE_LIGHT
+OPENING = Ink.ASPHALT_DARK
+WALL_INKS = (Ink.ASPHALT_DARK, Ink.ASPHALT)
+ROOF_INK, LAMP_INK = Ink.ASPHALT_DARK, Ink.ASPHALT_LIGHT
+
+# Columns of a ring (lateral offset, height) and the strips between them.
+# 0-1 outer face of the embankment, 1-2 outer face of the parapet, 2-3 cap, 3-4 inner face,
+# 4-5 deck, 5-6 inner face, 6-7 cap, 7-8 outer face of the parapet, 8-9 outer face of the
+# embankment, then the two edge lines (10-11, 12-13).
+STRIPS = (
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 4),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 8),
+    (8, 9),
+    (10, 11),
+    (12, 13),
+)
+(
+    LOW_L,
+    UP_L,
+    CAP_L,
+    INNER_L,
+    DECK_STRIP,
+    INNER_R,
+    CAP_R,
+    UP_R,
+    LOW_R,
+    LINE_L,
+    LINE_R,
+) = range(len(STRIPS))
+# Each section is drawn in two parts. The far part (the side of the road farthest from the camera,
+# then the deck and its lines) goes first and the near part (the nearer parapet and its outer
+# faces) last, with the karts that are on the deck in between: they are in front of the far
+# parapet and behind the near one.
+FAR_LEFT = (LOW_L, UP_L, CAP_L, INNER_L, DECK_STRIP, LINE_L, LINE_R)
+FAR_RIGHT = (LOW_R, UP_R, CAP_R, INNER_R, DECK_STRIP, LINE_L, LINE_R)
+NEAR_LEFT = (INNER_L, CAP_L, UP_L, LOW_L)
+NEAR_RIGHT = (INNER_R, CAP_R, UP_R, LOW_R)
+LEFT_STRIPS = (LOW_L, UP_L, CAP_L, INNER_L)
+RIGHT_STRIPS = (LOW_R, UP_R, CAP_R, INNER_R)
+
+Rgb = Callable[[int, int], tuple[int, int, int]]
+
+
+def _lerp(p: tuple[float, float], q: tuple[float, float], t: float) -> tuple[float, float]:
+    return p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t
+
+
+def _clip(points: list[tuple[float, float, float]], depths: list[float]):
+    """Part of a polygon in front of the near plane (Sutherland-Hodgman), in world points."""
+    out = []
+    count = len(points)
+    for i in range(count):
+        a, b = points[i], points[(i + 1) % count]
+        da, db = depths[i], depths[(i + 1) % count]
+        if da > NEAR:
+            out.append(a)
+        if (da > NEAR) != (db > NEAR):
+            t = (NEAR - da) / (db - da)
+            out.append(
+                (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t)
+            )
+    return out
+
+
+class BridgeRenderer:
+    """Geometry of one bridge and its tunnel, and the frame-by-frame drawing."""
+
+    def __init__(self, track: Track, surface: pygame.Surface, rgb: Rgb, sun: tuple[float, float]):
+        levels = track.levels
+        assert levels is not None
+        self.track, self.levels = track, levels
+        self.surface = surface
+        self.rgb = rgb
+        hw = track.half_width
+        self.wide = levels.embankment_half  # outer face, from the upper centerline
+        self.inner = hw - WALL_INSET  # inner face of the parapets and walls
+        self.sun = np.asarray(sun, dtype=np.float64) / math.hypot(*sun)
+        self._build_sections()
+        self._build_tunnel()
+        self.visible_sections: list[int] = []
+        self._frame: dict | None = None
+        self.camera_in_tunnel = False
+        self.exit_depth = 0.0  # depth of the far mouth while the camera is inside
+
+    # -- geometry ------------------------------------------------------------------------
+
+    def _build_sections(self) -> None:
+        track, levels = self.track, self.levels
+        half = levels.reach + 1.0
+        count = math.ceil(2.0 * half / SECTION)
+        step = 2.0 * half / count
+        s = levels.s_over - half + step * np.arange(count + 1)
+        poses = np.array([track.pose_at(float(v)) for v in s])
+        heights = np.array([levels.height_at(float(v)) for v in s])
+        parapet = PARAPET * np.clip(heights / PARAPET_FULL, 0.0, 1.0)
+        top = heights + parapet
+        eps = 0.01
+        w, wide = self.inner, self.wide
+        mark_out, mark_in = w - MARK_OUT, w - MARK_OUT - MARK_WIDTH
+        lat = np.array(
+            [wide, wide, wide, w, w, -w, -w, -wide, -wide, -wide]
+            + [mark_out, mark_in, -mark_in, -mark_out]
+        )
+        ground = np.zeros_like(heights)
+        z = np.stack(
+            [ground, heights, top, top, heights, heights, top, top, heights, ground]
+            + [heights + eps] * 4,
+            axis=1,
+        )
+        c, sn = np.cos(poses[:, 2]), np.sin(poses[:, 2])
+        self.centre = poses[:, :2]
+        self.heading = poses[:, 2]
+        self.ring_x = poses[:, 0, None] - sn[:, None] * lat[None, :]
+        self.ring_y = poses[:, 1, None] + c[:, None] * lat[None, :]
+        self.ring_z = z
+        self.count = count
+        self.s = s
+        self.height = heights
+        self.top = top
+        self.lat = lat
+        # Dashes on the deck: the middle of every other section.
+        dash = []
+        for k in range(0, count, 2):
+            a, b = s[k] + DASH[0], s[k] + DASH[1]
+            quad = []
+            for along, side in ((a, 1.0), (b, 1.0), (b, -1.0), (a, -1.0)):
+                x, y, _ = track.pose_at(float(along), side * DASH_HALF_WIDTH)
+                quad.append((x, y, levels.height_at(float(along)) + eps))
+            dash.append(quad)
+        self.dash = np.array(dash).reshape(-1, 4, 3)
+        self.dash_section = np.arange(0, count, 2)
+        # Which ring columns every strip of every section uses.
+        ks = np.arange(count)[:, None, None]
+        a = np.array([p[0] for p in STRIPS])[None, :, None]
+        b = np.array([p[1] for p in STRIPS])[None, :, None]
+        self.corner_k = np.concatenate(
+            [ks + 0 * a, ks + 0 * a, ks + 1 + 0 * a, ks + 1 + 0 * a], axis=2
+        )
+        self.corner_j = np.broadcast_to(
+            np.concatenate([a, b, b, a], axis=2), (count, len(STRIPS), 4)
+        ).copy()
+        # Strips with no height (the foot of a ramp) have nothing to draw.
+        p0, p1 = parapet[:-1], parapet[1:]
+        ok = np.ones((count, len(STRIPS)), dtype=bool)
+        g0, g1 = heights[:-1], heights[1:]
+        ok[:, [LOW_L, LOW_R]] = ((g0 > 0.02) | (g1 > 0.02))[:, None]
+        ok[:, [UP_L, UP_R, INNER_L, INNER_R]] = ((p0 > 0.02) | (p1 > 0.02))[:, None]
+        self.strip_ok = ok
+        # Lit or shaded sides: the sun shines from the opposite way to the shadows.
+        normal = np.stack([-np.sin(self.heading), np.cos(self.heading)], axis=1)  # left of the road
+        lit_left = (normal @ -self.sun) > 0.0
+        self.lit_left = lit_left[:-1] | lit_left[1:]
+
+    def _build_tunnel(self) -> None:
+        track, levels = self.track, self.levels
+        crossing = levels.crossing
+        ox, oy = crossing.x, crossing.y
+        _, _, upper = track.pose_at(levels.s_over)
+        _, _, lower = track.pose_at(levels.s_under)
+        ux, uy = math.cos(upper), math.sin(upper)
+        nx, ny = -uy, ux  # left of the upper road
+        lx, ly = math.cos(lower), math.sin(lower)
+        mx, my = -ly, lx  # left of the lower road
+        self.origin = (ox, oy)
+        self.upper_normal = (nx, ny)
+        ln, mn = lx * nx + ly * ny, mx * nx + my * ny
+        w, wide, roof = self.inner, self.wide, levels.ceiling
+        self.roof = roof
+        planes = {}
+        for tau in (-1.0, 1.0):
+            row = {}
+            for sigma in (1.0, -1.0):  # left and right wall of the tunnel
+                t = (tau * wide - sigma * w * mn) / ln
+                row[sigma] = (ox + t * lx + sigma * w * mx, oy + t * ly + sigma * w * my, t)
+            planes[tau] = row
+        entry = -1.0 if ln > 0.0 else 1.0
+        self.portals = []  # (tau, left point, right point), entry first
+        for tau in (entry, -entry):
+            self.portals.append((tau, planes[tau][1.0][:2], planes[tau][-1.0][:2]))
+        # Inside: walls and roof, cut into segments so they have some rhythm.
+        (ax, ay, at), (bx, by, bt) = planes[entry][1.0], planes[-entry][1.0]
+        (cx, cy, _), (dx, dy, _) = planes[entry][-1.0], planes[-entry][-1.0]
+        length = abs(bt - at)
+        segments = max(int(round(length / 3.0)), 1)
+        quads, inks = [], []
+        for k in range(segments):
+            t0, t1 = k / segments, (k + 1) / segments
+            left = (_lerp((ax, ay), (bx, by), t0), _lerp((ax, ay), (bx, by), t1))
+            right = (_lerp((cx, cy), (dx, dy), t0), _lerp((cx, cy), (dx, dy), t1))
+            for side in (left, right):
+                (p0x, p0y), (p1x, p1y) = side
+                quads.append([(p0x, p0y, 0.0), (p1x, p1y, 0.0), (p1x, p1y, roof), (p0x, p0y, roof)])
+                inks.append(WALL_INKS[k % 2])
+            (l0x, l0y), (l1x, l1y) = left
+            (r0x, r0y), (r1x, r1y) = right
+            quads.append([(l0x, l0y, roof), (l1x, l1y, roof), (r1x, r1y, roof), (r0x, r0y, roof)])
+            inks.append(LAMP_INK if k % LAMP_EVERY == 1 else ROOF_INK)
+        self.tunnel_quads = np.array(quads)
+        self.tunnel_inks = inks
+        self.entry_planes = (entry, planes)
+        self.tunnel_ends = (at, bt)
+        # Sections each mouth of the tunnel lies against (for the order of drawing).
+        self.portal_sections = []
+        for _, left, right in self.portals:
+            along = [((px - ox) * ux + (py - oy) * uy) for px, py in (left, right)]
+            lo, hi = min(along) - JAMB, max(along) + JAMB
+            touched = [
+                k
+                for k in range(self.count)
+                if self._section_along(k, ux, uy, ox, oy)[1] >= lo
+                and self._section_along(k, ux, uy, ox, oy)[0] <= hi
+            ]
+            self.portal_sections.append(touched)
+
+    def _section_along(self, k: int, ux: float, uy: float, ox: float, oy: float):
+        """Range of the section's centre along the upper road's axis at the crossing."""
+        pa = (self.centre[k, 0] - ox) * ux + (self.centre[k, 1] - oy) * uy
+        pb = (self.centre[k + 1, 0] - ox) * ux + (self.centre[k + 1, 1] - oy) * uy
+        return min(pa, pb), max(pa, pb)
+
+    # -- per frame -----------------------------------------------------------------------
+
+    def kart_bias(self, pose: CameraPose) -> float:
+        """How much nearer (m) a kart on the bridge is sorted, so it goes after its own section.
+
+        Looking along the road a section is 4 m long in depth; looking across it, the kart is
+        already sorted between the far and the near part. So it follows the view direction."""
+        return SECTION / 2.0 * abs(math.cos(pose.heading - float(self.heading[self.count // 2])))
+
+    def lateral_of_camera(self, pose: CameraPose) -> np.ndarray:
+        dx, dy = pose.x - self.centre[:, 0], pose.y - self.centre[:, 1]
+        return -dx * np.sin(self.heading) + dy * np.cos(self.heading)
+
+    def prepare(
+        self, pose: CameraPose, projection: Projection, lens: Lens
+    ) -> list[tuple[float, int, tuple]]:
+        """Project the geometry for this frame; the drawables to mix with the sprites."""
+        eye = lens.height + pose.z
+        ox, oy = self.origin
+        nx, ny = self.upper_normal
+        lat_u = (pose.x - ox) * nx + (pose.y - oy) * ny
+        inside = self._inside_tunnel(pose, eye)
+        self.camera_in_tunnel = inside
+        self._lens = lens
+        self._pose = pose
+        self._projection = projection
+        drawables: list[tuple[float, int, tuple]] = []
+        if inside:
+            # The inside is drawn after what is beyond the far mouth (seen through it) and
+            # before the karts in the tunnel; whatever stands beside the tunnel is hidden.
+            middles = [((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) for _, a, b in self.portals]
+            self.exit_depth = max(
+                float(projection.project(pose, mx, my, self.roof / 2)[2]) for mx, my in middles
+            )
+            drawables.append((self.exit_depth, 0, (self._draw_interior,)))
+            return drawables
+
+        sx, sy, depth = projection.project(pose, self.ring_x, self.ring_y, self.ring_z)
+        k, j = self.corner_k, self.corner_j
+        qx, qy, qd = sx[k, j], sy[k, j], depth[k, j]
+        width, height = projection.width, projection.height
+        ahead = (qd > NEAR).all(axis=2)
+        any_ahead = (qd > NEAR).any(axis=2)
+        on_screen = (qx.max(axis=2) >= 0) & (qx.min(axis=2) <= width)
+        on_screen &= (qy.max(axis=2) >= 0) & (qy.min(axis=2) <= height)
+        show = (
+            self.strip_ok & ((ahead & on_screen) | (any_ahead & ~ahead)) & self._facing(pose, eye)
+        )
+        # How far each side of each section is: the farther goes first.
+        left_depth = depth[:, 0:3].mean(axis=1)
+        right_depth = depth[:, 7:10].mean(axis=1)
+        left_depth = (left_depth[:-1] + left_depth[1:]) / 2.0
+        right_depth = (right_depth[:-1] + right_depth[1:]) / 2.0
+        far_is_left = left_depth > right_depth
+        far_key = np.maximum(left_depth, right_depth)
+        near_key = np.minimum(left_depth, right_depth)
+        in_far = np.ones((self.count, len(STRIPS)), dtype=bool)
+        in_far[:, list(LEFT_STRIPS)] = far_is_left[:, None]
+        in_far[:, list(RIGHT_STRIPS)] = ~far_is_left[:, None]
+        self._frame = {
+            "qx": qx.tolist(),
+            "qy": qy.tolist(),
+            "qd": qd,
+            "partial": (any_ahead & ~ahead),
+            "show": show,
+            "far_is_left": far_is_left.tolist(),
+        }
+        for index in np.flatnonzero((show & in_far).any(axis=1)).tolist():
+            drawables.append((float(far_key[index]), 0, (self._draw_section, index, True)))
+        for index in np.flatnonzero((show & ~in_far).any(axis=1)).tolist():
+            drawables.append((float(near_key[index]), 1, (self._draw_section, index, False)))
+        # Dashes and portals go with their sections.
+        section_depth = near_key
+        self._section_depth = section_depth
+        self._dash_frame = self._project_dashes(pose, projection)
+        for number, (tau, _, _) in enumerate(self.portals):
+            if tau * lat_u > self.wide:  # outside, facing the mouth
+                touched = self.portal_sections[number]
+                key = min(float(section_depth[i]) for i in touched) - 0.05 if touched else 0.0
+                drawables.append((key, 0, (self._draw_portal, number)))
+        return drawables
+
+    def _inside_tunnel(self, pose: CameraPose, eye: float) -> bool:
+        if eye >= self.roof:
+            return False
+        return self.levels.in_tunnel_zone(pose.x, pose.y, 0.0) and self._between_mouths(pose)
+
+    def _between_mouths(self, pose: CameraPose) -> bool:
+        ox, oy = self.origin
+        nx, ny = self.upper_normal
+        return abs((pose.x - ox) * nx + (pose.y - oy) * ny) <= self.wide
+
+    def _facing(self, pose: CameraPose, eye: float) -> np.ndarray:
+        """Which strips of which sections face the camera (a boolean (sections, strips))."""
+        lat = self.lateral_of_camera(pose)  # per ring
+        out = np.zeros((self.count, len(STRIPS)), dtype=bool)
+
+        def both(values: np.ndarray) -> np.ndarray:
+            return values[:-1] | values[1:]
+
+        out[:, [LOW_L, UP_L]] = both(lat > self.wide)[:, None]
+        out[:, [LOW_R, UP_R]] = both(lat < -self.wide)[:, None]
+        out[:, INNER_L] = both(lat < self.inner)
+        out[:, INNER_R] = both(lat > -self.inner)
+        up = {
+            CAP_L: self.top,
+            CAP_R: self.top,
+            DECK_STRIP: self.height,
+            LINE_L: self.height,
+            LINE_R: self.height,
+        }
+        for strip, z in up.items():
+            out[:, strip] = both(eye > z)
+        return out
+
+    def _project_dashes(self, pose: CameraPose, projection: Projection):
+        points = self.dash
+        sx, sy, depth = projection.project(pose, points[..., 0], points[..., 1], points[..., 2])
+        ok = (depth > NEAR).all(axis=1)
+        return sx.tolist(), sy.tolist(), ok
+
+    # -- drawing -------------------------------------------------------------------------
+
+    def _fog(self, depth: float) -> int:
+        lens = self._lens
+        fraction = (depth - lens.fog_start) / (lens.fog_end - lens.fog_start)
+        return int(min(max(fraction, 0.0), 1.0) * (FOG_LEVELS - 1))
+
+    def _draw_section(self, k: int, far: bool) -> None:
+        frame = self._frame
+        show = frame["show"][k]
+        fog = self._fog(float(self._section_depth[k]))
+        rgb = self.rgb
+        surface = self.surface
+        lit = bool(self.lit_left[k])
+        far_is_left = frame["far_is_left"][k]
+        if far:
+            order = FAR_LEFT if far_is_left else FAR_RIGHT
+        else:
+            order = NEAR_RIGHT if far_is_left else NEAR_LEFT
+        for strip in order:
+            if not show[strip]:
+                continue
+            if frame["partial"][k, strip]:
+                points = self._clipped(k, strip)
+                if len(points) < 3:
+                    continue
+            else:
+                xs, ys = frame["qx"][k][strip], frame["qy"][k][strip]
+                points = list(zip(xs, ys, strict=True))
+            pygame.draw.polygon(surface, rgb(self._ink(k, strip, lit), fog), points)
+        if far and k % 2 == 0 and show[DECK_STRIP]:
+            self._draw_dash(k // 2, fog)
+
+    def _ink(self, k: int, strip: int, lit_left: bool) -> int:
+        if strip == DECK_STRIP:
+            return DECK[k % 2]
+        if strip in (LINE_L, LINE_R):
+            return DECK_LINE
+        if strip in (CAP_L, CAP_R):
+            return CAP
+        left = strip in (LOW_L, UP_L, INNER_R)  # the face looks to the left of the road
+        lit = lit_left if left else not lit_left
+        if strip in (UP_L, UP_R):
+            return UP_LIT if lit else UP_SHADE
+        if strip in (LOW_L, LOW_R):
+            return FACE_LIT if lit else FACE_SHADE
+        return INNER_LIT if lit else INNER_SHADE
+
+    def _draw_dash(self, index: int, fog: int) -> None:
+        xs, ys, ok = self._dash_frame
+        if not ok[index]:
+            return
+        pygame.draw.polygon(
+            self.surface, self.rgb(DECK_LINE, fog), list(zip(xs[index], ys[index], strict=True))
+        )
+
+    def _clipped(self, k: int, strip: int):
+        """A strip that crosses the near plane: clip it in the world and project the rest."""
+        corners = [
+            (int(self.corner_k[k, strip, i]), int(self.corner_j[k, strip, i])) for i in range(4)
+        ]
+        world = [(self.ring_x[a, b], self.ring_y[a, b], self.ring_z[a, b]) for a, b in corners]
+        depths = [float(self._frame["qd"][k, strip, i]) for i in range(4)]
+        return self._project_polygon(_clip(world, depths))
+
+    def _project_polygon(self, world: list[tuple[float, float, float]]):
+        if len(world) < 3:
+            return []
+        arr = np.array(world)
+        sx, sy, _ = self._projection.project(self._pose, arr[:, 0], arr[:, 1], arr[:, 2])
+        return list(zip(sx.tolist(), sy.tolist(), strict=True))
+
+    def _world_polygon(
+        self, world: list[tuple[float, float, float]], ink: int, fog: int = 0
+    ) -> None:
+        """Project a polygon given in world points (cut at the near plane) and draw it."""
+        arr = np.array(world)
+        _, _, depth = self._projection.project(self._pose, arr[:, 0], arr[:, 1], arr[:, 2])
+        depths = depth.tolist()
+        if all(d > NEAR for d in depths):
+            points = self._project_polygon(world)
+        elif any(d > NEAR for d in depths):
+            points = self._project_polygon(_clip(world, depths))
+        else:
+            return
+        if len(points) >= 3:
+            pygame.draw.polygon(self.surface, self.rgb(ink, fog), points)
+
+    def _draw_portal(self, number: int) -> None:
+        """The mouth of the tunnel seen from outside: a dark opening with lintel and jambs."""
+        tau, (ax, ay), (bx, by) = self.portals[number]
+        roof = self.roof
+        span = math.hypot(bx - ax, by - ay)
+        dx, dy = (bx - ax) / span, (by - ay) / span
+        a2, b2 = (ax - dx * JAMB, ay - dy * JAMB), (bx + dx * JAMB, by + dy * JAMB)
+        top = roof + LINTEL
+        depth = float(
+            self._projection.project(self._pose, (ax + bx) / 2, (ay + by) / 2, roof / 2)[2]
+        )
+        fog = self._fog(depth)
+        self._world_polygon(
+            [(ax, ay, 0), (bx, by, 0), (bx, by, roof), (ax, ay, roof)], OPENING, fog
+        )
+        self._world_polygon(
+            [(a2[0], a2[1], roof), (b2[0], b2[1], roof), (b2[0], b2[1], top), (a2[0], a2[1], top)],
+            LINTEL_INK,
+            fog,
+        )
+        for (px, py), (qx, qy) in (((a2[0], a2[1]), (ax, ay)), ((bx, by), (b2[0], b2[1]))):
+            self._world_polygon(
+                [(px, py, 0), (qx, qy, 0), (qx, qy, top), (px, py, top)], FACE_LIT, fog
+            )
+
+    def _draw_interior(self) -> None:
+        """Inside the tunnel: walls and roof, every polygon cut at the near plane."""
+        for quad, ink in zip(self.tunnel_quads, self.tunnel_inks, strict=True):
+            self._world_polygon([tuple(p) for p in quad.tolist()], ink)
+
+
+__all__ = ["BridgeRenderer"]

@@ -27,6 +27,8 @@ KERB_CURVATURE = 1 / 45  # corners tighter than this radius get kerbs
 EDGE_LINE = (0.15, 0.45)  # white line between these distances inside the edge (m)
 START_LINE = 1.0  # the chequered line spans this far each side of s = 0 (m)
 MIN_MIP_SIZE = 8
+SUN_DIRECTION = (0.55, -0.35)  # where shadows fall (world x/y), the same as the scenery's
+SHADOW_REACH = 0.35  # shadow length per metre of height
 STRIP_ROWS = 128  # texel rows painted (and averaged for the mipmaps) at a time
 
 
@@ -102,14 +104,18 @@ class FloorTexture:
         self.base[v0:v1, u0:u1][inside] = index
 
 
-def _coarse_field(track: Track, origin, shape, reach: float):
-    """Nearest centerline segment and its distance for 1 m cells within ``reach``."""
+def _coarse_field(track: Track, origin, shape, reach: float, skip: np.ndarray | None = None):
+    """Nearest centerline segment and its distance for 1 m cells within ``reach``.
+
+    Segments flagged in ``skip`` (the raised road of a bridge, drawn as geometry) are left out."""
     rows, cols = shape
     dist = np.full(shape, np.inf, dtype=np.float32)
     seg = np.full(shape, -1, dtype=np.int32)
     pts = track.points
     nxt = np.roll(pts, -1, axis=0)
     for i in range(len(pts)):
+        if skip is not None and skip[i]:
+            continue
         (ax, ay), (bx, by) = pts[i], nxt[i]
         c0 = max(int(math.floor(min(ax, bx) - reach - origin[0])), 0)
         c1 = min(int(math.ceil(max(ax, bx) + reach - origin[0])), cols)
@@ -167,6 +173,7 @@ def _refine_crossings(track: Track, x, y, s, lat, nearest):
     reach = 2.5 * track.width
     window = math.ceil((reach + 4.0) * n / track.length)
     s, lat, nearest = s.copy(), lat.copy(), nearest.copy()
+    levels = track.levels
     for crossing in track.crossings:
         near = np.hypot(x - crossing.x, y - crossing.y) < reach
         if not near.any():
@@ -176,7 +183,10 @@ def _refine_crossings(track: Track, x, y, s, lat, nearest):
         best_s = np.zeros(px.shape)
         best_lat = np.zeros(px.shape)
         best_seg = np.zeros(px.shape, dtype=np.int64)
-        for centre in (crossing.index_a, crossing.index_b):
+        branches = (crossing.index_a, crossing.index_b)
+        if levels is not None:  # a bridge: only the road on the ground is part of the floor
+            branches = (crossing.index_b if levels.over_first else crossing.index_a,)
+        for centre in branches:
             for offset in range(-window, window + 1):
                 i = (centre + offset) % n
                 ax, ay = track.points[i]
@@ -202,7 +212,8 @@ def build_floor_texture(track: Track, seed: int = 0, tpm: int = TEXELS_PER_METRE
 
     # Exact track coordinates only in a band around the asphalt.
     coarse_shape = (math.ceil(rows / tpm), math.ceil(cols / tpm))
-    dist, seg = _coarse_field(track, origin, coarse_shape, hw + BAND + 1.5)
+    skip = None if track.levels is None else track.levels.raised
+    dist, seg = _coarse_field(track, origin, coarse_shape, hw + BAND + 1.5, skip)
     near_cells = dist < hw + BAND + 1.0
 
     # Painted in strips of rows: each texel depends only on itself, so the result equals one
@@ -242,6 +253,7 @@ def _paint_strip(
     near = near_cells[v_idx // tpm, u_idx // tpm]
     vs, us = np.nonzero(near)
     if len(vs) == 0:
+        _shade_bridge(track, tex, v0, origin, tpm)
         return
     x, y = wx[vs, us], wy[vs, us]
     s, lat, nearest = _project(track, x, y, seg[(vs + v0) // tpm, us // tpm])
@@ -288,3 +300,74 @@ def _paint_strip(
     out[start & ~checker] = Ink.WHITE
 
     tex[vs, us] = out
+    _shade_bridge(track, tex, v0, origin, tpm)
+
+
+def _shade_bridge(
+    track: Track, tex: np.ndarray, v0: int, origin: tuple[float, float], tpm: int
+) -> None:
+    """Shadows of a bridge, baked like those of the scenery.
+
+    The floor of the tunnel (the lower road under the deck) is dark, in a dither of
+    ``ASPHALT_DARK`` and ``ASPHALT`` that grows denser towards the inside; beside the
+    embankment, on the side the sun does not reach, a band of shadow falls on the grass and
+    on the asphalt. ``ASPHALT_DARK`` is the same index as ``BLACK``, so it is never mixed
+    with black.
+    """
+    levels = track.levels
+    if levels is None:
+        return
+    cx, cy, heading = track.pose_at(levels.s_over)
+    ux, uy = math.cos(heading), math.sin(heading)  # axis of the upper road; (-uy, ux) is left
+    lx, ly, lower = track.pose_at(levels.s_under)
+    lcos, lsin = math.cos(lower), math.sin(lower)
+    reach = levels.reach + levels.embankment_half + 4.0
+    # Only the texels around the bridge (a box of the strip), nothing else.
+    u0 = max(int((cx - reach - origin[0]) * tpm), 0)
+    u1 = min(int((cx + reach - origin[0]) * tpm) + 1, tex.shape[1])
+    r0 = max(int((origin[1] - cy - reach) * tpm) - v0, 0)
+    r1 = min(int((origin[1] - cy + reach) * tpm) + 1 - v0, len(tex))
+    if u0 >= u1 or r0 >= r1:
+        return
+    block = tex[r0:r1, u0:u1]
+    vv, uu = np.mgrid[v0 + r0 : v0 + r1, u0:u1]
+    x = origin[0] + (uu + 0.5) / tpm
+    y = origin[1] - (vv + 0.5) / tpm
+    dx, dy = x - cx, y - cy
+    along = dx * ux + dy * uy
+    across = -dx * uy + dy * ux  # to the left of the upper road
+    dither = BAYER4[vv % 4, uu % 4]
+    wide = levels.embankment_half
+
+    # Tunnel floor: inside the embankment, on the lower road.
+    lat_low = -(x - lx) * lsin + (y - ly) * lcos
+    tunnel = (np.abs(across) <= wide) & (np.abs(along) <= levels.reach)
+    tunnel &= np.abs(lat_low) <= track.half_width
+    depth = np.clip((wide - np.abs(across)) / 3.0, 0.0, 1.0)  # 0 at the mouth, 1 inside
+    dark = dither < 0.45 + 0.4 * depth
+    block[tunnel & dark] = Ink.ASPHALT_DARK
+    block[tunnel & ~dark] = Ink.ASPHALT
+
+    # Shadow of the embankment on the side away from the sun.
+    sun = np.array(SUN_DIRECTION) / math.hypot(*SUN_DIRECTION)
+    h = levels.deck_height * (
+        1.0 - _smoothstep((np.abs(along) - levels.deck_half) / levels.ramp)
+    )  # height of the bridge beside each texel
+    for side in (-1.0, 1.0):
+        outward = side * (-uy * sun[0] + ux * sun[1])  # sun component along the face normal
+        if outward <= 0.0:
+            continue  # the sun lights this face
+        band = SHADOW_REACH * (h + 0.9) * outward
+        gap = side * across - wide  # distance beyond the face
+        shade = (gap >= 0.0) & (gap < band) & (np.abs(along) <= levels.reach)
+        fade = np.where(band > 0, gap / np.maximum(band, 1e-6), 1.0)
+        shade &= dither > fade * 0.9
+        grass = (block == Ink.GRASS) | (block == Ink.GRASS_LIGHT) | (block == Ink.LEAF_LIGHT)
+        asphalt = (block == Ink.ASPHALT) | (block == Ink.ASPHALT_LIGHT)
+        block[shade & grass] = Ink.GRASS_DARK
+        block[shade & asphalt] = Ink.ASPHALT_DARK
+
+
+def _smoothstep(u: np.ndarray) -> np.ndarray:
+    u = np.clip(u, 0.0, 1.0)
+    return u * u * (3.0 - 2.0 * u)
