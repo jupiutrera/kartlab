@@ -25,6 +25,7 @@ import numpy as np
 import pygame
 
 from kartlab.render.display import open_window, set_window_mode
+from kartlab.render.palette import KART_RAMPS
 from kartlab.render.scene import KartVisual
 from kartlab.render.topdown import ACCENT
 from kartlab.render.view import (
@@ -43,6 +44,13 @@ from kartlab.show.brain import BrainPanel
 from kartlab.show.charts import MetricsReader, RewardChart
 from kartlab.show.cli import NoCheckpoints, existing_run_or_exit, resolve_track_or_exit
 from kartlab.show.drivers import PolicyDriver, format_steps
+from kartlab.show.humanrace import (
+    DEFAULT_DIFFICULTY,
+    DEFAULT_LAPS,
+    DEFAULT_RIVALS,
+    DIFFICULTIES,
+    MAX_RIVALS,
+)
 from kartlab.show.overlays import Overlays, ease_in_out
 from kartlab.show.scenes import SCENES, AttractScene, Scene, WatchScene
 from kartlab.show.title import MenuEntry, TitleScreen
@@ -74,8 +82,11 @@ MODES: dict[str, MenuEntry] = {
     "progression": MenuEntry(
         "progression", "Progresión", "De sin entrenar a la última, paso a paso"
     ),
+    "vsai": MenuEntry("vsai", "Carrera contra la IA", "Tú al volante contra karts de la IA"),
 }
-MODE_ORDER = tuple(MODES)
+# The title screen and M cycle through these; the race against the AI is launched with
+# ``--mode vsai`` (and, later, from the main menu).
+MODE_ORDER = ("watch", "race", "progression")
 
 IGNORED_KEYS = {
     pygame.K_LSHIFT,
@@ -102,6 +113,16 @@ HELP_SECTIONS = (
         (
             ("M", "cambiar de modo (ver · carrera · progresión)"),
             ("Esc", "volver al título (al menú, si vienes de él); en el título, salir"),
+        ),
+    ),
+    (
+        "Carrera contra la IA",
+        (
+            ("← → ↑ ↓", "conducir (W A S D también)"),
+            ("Mayús", "barrido; suelta para el impulso"),
+            ("Tab", "piloto automático para ti"),
+            ("Intro", "repetir tras los resultados"),
+            ("Esc", "salir"),
         ),
     ),
     (
@@ -177,6 +198,11 @@ class ViewerApp:
         diagnostics: bool = False,
         brain: bool = False,
         embedded: bool = False,
+        vs_laps: int = DEFAULT_LAPS,
+        rivals: int = DEFAULT_RIVALS,
+        difficulty: str = DEFAULT_DIFFICULTY,
+        collisions: bool = True,
+        kart_ramp: int = 0,
     ) -> None:
         if not run.list_checkpoints():
             raise NoCheckpoints(f"{run.root} no tiene checkpoints")
@@ -184,6 +210,11 @@ class ViewerApp:
         self.embedded = embedded  # run by the main menu: Esc leaves, no title screen
         self.realtime = realtime
         self.laps = laps
+        self.vs_laps = vs_laps  # the race against the AI
+        self.rivals = rivals
+        self.difficulty = difficulty
+        self.collisions = collisions
+        self.kart_ramp = kart_ramp
         self.start_version = version
         self.library = VersionLibrary(run, synchronous=not realtime)
         self.env_config = TrainConfig.from_yaml(run.config).env_config()
@@ -228,8 +259,10 @@ class ViewerApp:
         self.ov = Overlays(self.screen, self.game)
         self._layout_widgets()
 
+        if mode == "vsai" and self.track.crossings:
+            raise SystemExit("La carrera contra la IA no admite circuitos con cruces a nivel.")
         self.mode = mode or MODE_ORDER[0]
-        self.title.selected = MODE_ORDER.index(self.mode)
+        self.title.selected = MODE_ORDER.index(self.mode) if self.mode in MODE_ORDER else 0
         self.attract = AttractScene(self)
         self.scene: Scene = self.attract
         self.state = "title"
@@ -378,6 +411,8 @@ class ViewerApp:
         self.fade(lambda: self._enter_scene(mode))
 
     def next_mode(self) -> None:
+        if self.mode not in MODE_ORDER:
+            return
         self.start_mode(MODE_ORDER[(MODE_ORDER.index(self.mode) + 1) % len(MODE_ORDER)])
 
     def change_track(self, key: str, track: Track) -> None:
@@ -423,10 +458,7 @@ class ViewerApp:
 
     def _scene_key(self, key: int) -> None:
         if key == pygame.K_ESCAPE:
-            if self.embedded:
-                self.running = False  # back to the main menu
-            else:
-                self.go_title()
+            self.scene.on_escape()
         elif key == pygame.K_m:
             self.next_mode()
         elif self.scene.on_key(key):
@@ -749,7 +781,33 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--variant", choices=("day", "sunset", "night"), default="day")
     parser.add_argument("--version", type=int, help="pasos de la versión inicial (modo watch)")
-    parser.add_argument("--laps", type=int, default=2, help="vueltas de la carrera")
+    parser.add_argument(
+        "--laps", type=int, help="vueltas de la carrera (por defecto, 2; 3 contra la IA)"
+    )
+    parser.add_argument(
+        "--rivals",
+        type=int,
+        choices=range(1, MAX_RIVALS + 1),
+        default=DEFAULT_RIVALS,
+        help="karts de la IA en el modo vsai",
+    )
+    parser.add_argument(
+        "--difficulty",
+        choices=[level.key for level in DIFFICULTIES],
+        default=DEFAULT_DIFFICULTY,
+        help="dificultad de la IA en el modo vsai",
+    )
+    parser.add_argument(
+        "--no-collisions", action="store_true", help="en el modo vsai, los karts se atraviesan"
+    )
+    parser.add_argument(
+        "--color",
+        type=int,
+        choices=range(len(KART_RAMPS)),
+        default=0,
+        metavar="N",
+        help=f"color de tu kart en el modo vsai (0-{len(KART_RAMPS) - 1})",
+    )
     parser.add_argument("--scale", type=int, help="escala entera sobre 320x180")
     parser.add_argument("--fullscreen", action="store_true", help="pantalla completa")
     parser.add_argument("--rays", action="store_true", help="muestra los sensores")
@@ -784,11 +842,16 @@ def main(argv: list[str] | None = None) -> None:
             args.scale,
             args.fullscreen,
             realtime=args.frames is None,
-            laps=max(1, args.laps),
+            laps=max(1, args.laps or 2),
             version=args.version,
             rays=args.rays,
             diagnostics=args.diagnostics,
             brain=args.brain,
+            vs_laps=max(1, args.laps or DEFAULT_LAPS),
+            rivals=args.rivals,
+            difficulty=args.difficulty,
+            collisions=not args.no_collisions,
+            kart_ramp=args.color,
         )
     except NoCheckpoints as error:
         raise SystemExit(str(error)) from None

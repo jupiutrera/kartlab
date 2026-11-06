@@ -15,11 +15,22 @@ from typing import TYPE_CHECKING
 
 import pygame
 
+from kartlab.render.palette import KART_RAMPS
 from kartlab.render.scene import KartVisual
-from kartlab.render.topdown import ACCENT, KART_COLOR
+from kartlab.render.topdown import ACCENT, KART_COLOR, format_time
 from kartlab.render.view import DIM, WHITE, HudInfo
+from kartlab.show.drive import drift_pressed, keyboard_controls
 from kartlab.show.drivers import PolicyDriver, format_steps
+from kartlab.show.humanrace import (
+    RACE_TIMEOUT,
+    Entrant,
+    classify,
+    difficulty_of,
+    place_of,
+    result_lines,
+)
 from kartlab.show.overlays import ease_in_out, version_name, visual_of
+from kartlab.show.racehud import AMBER, GOLD, RaceHud
 from kartlab.show.versions import BEST, pick_checkpoints
 from kartlab.show.video import (
     COUNTDOWN_SECONDS,
@@ -32,7 +43,11 @@ from kartlab.show.video import (
     GRID_SIDE,
     MAX_RESTARTS,
 )
-from kartlab.sim.kart import KartState
+from kartlab.sim.autopilot import Autopilot
+from kartlab.sim.contact import START_GRACE, Body, PairState, resolve
+from kartlab.sim.drift import DriftState
+from kartlab.sim.kart import DT, KartParams, KartState, cruise_speed
+from kartlab.sim.race import Racer
 
 if TYPE_CHECKING:
     from kartlab.show.viewer import ViewerApp
@@ -75,6 +90,13 @@ class Scene:
 
     def default_camera(self) -> str:
         return "broadcast"
+
+    def on_escape(self) -> None:
+        """Esc: back to the title screen, or out to the main menu when embedded."""
+        if self.app.embedded:
+            self.app.running = False
+        else:
+            self.app.go_title()
 
     def update(self) -> None:
         """Once per frame, before the physics: loading, swapping versions."""
@@ -681,8 +703,305 @@ class ProgressionScene(Scene):
         self.goto(self.index + delta)
 
 
+# -- human against the AI --------------------------------------------------------------------------
+
+BANNER_SECONDS = 2.5
+RESULTS_DELAY = 2.2  # after the finish line: the "¡META!" banner first, then the table
+RESULTS_DELAY_LOST = 0.6  # when the race ended without you finishing
+
+
+def grid_slot(slot: int) -> tuple[float, float]:
+    """Arc position (behind the line, so negative) and lateral offset of a grid slot, two
+    karts per row, pole first."""
+    return -GRID_FIRST - GRID_ROW * (slot // 2), (-1.0 if slot % 2 == 0 else 1.0) * GRID_SIDE
+
+
+class HumanRaceScene(Scene):
+    """You against AI karts on the same grid: a 3-2-1 countdown with the controls frozen,
+    a number of laps, soft bumps between karts (the AI does not see them and recovers on its
+    own) and a results table. The AI is the best checkpoint of the run, slowed down by a
+    speed limiter per difficulty. Esc leaves; Enter after the results races again."""
+
+    name = "vsai"
+    brain_side = "right"  # the standings take the left edge
+
+    def __init__(self, app: ViewerApp) -> None:
+        super().__init__(app)
+        self.laps = app.vs_laps
+        self.rivals = app.rivals
+        self.difficulty = difficulty_of(app.difficulty)
+        self.collisions = app.collisions
+        self.kart_ramp = app.kart_ramp
+        self.hud: RaceHud | None = None
+        self.drift = DriftState()
+        self.autopilot_on = False
+        self.controls = (0.0, 0.0)
+        self.pilot: Autopilot | None = None
+        self._reset_state()
+
+    def _reset_state(self) -> None:
+        self.started = False
+        self.human: Racer | None = None
+        self.origin = 0.0
+        self.drivers: list[PolicyDriver] = []
+        self.entrants: list[Entrant] = []
+        self.pairs: list[PairState] = []
+        self.frame_no = 0
+        self.race_steps = 0
+        self.place: int | None = None
+        self.place_since = -10.0  # race time of the last change of place (s)
+        self.banner: tuple[str, float, tuple] | None = None  # text, race time, look
+        self.ended_at: float | None = None  # race time at which the results were fixed
+        self.final: list[tuple[str, bool]] = []
+        self.final_place = 0
+        self.drift.reset()
+
+    # -- life cycle --------------------------------------------------------------------------
+
+    def default_camera(self) -> str:
+        return "chase"
+
+    def brain_driver(self) -> PolicyDriver | None:
+        return self.drivers[0] if self.drivers else None
+
+    def on_escape(self) -> None:
+        self.app.running = False
+
+    def enter(self) -> None:
+        self.app.library.request(BEST)
+
+    def rebuild(self) -> None:
+        self.pilot = None
+        self._reset_state()
+
+    def restart(self) -> None:
+        self._reset_state()  # update() builds the grid again as soon as the AI is loaded
+
+    def update(self) -> None:
+        if self.started:
+            return
+        library = self.app.library
+        version = library.request(BEST) or library.cached(BEST)
+        if version is None:
+            if library.failed(BEST) is not None:
+                self.app.notify("No se pudo cargar la IA")
+                library.clear_failure(BEST)
+            return
+        self._start(version)
+
+    def loading_text(self) -> str | None:
+        return None if self.started else "Cargando la IA"
+
+    def _start(self, version) -> None:
+        app, track = self.app, self.app.track
+        total = 1 + self.rivals
+        ramps = [r for r in range(len(KART_RAMPS)) if r != self.kart_ramp][: self.rivals]
+        params = KartParams()
+        cap = None if self.difficulty.speed >= 1.0 else self.difficulty.speed * cruise_speed(params)
+        self.entrants = []
+        self.drivers = []
+        self.pairs = []
+        for k in range(self.rivals):
+            driver = self.new_driver(version, ramps[k])
+            driver.restart_in_place = True
+            driver.speed_cap = cap
+            s, lateral = grid_slot(k)
+            driver.place(s, lateral)
+            self.drivers.append(driver)
+            self.pairs.append(PairState())
+            self.entrants.append(Entrant(f"IA {k + 1}", ramps[k], False, track.length, self.laps))
+        s, lateral = grid_slot(total - 1)  # the human starts on the last row
+        self.human = Racer(track, params, s, lateral)
+        self.origin = -s
+        self.entrants.insert(0, Entrant("Tú", self.kart_ramp, True, track.length, self.laps))
+        self.entrants[0].distance = -self.origin
+        for entrant, driver in zip(self.entrants[1:], self.drivers, strict=True):
+            entrant.distance = driver.race_distance
+        self.pilot = Autopilot(track, params)
+        self.drift.reset()
+        self.frame_no = 0
+        self.race_steps = 0
+        self.place = place_of(self.entrants, self.entrants[0])
+        self.started = True
+        self.reset_cameras()
+        if self.hud is None:
+            self.hud = RaceHud(app.ov)
+
+    # -- physics -----------------------------------------------------------------------------
+
+    @property
+    def start_frames(self) -> int:
+        return round(COUNTDOWN_SECONDS * FPS)
+
+    @property
+    def race_time(self) -> float:
+        return self.race_steps * DT
+
+    @property
+    def me(self) -> Entrant:
+        return self.entrants[0]
+
+    def physics_step(self) -> None:
+        if not self.started:
+            return
+        if self.frame_no < self.start_frames:  # the countdown: everybody is frozen
+            self.frame_no += 1
+            return
+        self.frame_no += 1
+        self.race_steps += 1
+        t = self.race_time
+        racer = self.human
+        manual = not self.autopilot_on and not self.me.finished
+        if manual:
+            pressed = pygame.key.get_pressed()
+            steer, throttle = keyboard_controls(pressed)
+            self.drift.hold = drift_pressed(pressed)
+            drift = self.drift
+        else:
+            steer, throttle = self.pilot.act(racer)
+            drift = None
+        self.controls = (steer, throttle)
+        racer.step(steer, throttle, drift=drift)
+        for driver in self.drivers:
+            driver.step()
+        if self.collisions and not self.me.finished and self.ended_at is None:
+            self._bump(t)
+        if self.ended_at is None:
+            self._track(t)
+
+    def _bump(self, t: float) -> None:
+        """Soft contact between the human kart and each AI kart (see ``sim/contact.py``)."""
+        racer = self.human
+        height = getattr(self.drift, "height", 0.0)
+        mine = Body(racer.kart, racer.level_z, height, START_GRACE)
+        for driver, state in zip(self.drivers, self.pairs, strict=True):
+            other = driver.racer
+            grace = max(START_GRACE, driver.no_contact_until)
+            contact = resolve(mine, Body(other.kart, other.level_z, 0.0, grace), state, t)
+            if contact is None:
+                continue
+            racer.displace(*contact.push_human)
+            other.displace(*contact.push_ai)
+            racer.kart.vx += contact.dv_human[0]
+            racer.kart.vy += contact.dv_human[1]
+            other.kart.vx += contact.dv_ai[0]
+            other.kart.vy += contact.dv_ai[1]
+            driver.touch()
+
+    def _track(self, t: float) -> None:
+        """Laps, finish, place and the end of the race."""
+        me = self.me
+        crossed = me.update(self.human.progress.distance - self.origin, t)
+        for entrant, driver in zip(self.entrants[1:], self.drivers, strict=True):
+            entrant.update(driver.race_distance, t)
+        if crossed:
+            if me.finished:
+                self.banner = ("¡META!", t, GOLD)
+            elif me.laps_done == self.laps - 1:
+                self.banner = ("ÚLTIMA VUELTA", t, AMBER)
+        place = place_of(self.entrants, me)
+        if place != self.place:
+            self.place, self.place_since = place, t
+        firsts = [e.finish_time for e in self.entrants if e.finished]
+        timed_out = bool(firsts) and t - min(firsts) >= RACE_TIMEOUT
+        if me.finished or timed_out:
+            self.ended_at = t
+            self.final = result_lines(self.entrants)
+            self.final_place = place_of(self.entrants, me)
+
+    # -- drawing -----------------------------------------------------------------------------
+
+    def frame(self):
+        if not self.started:
+            return None
+        racer = self.human
+        manual = not self.autopilot_on and not self.me.finished
+        human = KartVisual(
+            racer.kart,
+            self.kart_ramp,
+            on_grass=racer.on_grass,
+            throttle=self.controls[1],
+            drift=self.drift if manual else None,
+        )
+        racing = self.frame_no >= self.start_frames
+        visuals = [human]
+        for entrant, driver in zip(self.entrants[1:], self.drivers, strict=True):
+            visuals.append(visual_of(driver, entrant.ramp, entrant.name if racing else None))
+        t = self.race_time
+        info = HudInfo(
+            laps=min(self.me.laps_done, self.laps - 1),
+            lap_time=self.me.lap_time_at(t),
+            best_lap=self.me.best_lap,
+            speed=racer.speed,
+            label="Carrera contra la IA" if manual else "Piloto automático",
+            ramp=self.kart_ramp,
+            extra=[
+                self.app.track.name,
+                f"{self.laps} vueltas · {self.difficulty.label}",
+                "Choques activados" if self.collisions else "Sin choques",
+            ],
+            drift=self.drift if manual else None,
+        )
+        return visuals, 0, info
+
+    def draw_overlays(self) -> None:
+        if not self.started or self.hud is None:
+            return
+        app, ov, hud = self.app, self.app.ov, self.hud
+        t = self.race_time
+        order = classify(self.entrants)
+        rows = [
+            (
+                e.ramp,
+                e.name,
+                "meta" if e.finished else f"vuelta {min(e.laps_done + 1, self.laps)}/{self.laps}",
+            )
+            for e in order
+        ]
+        ov.standings(
+            rows, (app.game.world_rect.x + ov.unit // 2, ov.unit * 7), order.index(self.me)
+        )
+        hud.position(self.place, len(self.entrants), t - self.place_since)
+        hud.lap_counter(
+            min(self.me.laps_done + 1, self.laps),
+            self.laps,
+            format_time(self.ended_at if self.ended_at is not None else t),
+            format_time(self.me.lap_time_at(t)),
+        )
+        hud.countdown(self.frame_no, self.start_frames, FPS)
+        if self.banner is not None:
+            text, since, look = self.banner
+            hud.banner(text, t - since, BANNER_SECONDS, look)
+        if self.ended_at is not None:
+            delay = RESULTS_DELAY if self.me.finished else RESULTS_DELAY_LOST
+            lines = [(text, (255, 214, 120) if human else WHITE) for text, human in self.final]
+            hud.results(
+                "Resultados",
+                self.final_place,
+                lines,
+                "Intro: repetir  ·  Esc: salir",
+                t - self.ended_at - delay,
+            )
+
+    # -- input -------------------------------------------------------------------------------
+
+    def on_key(self, key: int) -> bool:
+        if key == pygame.K_s:
+            return True  # S brakes here; slow motion is for the other modes
+        if key == pygame.K_TAB:
+            self.autopilot_on = not self.autopilot_on
+            self.drift.reset()
+            return True
+        if key in (pygame.K_RETURN, pygame.K_KP_ENTER) and self.ended_at is not None:
+            self.restart()
+            self.reset_cameras()
+            return True
+        return False
+
+
 SCENES: dict[str, type[Scene]] = {
     "watch": WatchScene,
     "race": RaceScene,
     "progression": ProgressionScene,
+    "vsai": HumanRaceScene,
 }
