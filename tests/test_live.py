@@ -10,6 +10,7 @@ from kartlab.show.charts import MetricsReader, RewardChart
 from kartlab.show.drivers import PolicyDriver, Version, format_steps
 from kartlab.show.live import LiveApp
 from kartlab.sim.showcase import showcase_track
+from kartlab.sim.trackfile import load_track_file
 from kartlab.train.config import PPOParams, TrainConfig
 
 
@@ -211,6 +212,33 @@ def test_the_live_viewer_waits_for_the_first_checkpoint_on_the_canvas(tiny_run, 
         app.handle_key(pygame.K_t)
         app.run(max_frames=3)
         assert _palette_only(app.canvas)
+    finally:
+        pygame.quit()
+
+
+def test_the_live_top_down_view_passes_the_road_height_so_a_tunnel_hides_its_karts(tiny_run):
+    app = LiveApp(
+        tiny_run,
+        track_choice="harbor",
+        ghosts=1,
+        scale=2,
+        realtime=False,
+        view="topdown",
+        track=load_track_file("tracks/ocho_puente.json"),
+    )
+    try:
+        app.preload_ghosts()
+        app.loader.poll_once()
+        app.run(max_frames=5)
+        seen = []
+        original = app.view.draw
+        app.view.draw = lambda target, karts, *a, **k: (
+            seen.append(list(karts)),
+            original(target, karts, *a, **k),
+        )
+        app.run(max_frames=2)
+        assert seen and all(len(kart) == 5 for karts in seen for kart in karts)
+        assert all(kart[4] == 0.0 for kart in seen[-1])  # on the ground here, not on the deck
     finally:
         pygame.quit()
 

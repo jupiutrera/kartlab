@@ -325,14 +325,24 @@ class LiveApp:
     def _draw_topdown(self) -> None:
         canvas = self.canvas
         view_surface = canvas.subsurface(self.view_rect)
-        karts = [(g.racer.kart, g.color) for g in self.ghosts]
+        # (kart, colour, height, sweep state, height of the road): the last one hides the karts
+        # that are in a bridge's tunnel, as in the driving view.
+        karts = [(g.racer.kart, g.color, 0.0, None, g.racer.level_z) for g in self.ghosts]
         if self.current is not None:
-            karts.append((self.current.racer.kart, self.current.color))
+            current = self.current
+            karts.append((current.racer.kart, current.color, 0.0, None, current.racer.level_z))
         self.view.draw(view_surface, karts, (0.0, 0.0), follow=False)
         drivers = [*self.ghosts, self.current] if self.current else []
         placed: list[pygame.Rect] = []
         for driver in reversed(drivers):  # the current version keeps its spot
             kart = driver.racer.kart
+            levels = self.track.levels
+            if (
+                levels is not None
+                and driver.racer.level_z < 0.5
+                and levels.in_tunnel_zone(kart.x, kart.y)
+            ):
+                continue  # in the tunnel: the view hides the kart, so its label goes too
             label = driver.version.label
             x, y = self.view.to_screen(kart.x, kart.y)
             rect = pygame.Rect(0, 0, ui.measure(label), 9)
