@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 import random
 from collections import defaultdict
@@ -419,21 +418,35 @@ def test_the_sweep_is_step_kart_with_the_sweep_parameters():
 
 # The trace of random sweeps below was recorded with the code that still had the jump before
 # the button (PR #15) with its time set to 0; the code without the jump must give the same.
-SWEEP_TRACE_HASH = "5fb09b0c52caa060b62ada4430d24612fa953d70a8ae41a714861f76cd3f6260"
+# The end of 8 random traces of 2500 steps each (the button toggling, the wheel, the throttle
+# and the grass changing, resets with and without the button down), recorded with the jump of
+# PR #15 switched off (``hop_time = 0``) before it was removed: x, y, heading, vx, vy, steps
+# sweeping, steps under the push and pushes awarded. The positions are compared with a
+# tolerance (like the physics fingerprint): the libm of Linux and Windows round sin and cos
+# differently in the last bit, so a bit-exact hash of every step would only hold on one OS.
+SWEEP_TRACE_ENDS = (
+    (301.461907, -174.566712, 0.649168, 4.796473, 3.417173, 523, 77, 19),
+    (-239.238089, 139.648665, -2.397331, -17.227852, -15.825903, 714, 114, 26),
+    (199.943193, 185.140184, 0.427515, 17.769537, 6.373735, 312, 15, 6),
+    (254.196932, 180.313856, -0.07306, 2.226932, -0.17533, 445, 66, 12),
+    (174.286324, 191.109042, 1.434483, 1.37079, 15.878162, 330, 42, 9),
+    (-51.213551, 348.765685, 1.60652, -3.480576, 22.464935, 621, 111, 18),
+    (244.554072, 112.153381, -0.554846, 14.501364, -8.342247, 351, 39, 10),
+    (168.642405, 323.33628, 1.795123, -4.048226, 14.825571, 592, 89, 21),
+)
 
 
-def sweep_trace() -> tuple[str, int, int, int]:
-    """SHA-256 of every number of 8 x 2500 random steps (the button toggling, the wheel, the
-    throttle and the grass changing, resets with and without the button down), and how many
-    steps were sweeping, under the push, and how many pushes were awarded."""
-    digest = hashlib.sha256()
-    swept = pushing = pushes = 0
+def sweep_trace_ends() -> list[tuple]:
+    """For each of the 8 traces: the kart at the end, the steps sweeping and under the push,
+    and the pushes awarded."""
+    ends = []
     for seed in range(8):
         rng = random.Random(seed)
         drift = DriftState()
         state = KartState(0.0, 0.0, 0.3, vx=rng.uniform(0, 25))
         steer = throttle = 0.0
         grass = False
+        swept = pushing = 0
         for i in range(2500):
             if i % 7 == 0:
                 drift.hold = rng.random() < 0.6 if i % 70 else not drift.hold
@@ -447,22 +460,20 @@ def sweep_trace() -> tuple[str, int, int, int]:
                 drift.hold = rng.random() < 0.5
                 drift.reset()
             step_drift(state, steer, throttle, grass, P, DT, drift)
-            values = (
-                state.x, state.y, state.heading, state.vx, state.vy, state.steer,
-                drift.active, drift.direction, drift.time, drift.armed, drift.push_left,
-                drift.push_total, drift.push_speed, drift.push_id, drift.charge,
-            )  # fmt: skip
-            digest.update(repr([v.hex() if isinstance(v, float) else v for v in values]).encode())
             swept += drift.active
             pushing += drift.push_left > 0.0
-        pushes += drift.push_id
-    return digest.hexdigest(), swept, pushing, pushes
+        ends.append(
+            (state.x, state.y, state.heading, state.vx, state.vy, swept, pushing, drift.push_id)
+        )
+    return ends
 
 
 def test_the_sweep_is_exactly_what_it_was_with_the_jump_switched_off():
-    digest, swept, pushing, pushes = sweep_trace()
-    assert swept > 3000 and pushing > 500 and pushes > 20  # the trace does exercise the sweep
-    assert digest == SWEEP_TRACE_HASH
+    ends = sweep_trace_ends()
+    assert sum(e[5] for e in ends) > 3000 and sum(e[7] for e in ends) > 20  # it does sweep
+    for got, pinned in zip(ends, SWEEP_TRACE_ENDS, strict=True):
+        assert got[5:] == pinned[5:]  # the same sweeps and pushes, step for step in count
+        assert got[:5] == pytest.approx(pinned[:5], rel=1e-6, abs=1e-6)
 
 
 def fraction_under_push(cfg: DriftParams, sweep: float, pause: float, seconds: float = 120.0):
