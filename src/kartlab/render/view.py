@@ -173,6 +173,7 @@ class GameView:
         self._ray_hint = index
         self.world.ray_lengths = self.sensor.cast(kart.x, kart.y, kart.heading, index)
         self.world.ray_angles = self.sensor.angles
+        self.world.ray_range = self.sensor.max_range
         self.world.show_rays = [(kart.x, kart.y, kart.heading)]
 
     def draw(
