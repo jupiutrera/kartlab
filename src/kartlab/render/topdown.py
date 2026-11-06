@@ -342,12 +342,15 @@ class TopDownView:
             spec = spark_spec(charge)
             for wheel in (-1.0, 1.0):  # a 1-2 px glow on the rear wheels, hotter with the charge
                 x, y = at(0.7, wheel * 0.5)
-                pygame.draw.circle(
-                    target,
-                    tuple(int(v) for v in rgb[heat_ink(charge, 0.5)]),
-                    (x, y),
-                    1 + (charge > 0.5),
-                )
+                if self.pixel:  # on the 320x180 grid a spark is a pixel, two with a good charge
+                    dot((x, y), heat_ink(charge, 0.5), 1 + (charge > 0.5))
+                else:
+                    pygame.draw.circle(
+                        target,
+                        tuple(int(v) for v in rgb[heat_ink(charge, 0.5)]),
+                        (x, y),
+                        1 + (charge > 0.5),
+                    )
             period = spec.life
             count = max(round(spec.rate * period / 2.0), 1)  # alive at once, per wheel
             for wheel in (-1.0, 1.0):
@@ -360,7 +363,7 @@ class TopDownView:
                     dot(
                         at(0.7 + 1.6 * spec.reach * age * period, wheel * 0.5 + spread),
                         ink,
-                        spec.size * 14,
+                        1 + (charge >= 0.75) if self.pixel else spec.size * 14,
                     )
         if drift.pushing:
             heat = min(drift.push_speed / max(drift.params.boost_speed, 1e-9), 1.0)
@@ -372,7 +375,9 @@ class TopDownView:
                 dot(
                     at(1.35 + 1.6 * flame.speed * flame.life * age, 0.0),
                     ink,
-                    max(flame.size * mpp * 1.6, 1.0),
+                    min(max(flame.size * mpp * 1.6, 1.0), 2.0)
+                    if self.pixel
+                    else max(flame.size * mpp * 1.6, 1.0),
                 )
 
     def _draw_kart(self, target, tmap: TrackMap, kart: KartState, color, offset) -> None:

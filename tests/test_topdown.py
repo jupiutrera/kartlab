@@ -61,3 +61,32 @@ def test_view_draws_the_kart_without_a_window(track, follow):
 )
 def test_format_time(seconds, text):
     assert format_time(seconds) == text
+
+
+class _Recorder:
+    """A drawing target that only notes the size of every rectangle filled on it."""
+
+    def __init__(self):
+        self.sizes = []
+
+    def fill(self, color, rect):
+        self.sizes.append((rect[2], rect[3]))
+
+
+def test_the_sweep_sparks_are_one_or_two_pixels_on_the_320_by_180_grid(track, monkeypatch):
+    from kartlab.sim.drift import DriftState
+    from kartlab.sim.kart import KartState
+
+    def no_circles(*args, **kwargs):
+        raise AssertionError("the pixel view draws its sparks as squares, not circles")
+
+    view = TopDownView(track, (224, 180), pixel=True)
+    monkeypatch.setattr(pygame.draw, "circle", no_circles)  # the track maps are already drawn
+    kart = KartState(*track.pose_at(200.0))
+    for time_swept, biggest in ((0.1, 1), (2.0, 2)):
+        drift = DriftState(active=True, direction=1.0, time=time_swept)
+        recorder = _Recorder()
+        view._draw_sparks(recorder, view.follow_map, kart, drift, (0.0, 0.0))
+        assert recorder.sizes
+        assert {w for w, _ in recorder.sizes} <= {1, 2} and {h for _, h in recorder.sizes} <= {1, 2}
+        assert max(max(size) for size in recorder.sizes) == biggest
