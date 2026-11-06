@@ -33,6 +33,9 @@ SKID_SPEED = 1.6  # lateral speed above which tyres leave marks (m/s)
 MAX_PARTICLES = 220
 SPARK_SIZE = 0.07  # sparks are smaller than dust puffs (m)
 SPARK_GRAVITY = 9.0  # (m/s²)
+LIFT_FAINT = 0.15  # above this height the shadow turns faint (m)
+LIFT_SHRINK = 0.5  # the shadow has shrunk by a third at this height (m)
+LANDING_DUST = 6  # puffs of dust at each landing
 
 
 @dataclass
@@ -45,6 +48,7 @@ class KartVisual:
     throttle: float = 0.0
     trail: list[tuple[float, float]] = field(default_factory=list)
     drift: DriftState | None = None  # manual sweep, if the kart has one
+    lift: float = 0.0  # height over the ground (m): the sprite rises, the shadow stays
 
 
 @dataclass(frozen=True)
@@ -173,6 +177,7 @@ class WorldRenderer:
         self.variant = variant
         self.lens = lens
         self._pushes_seen: dict[int, int] = {}  # sweep pushes already flashed, by drift id
+        self._landings_seen: dict[int, int] = {}  # landings already dusted, by drift id
         self._configure()
 
     # -- configuration ------------------------------------------------------------------
@@ -214,14 +219,15 @@ class WorldRenderer:
             c, s = math.cos(kart.heading), math.sin(kart.heading)
             rear = [(kart.x - c * 0.7 + side * -s * 0.5, kart.y - s * 0.7 + side * c * 0.5)
                     for side in (-1.0, 1.0)]  # fmt: skip
-            if abs(kart.lateral_speed) > SKID_SPEED and not v.on_grass and not v.ghost:
+            grounded = v.lift <= 0.0  # in the air a kart leaves no marks and raises no dust
+            if grounded and abs(kart.lateral_speed) > SKID_SPEED and not v.on_grass and not v.ghost:
                 for x, y in rear:
                     self.texture.stamp(x, y, 0.14, Ink.ASPHALT_DARK)
-            if v.on_grass and abs(speed) > 3.0 and rng.random() < 0.6 * rate:
+            if grounded and v.on_grass and abs(speed) > 3.0 and rng.random() < 0.6 * rate:
                 x, y = rear[int(rng.integers(2))]
                 self.particles.emit(x, y, 0.1, -c * speed * 0.2, -s * speed * 0.2, 1.2,
                                     0.6, Ink.BROWN)  # fmt: skip
-            if v.throttle > 0.8 and 0.5 < speed < 9.0 and rng.random() < 0.35 * rate:
+            if grounded and v.throttle > 0.8 and 0.5 < speed < 9.0 and rng.random() < 0.35 * rate:
                 x, y = rear[int(rng.integers(2))]
                 self.particles.emit(x, y, 0.3, rng.normal(0, 0.4), rng.normal(0, 0.4), 0.8,
                                     0.7, Ink.MIST)  # fmt: skip
@@ -234,6 +240,18 @@ class WorldRenderer:
         trail while the push lasts. Everything in palette inks, nothing allocated per pixel."""
         kart = v.kart
         c, s = math.cos(kart.heading), math.sin(kart.heading)
+        key = id(drift)
+        if self._landings_seen.setdefault(key, drift.land_id) != drift.land_id:  # just landed
+            self._landings_seen[key] = drift.land_id
+            ink = Ink.BROWN if v.on_grass else Ink.MIST
+            for k in range(LANDING_DUST):
+                angle = math.tau * (k + rng.uniform(0.0, 1.0)) / LANDING_DUST
+                puff = rng.uniform(1.5, 3.0)
+                self.particles.emit(
+                    kart.x + math.cos(angle) * 0.6, kart.y + math.sin(angle) * 0.6, 0.1,
+                    math.cos(angle) * puff, math.sin(angle) * puff, rng.uniform(0.6, 1.4),
+                    rng.uniform(0.35, 0.55), ink, 0.28,
+                )  # fmt: skip
         if drift.active:
             if abs(kart.lateral_speed) <= SKID_SPEED:  # the sweep always leaves marks
                 for x, y in rear:
@@ -247,7 +265,6 @@ class WorldRenderer:
                     x, y, 0.15, -c * back - s * side, -s * back + c * side, rng.uniform(1.0, 2.5),
                     rng.uniform(0.2, 0.4), Ink.YELLOW, SPARK_SIZE, SPARK_GRAVITY,
                 )  # fmt: skip
-        key = id(drift)
         if drift.pushing:
             if self._pushes_seen.get(key) != drift.push_id:  # first frame of this push
                 self._pushes_seen[key] = drift.push_id
@@ -355,10 +372,15 @@ class WorldRenderer:
             halo = self._halo(v.ramp, max(int(2.6 * focal / depth), 4))
             where = (round(sx - halo.get_width() / 2), round(sy - halo.get_height() * 0.6))
             self.world.blit(halo, where, special_flags=pygame.BLEND_ADD)
-        shadow = self.sprites.shadow(max(int(1.4 * focal / depth), 2))
+        shrink = 1.0 - min(v.lift / LIFT_SHRINK, 1.0) / 3.0
+        shadow = self.sprites.shadow(
+            max(int(1.4 * focal * shrink / depth), 2), faint=v.lift > LIFT_FAINT
+        )
         self.world.blit(
             shadow, (round(sx - shadow.get_width() / 2), round(sy - shadow.get_height() / 2))
         )
+        if v.lift > 0.0:  # the sprite rises on the screen; the shadow stays on the floor
+            sx, sy, _ = self.projection.project(pose, kart.x, kart.y, v.lift)
         surface, anchor = self.sprites.kart(v.ramp, kart.heading - bearing, elevation, scale)
         top = round(sy - anchor[1])
         self.world.blit(surface, (round(sx - anchor[0]), top))

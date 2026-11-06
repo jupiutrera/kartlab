@@ -665,15 +665,18 @@ def test_drive_mode_draws_a_sweep_through_a_corner(monkeypatch, view):
         assert app.racer.speed > 12.0 and not app.drift.active
         _hold(monkeypatch, pygame.K_UP, pygame.K_LEFT, pygame.K_LSHIFT)
         assert drift_pressed(pygame.key.get_pressed())
-        sparks = 0
+        sparks = dust = 0
         peak = 0.0
         for _ in range(60):  # the hop takes 21 frames, then the sweep builds up its charge
             app.run(max_frames=1)
             peak = max(peak, app.drift.height)
             if app.game is not None:
                 sparks += sum(1 for p in app.game.world.particles.items if p[7] == Ink.YELLOW)
+                dust += sum(1 for p in app.game.world.particles.items if p[7] == Ink.MIST)
         assert peak == pytest.approx(DEFAULT_DRIFT.hop_height, rel=0.02)
         assert app.drift.land_id == 1 and app.drift.active and app.drift.charge > 0.15
+        if app.game is not None:
+            assert dust > 0
         if app.game is not None:
             assert sparks > 0
         before = pygame.surfarray.array3d(app.screen).copy()

@@ -39,6 +39,7 @@ GRID_STEP = 10.0  # grass grid spacing, so speed is visible even on the grass (m
 KERB_CURVATURE = 1 / 45  # corners tighter than this radius get red and white kerbs
 MAX_MAP_PIXELS = 12_000_000  # cap for the pre-drawn map surface
 MIN_KART_PIXELS = 18.0  # karts are never drawn shorter than this
+AIR_RISE = 0.6  # a kart in the air is drawn this many kart lengths up per metre of height
 
 FONT_REGULAR = FONTS_DIR / "ibm-plex-mono" / "IBMPlexMono-Regular.ttf"
 FONT_BOLD = FONTS_DIR / "ibm-plex-mono" / "IBMPlexMono-SemiBold.ttf"
@@ -165,7 +166,7 @@ class TopDownView:
     def draw(
         self,
         target: pygame.Surface,
-        karts: Iterable[tuple[KartState, tuple[int, int, int]]],
+        karts: Iterable[tuple],
         camera: tuple[float, float],
         follow: bool,
         trail: Sequence[tuple[float, float]] = (),
@@ -185,8 +186,8 @@ class TopDownView:
         if len(trail) > 1:
             pts = [(px + ox, py + oy) for px, py in (tmap.to_px(x, y) for x, y in trail)]
             pygame.draw.aalines(target, TRAIL_COLOR, False, pts)
-        for kart, color in karts:
-            self._draw_kart(target, tmap, kart, color, (ox, oy))
+        for kart, color, *lift in karts:  # an optional third item: height over the ground (m)
+            self._draw_kart(target, tmap, kart, color, (ox, oy), lift[0] if lift else 0.0)
 
     def to_screen(self, x: float, y: float) -> tuple[float, float]:
         """Pixel of a world point in the last frame drawn (for labels over karts)."""
@@ -195,7 +196,9 @@ class TopDownView:
         return px + ox, py + oy
 
     @staticmethod
-    def _draw_kart(target, tmap: TrackMap, kart: KartState, color, offset) -> None:
+    def _draw_kart(
+        target, tmap: TrackMap, kart: KartState, color, offset, lift: float = 0.0
+    ) -> None:
         length = max(1.8 * tmap.ppm, MIN_KART_PIXELS)
         width = length * 0.62
         px, py = tmap.to_px(kart.x, kart.y)
@@ -203,10 +206,19 @@ class TopDownView:
         # Screen y grows downwards, so the heading is mirrored.
         c, s = math.cos(kart.heading), -math.sin(kart.heading)
         shape = ((0.5, 0.0), (-0.5, 0.5), (-0.28, 0.0), (-0.5, -0.5))
-        pts = [
-            (px + c * u * length - s * v * width, py + s * u * length + c * v * width)
-            for u, v in shape
-        ]
+
+        def outline(cx: float, cy: float, scale: float) -> list[tuple[float, float]]:
+            return [
+                (cx + c * u * length * scale - s * v * width * scale,
+                 cy + s * u * length * scale + c * v * width * scale)
+                for u, v in shape
+            ]  # fmt: skip
+
+        if lift > 0.0:  # in the air: the shadow stays on the ground, the kart grows and rises
+            pygame.draw.polygon(target, KART_OUTLINE, outline(px, py, 1.0))
+            pts = outline(px, py - lift * length * AIR_RISE, 1.0 + 0.25 * lift)
+        else:
+            pts = outline(px, py, 1.0)
         pygame.draw.polygon(target, color, pts)
         pygame.draw.polygon(target, KART_OUTLINE, pts, 2)
 
