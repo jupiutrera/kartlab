@@ -36,6 +36,7 @@ class CameraPose:
     x: float
     y: float
     heading: float
+    z: float = 0.0  # height of the camera above its lens height: on a bridge, in a tunnel (m)
 
 
 def _approach_angle(current: float, target: float, rate: float, max_speed: float, dt: float):
@@ -44,6 +45,49 @@ def _approach_angle(current: float, target: float, rate: float, max_speed: float
     step = error * (1.0 - math.exp(-rate * dt))
     limit = max_speed * dt
     return current + max(-limit, min(limit, step))
+
+
+TUNNEL_MARGIN = 12.0  # the camera ducks this far before the mouth of a tunnel (m)
+TUNNEL_HEADROOM = 0.4  # eye height below the tunnel roof (m)
+RISE_RATE = 8.0  # the camera follows the height of the road with 1 - exp(-rate dt) (1/s)
+
+
+class RideHeight:
+    """Height of a camera over its lens height on a track with a bridge.
+
+    It follows the road under the kart (up the ramps and onto the deck, down again). A camera
+    that ducks (the chase one) also drops below the roof of the tunnel before it gets there, so
+    it never ends up inside the deck. Without levels it is 0 and nothing else changes.
+    """
+
+    def __init__(self, duck: bool = False) -> None:
+        self.duck = duck
+        self.z = 0.0
+        self._hint: int | None = None
+        self._started = False
+
+    def reset(self) -> None:
+        self._hint = None
+        self._started = False
+
+    def update(
+        self, kart: KartState, eye: tuple[float, float], dt: float, track: Track | None, lens: Lens
+    ) -> float:
+        levels = None if track is None else track.levels
+        if levels is None:
+            return 0.0
+        position = track.locate_following(kart.x, kart.y, self._hint)
+        self._hint = position.index
+        ground = track.height_at(position.s)
+        target = ground
+        if self.duck and ground < 0.5 and levels.in_tunnel_zone(*eye, TUNNEL_MARGIN):
+            target = min(levels.ceiling - TUNNEL_HEADROOM - lens.height, 0.0)
+        if not self._started:
+            self._started = True
+            self.z = target
+        else:
+            self.z += (target - self.z) * (1.0 - math.exp(-RISE_RATE * dt))
+        return self.z
 
 
 class ChaseCamera:
@@ -56,9 +100,11 @@ class ChaseCamera:
         self.turn_rate = turn_rate
         self.max_turn = max_turn
         self.pose: CameraPose | None = None
+        self._ride = RideHeight(duck=True)
 
     def update(self, kart: KartState, dt: float, track: Track | None = None) -> CameraPose:
         if self.pose is None:
+            self._ride.reset()
             self.pose = CameraPose(kart.x, kart.y, kart.heading)
         heading = _approach_angle(
             self.pose.heading, kart.heading, self.turn_rate, self.max_turn, dt
@@ -66,9 +112,9 @@ class ChaseCamera:
         x = kart.x - math.cos(heading) * self.distance
         y = kart.y - math.sin(heading) * self.distance
         k = 1.0 - math.exp(-12.0 * dt)
-        self.pose = CameraPose(
-            self.pose.x + (x - self.pose.x) * k, self.pose.y + (y - self.pose.y) * k, heading
-        )
+        px, py = self.pose.x + (x - self.pose.x) * k, self.pose.y + (y - self.pose.y) * k
+        z = self._ride.update(kart, (px, py), dt, track, self.lens)
+        self.pose = CameraPose(px, py, heading, z)
         return self.pose
 
 
@@ -86,10 +132,12 @@ class BroadcastCamera:
         self._focus: tuple[float, float] | None = None
         self._hint: int | None = None  # centerline index of the previous frame (crossings)
         self.target_heading = 0.0  # where the last update wanted to look
+        self._ride = RideHeight()
 
     def update(self, kart: KartState, dt: float, track: Track | None = None) -> CameraPose:
         if self.pose is None:
             self._hint = None  # a new start (reset, camera switch): look the branch up afresh
+            self._ride.reset()
         if track is not None:
             # At a level crossing "the nearest part of the track" flips between the two
             # roads, so the heading would snap 90 degrees; the hint keeps the kart's branch.
@@ -109,9 +157,8 @@ class BroadcastCamera:
             self.pose.heading, target_heading, self.turn_rate, self.max_turn, dt
         )
         fx, fy = self._focus
-        self.pose = CameraPose(
-            fx - math.cos(heading) * self.distance, fy - math.sin(heading) * self.distance, heading
-        )
+        eye = (fx - math.cos(heading) * self.distance, fy - math.sin(heading) * self.distance)
+        self.pose = CameraPose(*eye, heading, self._ride.update(kart, eye, dt, track, self.lens))
         return self.pose
 
 

@@ -44,6 +44,8 @@ WALL_INSET = 0.7  # the wall stands this far inside the asphalt edge (m)
 WALL_MIN_HEIGHT = 0.2  # the road is walled where it is higher than this (m)
 EMBANKMENT_MARGIN = 0.6  # solid ground beyond the asphalt edge of the upper road (m)
 OUTSIDE_EPS = 0.01  # a kart pushed out of a wall rests this far beyond the asphalt edge (m)
+DECK_THICKNESS = 0.7  # the underside of the deck is this far below its surface (m)
+MIN_CEILING = 1.6  # the tunnel is never lower than this (m)
 PORTAL_MARGIN = 1.0  # extra tunnel length at each portal (m)
 START_CLEARANCE = 10.0  # the whole ramp keeps this far from the start line (m)
 MIN_LENGTH_RATIO = 4.0  # the track is at least this many times longer than the bridge
@@ -106,6 +108,7 @@ class Levels:
         self.reach = self.deck_half + self.ramp  # half length of the raised stretch (m)
         self.tunnel_half = tunnel_half_length(track.width, crossing.angle)
         self.embankment_half = track.half_width + EMBANKMENT_MARGIN  # across the upper road (m)
+        self.ceiling = max(self.deck_height - DECK_THICKNESS, MIN_CEILING)  # tunnel roof (m)
 
         s = track.s
         away = np.abs(self.wrap(s - self.s_over))
@@ -113,6 +116,8 @@ class Levels:
         self.height = self.deck_height * (1.0 - ramp_progress)  # per sample
         under = np.abs(self.wrap(s - self.s_under))
         self.walled = (self.height > WALL_MIN_HEIGHT) | (under <= self.tunnel_half)
+        # The raised stretch (ramps included): the renderer draws it as geometry, not as floor.
+        self.raised = away <= self.reach
         # Samples whose road may meet the embankment (the lower branch near the crossing).
         self._near_under = under <= self.reach + 2.0 * self.embankment_half
         # Samples that make up the embankment: the upper road's raised stretch.
@@ -140,6 +145,16 @@ class Levels:
         h0 = self._height_list[i]
         h1 = self._height_list[(i + 1) % self._n]
         return h0 + (h1 - h0) * t
+
+    def in_tunnel_zone(self, x: float, y: float, margin: float = 0.0) -> bool:
+        """True if the point of the plane is over the tunnel's floor, or within ``margin`` metres
+        of either mouth (the straight stretch of the lower road under the deck)."""
+        track = self._track
+        cx, cy, heading = track.pose_at(self.s_under)
+        dx, dy = x - cx, y - cy
+        along = dx * math.cos(heading) + dy * math.sin(heading)
+        across = -dx * math.sin(heading) + dy * math.cos(heading)
+        return abs(across) <= self.half_width and abs(along) <= self.tunnel_half + margin
 
     def is_upper(self, s: float) -> bool:
         """True where the road is raised (deck and ramps)."""

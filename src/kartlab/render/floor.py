@@ -51,7 +51,7 @@ class Projection:
         cos_h, sin_h = math.cos(pose.heading), math.sin(pose.heading)
         ahead = dx * cos_h + dy * sin_h
         right = dx * sin_h - dy * cos_h
-        up = np.asarray(z) - lens.height
+        up = np.asarray(z) - (lens.height + pose.z)
         cos_p, sin_p = math.cos(lens.pitch), math.sin(lens.pitch)
         depth = ahead * cos_p - up * sin_p
         vertical = ahead * sin_p + up * cos_p
@@ -122,13 +122,20 @@ class FloorRenderer:
         cos_h, sin_h = math.cos(pose.heading), math.sin(pose.heading)
         u0 = (pose.x - tex.origin[0]) * tex.tpm
         v0 = (tex.origin[1] - pose.y) * tex.tpm
+        # A camera higher (lower) than the lens by ``pose.z`` sees every floor point k times
+        # farther (nearer) along its ray: k scales the tables, and the texels grow with it, so
+        # the mipmap level moves by log2(k). With z = 0 this is exactly the plain frame.
+        k = (self.projection.lens.height + pose.z) / self.projection.lens.height
+        shift = round(math.log2(k)) if k != 1.0 else 0
+        last = len(tex.levels) - 1
         # world = camera + forward * ahead + right * lateral, right = (sin h, -cos h)
-        np.multiply(self.lat_t, sin_h, out=self._u)
-        self._u += (u0 + cos_h * self.ahead_t)[:, None]
-        np.multiply(self.lat_t, cos_h, out=self._v)
-        self._v += (v0 - sin_h * self.ahead_t)[:, None]
+        np.multiply(self.lat_t, sin_h * k, out=self._u)
+        self._u += (u0 + cos_h * k * self.ahead_t)[:, None]
+        np.multiply(self.lat_t, cos_h * k, out=self._v)
+        self._v += (v0 - sin_h * k * self.ahead_t)[:, None]
 
         for r0, r1, level in self.groups:
+            level = min(max(level + shift, 0), last)
             rows, cols = tex.levels[level].shape
             scale = 0.5**level
             u = self._ui[r0:r1]
