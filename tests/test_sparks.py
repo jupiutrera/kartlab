@@ -269,3 +269,39 @@ def test_sparks_glow_at_dusk_and_at_night(track, variant):
     dust = rig.world._ink_rgb  # a plain ink is dimmed by the variant, a spark is not
     rig.world._draw_particle(10.0, 10.0, 3, ink)
     assert dust[ink] != dust[ink + EMISSIVE]
+
+
+# -- the top-down view ----------------------------------------------------------------
+
+
+def _topdown(track, drift, lift=0.0, with_drift=True):
+    from kartlab.render.topdown import TopDownView
+
+    view = TopDownView(track, (480, 270))
+    screen = pygame.Surface((480, 270))
+    x, y, h = track.pose_at(100.0)
+    kart = KartState(x, y, h)
+    item = (kart, (255, 156, 44), lift, drift) if with_drift else (kart, (255, 156, 44), lift)
+    view.draw(screen, [item], (x, y), True)
+    return pygame.surfarray.array3d(screen).reshape(-1, 3)
+
+
+def _spark_pixels(frame) -> int:
+    ramp = np.array([game_palette().rgb[ink] for ink in HEAT_RAMP])
+    return int((frame[:, None, :] == ramp[None]).all(axis=2).any(axis=1).sum())
+
+
+def test_topdown_sparks_grow_and_heat_up_with_the_charge(track):
+    counts = [_spark_pixels(_topdown(track, sweeping(c))) for c in (0.1, 0.4, 0.7, 1.0)]
+    assert counts == sorted(counts) and counts[-1] > 2 * counts[0]
+
+
+def test_topdown_has_no_sparks_without_a_sweep_or_in_the_air(track):
+    assert _spark_pixels(_topdown(track, DriftState())) == 0
+    assert _spark_pixels(_topdown(track, sweeping(1.0), lift=0.3)) == 0
+    assert _spark_pixels(_topdown(track, None, with_drift=False)) == 0
+
+
+def test_topdown_flame_follows_the_push_level(track):
+    counts = [_spark_pixels(_topdown(track, pushing(level))) for level in (0.2, 0.6, 1.0)]
+    assert counts == sorted(counts) and counts[0] > 0 and counts[-1] > counts[0]

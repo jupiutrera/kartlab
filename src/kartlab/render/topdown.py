@@ -13,6 +13,9 @@ import numpy as np
 import pygame
 
 from kartlab.common.paths import FONTS_DIR
+from kartlab.render.palette import game_palette
+from kartlab.render.sparks import blink_ink, flame_spec, hash01, heat_ink, spark_spec
+from kartlab.sim.drift import DriftState
 from kartlab.sim.kart import KartState
 from kartlab.sim.race import WORLD_MARGIN
 from kartlab.sim.track import Track
@@ -186,14 +189,76 @@ class TopDownView:
         if len(trail) > 1:
             pts = [(px + ox, py + oy) for px, py in (tmap.to_px(x, y) for x, y in trail)]
             pygame.draw.aalines(target, TRAIL_COLOR, False, pts)
-        for kart, color, *lift in karts:  # an optional third item: height over the ground (m)
-            self._draw_kart(target, tmap, kart, color, (ox, oy), lift[0] if lift else 0.0)
+        for kart, color, *extra in karts:  # optional: height over the ground (m), sweep state
+            lift = extra[0] if extra else 0.0
+            self._draw_kart(target, tmap, kart, color, (ox, oy), lift)
+            if len(extra) > 1 and extra[1] is not None and lift <= 0.0:
+                self._draw_sparks(target, tmap, kart, extra[1], (ox, oy))
 
     def to_screen(self, x: float, y: float) -> tuple[float, float]:
         """Pixel of a world point in the last frame drawn (for labels over karts)."""
         tmap, ox, oy = self._last
         px, py = tmap.to_px(x, y)
         return px + ox, py + oy
+
+    @staticmethod
+    def _draw_sparks(target, tmap: TrackMap, kart: KartState, drift: DriftState, offset) -> None:
+        """Sweep sparks behind the rear wheels, tinted by the charge like in the 3D view, and
+        the exhaust flame after the release. Stateless: the phase of every spark comes from the
+        time swept, so nothing is stored between frames."""
+        rgb = game_palette().rgb
+        mpp = max(1.8 * tmap.ppm, MIN_KART_PIXELS) / 1.8  # pixels per metre at this zoom
+        px, py = tmap.to_px(kart.x, kart.y)
+        px, py = px + offset[0], py + offset[1]
+        c, s = math.cos(kart.heading), -math.sin(kart.heading)  # screen y grows downwards
+
+        def at(back: float, side: float) -> tuple[float, float]:
+            return px - c * back * mpp - s * side * mpp, py - s * back * mpp + c * side * mpp
+
+        def dot(point, ink: int, size: float) -> None:
+            n = max(round(size), 1)
+            target.fill(
+                tuple(int(v) for v in rgb[ink]),
+                (round(point[0] - n / 2), round(point[1] - n / 2), n, n),
+            )
+
+        if drift.active:
+            charge = drift.charge
+            spec = spark_spec(charge)
+            for wheel in (-1.0, 1.0):  # a 1-2 px glow on the rear wheels, hotter with the charge
+                x, y = at(0.7, wheel * 0.5)
+                pygame.draw.circle(
+                    target,
+                    tuple(int(v) for v in rgb[heat_ink(charge, 0.5)]),
+                    (x, y),
+                    1 + (charge > 0.5),
+                )
+            period = spec.life
+            count = max(round(spec.rate * period / 2.0), 1)  # alive at once, per wheel
+            for wheel in (-1.0, 1.0):
+                for k in range(count):
+                    age = (drift.time / period + k / count) % 1.0
+                    cycle = int(drift.time / period + k / count)
+                    jitter = hash01(k, cycle, int(wheel))
+                    ink = blink_ink(charge, drift.time, hash01(k, cycle, 7))
+                    spread = drift.direction * (jitter * 1.5 - 0.3) * age
+                    dot(
+                        at(0.7 + 1.6 * spec.reach * age * period, wheel * 0.5 + spread),
+                        ink,
+                        spec.size * 14,
+                    )
+        if drift.pushing:
+            heat = min(drift.push_speed / max(drift.params.boost_speed, 1e-9), 1.0)
+            flame = flame_spec(drift.push_level, heat)
+            count = round(flame.rate * flame.life)
+            for k in range(count):
+                age = (k + 0.5) / count
+                ink = heat_ink(flame.heat * (1.0 - 0.5 * age), hash01(k, drift.push_id))
+                dot(
+                    at(1.35 + 1.6 * flame.speed * flame.life * age, 0.0),
+                    ink,
+                    max(flame.size * mpp * 1.6, 1.0),
+                )
 
     @staticmethod
     def _draw_kart(

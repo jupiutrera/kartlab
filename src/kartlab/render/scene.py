@@ -292,7 +292,7 @@ class WorldRenderer:
                         )  # fmt: skip
             flame = flame_spec(drift.push_level, heat)
             for _ in range(stochastic_count(flame.rate * dt * rate, rng.random())):
-                back = 1.25 + rng.uniform(0.0, 0.2)  # behind the bumper, so it never hides it
+                back = 1.35 + rng.uniform(0.0, 0.2)  # behind the bumper, so it never hides it
                 self.particles.emit(
                     kart.x - c * back + rng.normal(0, 0.12),
                     kart.y - s * back + rng.normal(0, 0.12),

@@ -482,7 +482,14 @@ class DriveApp:
     def draw_topdown(self) -> None:
         racer = self.racer
         lift = 0.0 if self.autopilot_on else self.drift.lift
-        karts = [(racer.kart, kart_color_rgb(self.kart_ramp), lift)]
+        karts = [
+            (
+                racer.kart,
+                kart_color_rgb(self.kart_ramp),
+                lift,
+                None if self.autopilot_on else self.drift,
+            )
+        ]
         self.ghost_visual = self.hud_trial = None
         if self.trial is not None:
             ghost = self.ghost_state()
