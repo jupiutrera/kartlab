@@ -123,6 +123,7 @@ Con `configs/random_tracks.yaml` (1,5M pasos, unos 20 minutos en un portátil co
 uv run python scripts/train.py configs/fixed_track.yaml      # un circuito fijo sencillo
 uv run python scripts/train.py configs/random_tracks.yaml    # circuitos aleatorios (generalizar)
 uv run python scripts/live.py                                # visor del último run, en otra terminal
+uv run python scripts/live.py --track-file tracks/ejemplo.json   # el visor en directo en un circuito propio (se valida antes)
 uv run python scripts/evaluate.py --tracks 20                # 3 vueltas en los 20 circuitos reservados
 uv run tensorboard --logdir runs
 ```
@@ -169,7 +170,7 @@ El título muestra el mejor modelo conduciendo, con la luz cambiando despacio de
 | Modo | Qué enseña |
 | --- | --- |
 | Ver conducir | Una versión al volante, con la curva de recompensa y una barra con todas las versiones del run. Se cambia con ← →. |
-| Carrera de versiones | Hasta ocho versiones a la vez desde la misma parrilla (la peor en la pole), con cuenta atrás, clasificación y minimapa. Al acabar, otra carrera empieza sola. |
+| Carrera de versiones | Hasta siete versiones (escala logarítmica de pasos y la última) a la vez desde la misma parrilla (la peor en la pole), con cuenta atrás, clasificación y minimapa. Al acabar, otra carrera empieza sola. |
 | Progresión | De «sin entrenar» a la última versión, una detrás de otra en escala logarítmica de pasos, con contador, curva y cinta de versiones. Al llegar al final vuelve a empezar. |
 
 ![Modo «Ver conducir» en el Cañón con la versión de 300k pasos](docs/img/fase-5-visor.png)
