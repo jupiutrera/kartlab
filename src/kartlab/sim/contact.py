@@ -21,9 +21,8 @@ Both the velocity that is removed and the position correction are shared 60 % fo
 contact (it does not see karts and must be able to drive on, braking for a corner included,
 with a human glued to it): above that the human absorbs the rest, so the approach is still
 removed whole and the karts still never cross. The total of a contact starts again after
-``QUIET_RESET`` s without contact. Nothing happens inside a
-grace window (the start, an AI restart), between karts at different heights (a bridge over a
-tunnel) or while one of them is in the air (a hop clears the other kart).
+``QUIET_RESET`` s without contact. Nothing happens inside a grace window (the start, an AI
+restart) or between karts at different heights (a bridge over a tunnel).
 
 The module is pure: ``resolve`` returns what to apply and the caller applies it
 (``Racer.displace`` for the positions, so the surface is relocated too).
@@ -48,7 +47,6 @@ QUIET_RESET = 0.5  # seconds without contact after which the total above starts 
 START_GRACE = 4.0  # no contact this long after the start (s)
 RESTART_GRACE = 1.5  # no contact this long after an AI kart is put back on the track (s)
 LEVEL_GAP = 1.0  # karts at least this far apart in height do not touch (m)
-MAX_AIR = 0.25  # a kart higher than this clears the other one (m)
 
 _REACH = 2.0 * (CIRCLE_RADIUS + CIRCLE_OFFSET)  # centres further apart than this cannot touch
 
@@ -59,12 +57,7 @@ class Body:
 
     kart: KartState
     level_z: float = 0.0  # height of the road under the kart (bridges)
-    height: float = 0.0  # height of the kart above the road (hop)
     grace_until: float = 0.0
-
-    @property
-    def z(self) -> float:
-        return self.level_z + self.height
 
 
 @dataclass(slots=True)
@@ -94,12 +87,10 @@ def circles(kart: KartState) -> tuple[tuple[float, float], tuple[float, float]]:
 
 
 def touching(human: Body, ai: Body, now: float) -> bool:
-    """Whether the two karts may touch at all right now (grace, levels and hops)."""
+    """Whether the two karts may touch at all right now (grace and levels)."""
     if now < human.grace_until or now < ai.grace_until:
         return False
-    if abs(human.z - ai.z) >= LEVEL_GAP:
-        return False
-    return human.height <= MAX_AIR and ai.height <= MAX_AIR
+    return abs(human.level_z - ai.level_z) < LEVEL_GAP
 
 
 def resolve(human: Body, ai: Body, state: PairState, now: float, dt: float = DT) -> Contact | None:

@@ -43,7 +43,6 @@ MAX_PARTICLES = 220
 SPARK_GRAVITY = 9.0  # (m/s²)
 LIFT_FAINT = 0.15  # above this height the shadow turns faint (m)
 LIFT_SHRINK = 0.5  # the shadow has shrunk by a third at this height (m)
-LANDING_DUST = 6  # puffs of dust at each landing
 
 
 @dataclass
@@ -185,7 +184,6 @@ class WorldRenderer:
         self.variant = variant
         self.lens = lens
         self._pushes_seen: dict[int, int] = {}  # sweep pushes already flashed, by drift id
-        self._landings_seen: dict[int, int] = {}  # landings already dusted, by drift id
         self._configure()
 
     # -- configuration ------------------------------------------------------------------
@@ -252,18 +250,7 @@ class WorldRenderer:
         kart = v.kart
         c, s = math.cos(kart.heading), math.sin(kart.heading)
         key = id(drift)
-        if self._landings_seen.setdefault(key, drift.land_id) != drift.land_id:  # just landed
-            self._landings_seen[key] = drift.land_id
-            ink = Ink.BROWN if v.on_grass else Ink.MIST
-            for k in range(LANDING_DUST):
-                angle = math.tau * (k + rng.uniform(0.0, 1.0)) / LANDING_DUST
-                puff = rng.uniform(1.5, 3.0)
-                self.particles.emit(
-                    kart.x + math.cos(angle) * 0.6, kart.y + math.sin(angle) * 0.6, 0.1,
-                    math.cos(angle) * puff, math.sin(angle) * puff, rng.uniform(0.6, 1.4),
-                    rng.uniform(0.35, 0.55), ink, 0.28,
-                )  # fmt: skip
-        if drift.active and v.lift <= 0.0 and not drift.airborne:
+        if drift.active and v.lift <= 0.0:
             if abs(kart.lateral_speed) <= SKID_SPEED:  # the sweep always leaves marks
                 for x, y in rear:
                     self.texture.stamp(x, y, 0.14, Ink.ASPHALT_DARK)

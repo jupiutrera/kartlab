@@ -67,8 +67,8 @@ SHOWCASE_KEYS = {pygame.K_1: "harbor", pygame.K_2: "canyon", pygame.K_3: "platea
 HELP = (
     "Flechas o WASD: conducir · R: reiniciar · 1-3: escaparate · E: evaluación · N: aleatorio",
     "C: cámara · V: día/atardecer/noche · G: sensores · T: vista cenital · Tab: piloto",
-    "Mayús: brinco; aterriza con el volante girado y Mayús pulsado para barrer",
-    "Suelta Mayús para el impulso: cuanto más largo el barrido, más impulso",
+    "Mayús: derrape; mantén con el volante girado y suelta para el turbo",
+    "Cuanto más largo el derrape, más turbo",
     "K: contrarreloj: 3 vueltas con cuenta atrás, récord y fantasma · F: fantasma",
     "P: pausa · F3: diagnóstico · L: modo ligero · F11: pantalla completa · H: ayuda",
     "Esc: salir (si vienes del menú principal, vuelve a él)",
@@ -306,7 +306,7 @@ class DriveApp:
             state = self.session.advance()
             if state == "countdown":
                 self.controls = (0.0, 0.0)
-                # A Shift pressed (or held) now is not buffered: no hop at the "¡YA!".
+                # A Shift held through the countdown starts no sweep until it is released.
                 self.drift.hold = drift_pressed(pygame.key.get_pressed())
                 self.drift.reset()
                 return
@@ -387,7 +387,6 @@ class DriveApp:
             on_grass=racer.on_grass,
             throttle=self.controls[1],
             drift=None if self.autopilot_on else self.drift,
-            lift=0.0 if self.autopilot_on else self.drift.lift,
         )
         visuals = [visual]
         self.ghost_visual = self.hud_trial = None
@@ -481,12 +480,11 @@ class DriveApp:
 
     def draw_topdown(self) -> None:
         racer = self.racer
-        lift = 0.0 if self.autopilot_on else self.drift.lift
         karts = [
             (
                 racer.kart,
                 kart_color_rgb(self.kart_ramp),
-                lift,
+                0.0,
                 None if self.autopilot_on else self.drift,
             )
         ]

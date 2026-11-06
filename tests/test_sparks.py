@@ -171,11 +171,7 @@ def test_no_sparks_in_the_air(track):
     drift = sweeping(1.0)
     rig.run(drift, 60, lift=0.3)  # the visual says it is in the air
     assert rig.sparks() == []
-    drift.hop_left = 0.2  # the state says the same
-    rig.run(drift, 60)
-    assert rig.sparks() == []
-    drift.hop_left = 0.0  # and on landing in the sweep they start
-    rig.run(drift, 60)
+    rig.run(drift, 60)  # back on the ground in the sweep: they start
     assert rig.sparks()
 
 
